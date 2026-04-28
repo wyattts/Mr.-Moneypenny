@@ -1,24 +1,10 @@
 import { useState } from "react";
 
+import { CURRENCIES } from "@/lib/currencies";
 import { saveCurrencyLocale, setSetupStep } from "@/lib/tauri";
 import { useWizard } from "@/lib/store";
 import { StepLayout, ErrorBanner } from "../components/Layout";
 import { PrimaryButton, GhostButton } from "../components/Buttons";
-
-const CURRENCIES = [
-  { code: "USD", label: "US Dollar — $" },
-  { code: "EUR", label: "Euro — €" },
-  { code: "GBP", label: "British Pound — £" },
-  { code: "JPY", label: "Japanese Yen — ¥" },
-  { code: "CAD", label: "Canadian Dollar — CA$" },
-  { code: "AUD", label: "Australian Dollar — A$" },
-  { code: "CHF", label: "Swiss Franc — CHF" },
-  { code: "CNY", label: "Chinese Yuan — ¥" },
-  { code: "INR", label: "Indian Rupee — ₹" },
-  { code: "MXN", label: "Mexican Peso — MX$" },
-  { code: "BRL", label: "Brazilian Real — R$" },
-  { code: "ZAR", label: "South African Rand — R" },
-];
 
 export function CurrencyLocaleStep() {
   const setStep = useWizard((s) => s.setStep);

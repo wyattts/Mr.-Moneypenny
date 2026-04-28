@@ -13,6 +13,7 @@ import {
 } from "@/lib/tauri";
 import type { SetupState } from "@/lib/tauri";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { CURRENCIES } from "@/lib/currencies";
 import { ViewHeader } from "./ViewHeader";
 import { ErrorBanner, InfoBanner } from "@/wizard/components/Layout";
 import { GhostButton, PrimaryButton, SecondaryButton } from "@/wizard/components/Buttons";
@@ -227,12 +228,20 @@ function CurrencyLocaleEditor({
     <div className="flex items-end gap-2">
       <label className="flex flex-col gap-1">
         <span className="text-xs text-graphite-300">Currency</span>
-        <input
-          type="text"
+        <select
           value={currency}
-          onChange={(e) => setCurrency(e.target.value.toUpperCase())}
-          className="w-24 rounded-md border border-graphite-600 bg-graphite-800 px-2 py-1 font-mono text-sm text-graphite-50"
-        />
+          onChange={(e) => setCurrency(e.target.value)}
+          className="rounded-md border border-graphite-600 bg-graphite-800 px-2 py-1 text-sm text-graphite-50 focus:border-forest-400 focus:outline-none"
+        >
+          {CURRENCIES.find((c) => c.code === currency) ? null : (
+            <option value={currency}>{currency} (custom)</option>
+          )}
+          {CURRENCIES.map((c) => (
+            <option key={c.code} value={c.code}>
+              {c.label}
+            </option>
+          ))}
+        </select>
       </label>
       <label className="flex flex-col gap-1">
         <span className="text-xs text-graphite-300">Locale</span>
