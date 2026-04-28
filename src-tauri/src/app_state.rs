@@ -1,37 +1,55 @@
 //! Tauri-side application state. Holds:
 //!   - The shared SQLite connection (single-writer, mutex-guarded).
 //!   - The in-memory bot state (conversation history per chat).
-//!   - The optional poller task handle and its shutdown flag.
+//!   - The poller's shutdown flag and a "started" sentinel.
 //!
-//! The poller is started lazily (after the user has saved a Telegram
-//! bot token) and kept running for the lifetime of the app. It can be
-//! stopped via `shutdown()` for graceful exit / unpair flows.
+//! The poller is started lazily (after the user has saved a Telegram bot
+//! token). Spawning happens via `tauri::async_runtime::spawn`, which uses
+//! Tauri's managed runtime and works from any caller context — including
+//! Tauri's `setup()` callback, where Tokio's `tokio::spawn` would panic
+//! because the caller thread isn't inside a Tokio runtime context.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
+#[cfg(feature = "desktop")]
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
+#[cfg(feature = "desktop")]
 use anyhow::{Context, Result};
 use rusqlite::Connection;
-use tokio::task::JoinHandle;
 
+#[cfg(feature = "desktop")]
 use crate::llm::anthropic::{AnthropicProvider, DEFAULT_MODEL as DEFAULT_ANTHROPIC_MODEL};
+#[cfg(feature = "desktop")]
 use crate::llm::ollama::OllamaProvider;
+#[cfg(feature = "desktop")]
 use crate::llm::LLMProvider;
+#[cfg(feature = "desktop")]
 use crate::repository::settings;
+#[cfg(feature = "desktop")]
 use crate::secrets;
+#[cfg(feature = "desktop")]
 use crate::telegram::client::TelegramClient;
+#[cfg(feature = "desktop")]
 use crate::telegram::poller;
+#[cfg(feature = "desktop")]
 use crate::telegram::router::RouterDeps;
 use crate::telegram::state::BotState;
 
 pub struct AppState {
     pub db: Arc<Mutex<Connection>>,
     pub bot: Arc<BotState>,
+    #[allow(dead_code)] // only read by the desktop poller path
     inner: Mutex<Inner>,
 }
 
+#[derive(Default)]
+#[allow(dead_code)] // only read by the desktop poller path
 struct Inner {
-    poller: Option<JoinHandle<()>>,
+    /// True once the poller task has been spawned. We don't track the
+    /// JoinHandle — the OS reaps the task on process exit, and graceful
+    /// shutdown happens via the `shutdown` flag.
+    started: bool,
     shutdown: Arc<AtomicBool>,
 }
 
@@ -41,23 +59,19 @@ impl AppState {
             db: Arc::new(Mutex::new(db)),
             bot: Arc::new(BotState::new()),
             inner: Mutex::new(Inner {
-                poller: None,
+                started: false,
                 shutdown: Arc::new(AtomicBool::new(false)),
             }),
         }
     }
 
     /// Spawn the long-poll task using the currently saved Telegram token
-    /// and LLM provider. Idempotent: no-op if a task is already running.
-    /// Returns an error if either secret/setting is missing.
+    /// and LLM provider. Idempotent: no-op if already running. Returns
+    /// an error if either secret/setting is missing.
+    #[cfg(feature = "desktop")]
     pub fn ensure_poller_running(&self) -> Result<()> {
         let mut inner = self.inner.lock().unwrap();
-        if inner
-            .poller
-            .as_ref()
-            .map(|h| !h.is_finished())
-            .unwrap_or(false)
-        {
+        if inner.started {
             return Ok(());
         }
 
@@ -81,31 +95,28 @@ impl AppState {
         let shutdown = Arc::clone(&inner.shutdown);
         shutdown.store(false, Ordering::Relaxed);
 
-        let handle = tokio::spawn(async move {
+        // Tauri's spawn uses its managed runtime; safe to call from setup()
+        // or from a Tauri command handler regardless of current context.
+        tauri::async_runtime::spawn(async move {
             if let Err(e) = poller::run(deps, shutdown).await {
                 tracing::error!(target: "app_state", error=%e, "poller exited with error");
             }
         });
-        inner.poller = Some(handle);
+        inner.started = true;
         Ok(())
     }
 
-    /// Signal the poller to stop and wait briefly for graceful exit.
-    /// Used on unpair / app shutdown.
-    pub async fn shutdown_poller(&self) {
-        let (handle, shutdown) = {
-            let mut inner = self.inner.lock().unwrap();
-            (inner.poller.take(), Arc::clone(&inner.shutdown))
-        };
-        shutdown.store(true, Ordering::Relaxed);
-        if let Some(h) = handle {
-            // 5-second grace; if it doesn't exit by then, abort.
-            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), h).await;
-        }
+    /// Signal the poller to stop. Returns immediately; the task will exit
+    /// when it next checks the flag (at most one long-poll timeout away).
+    #[cfg(feature = "desktop")]
+    pub fn shutdown_poller(&self) {
+        let inner = self.inner.lock().unwrap();
+        inner.shutdown.store(true, Ordering::Relaxed);
     }
 }
 
 /// Build the configured LLM provider based on `llm_provider` setting.
+#[cfg(feature = "desktop")]
 fn build_llm_provider(conn: &Connection) -> Result<Arc<dyn LLMProvider>> {
     let provider = settings::get_or_default(conn, settings::keys::LLM_PROVIDER, "")?;
     match provider.as_str() {
