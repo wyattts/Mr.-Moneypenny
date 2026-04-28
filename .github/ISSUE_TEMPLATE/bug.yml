@@ -1,0 +1,66 @@
+name: Bug report
+description: Report something that isn't working as expected
+title: "[bug] "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug report. **Do not include screenshots or text containing your real expense data, API keys, or bot token.** If a screenshot is necessary, redact those fields first.
+  - type: input
+    id: version
+    attributes:
+      label: Mr. Moneypenny version
+      placeholder: "v0.1.0 (or commit SHA if building from source)"
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - Linux (AppImage)
+        - Linux (built from source)
+        - macOS (Apple Silicon)
+        - macOS (Intel)
+        - Windows
+    validations:
+      required: true
+  - type: dropdown
+    id: llm
+    attributes:
+      label: LLM provider
+      options:
+        - Anthropic (Claude API)
+        - Local Ollama
+        - Not relevant to this bug
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs (optional)
+      description: Crash files live at `~/.local/share/moneypenny/crashes/` (Linux), `~/Library/Application Support/moneypenny/crashes/` (macOS), or `%APPDATA%/moneypenny/crashes/` (Windows). Redact any sensitive content before pasting.
+      render: shell

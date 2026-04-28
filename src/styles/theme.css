@@ -1,0 +1,24 @@
+/*
+ * Mr. Moneypenny theme tokens.
+ * Forest green accents on a dark-grey surface. Defined as CSS variables so
+ * Recharts and other non-Tailwind consumers can read them directly.
+ */
+:root {
+  --color-bg: #1a1a1a;
+  --color-surface: #2a2a2a;
+  --color-surface-2: #1f1f1f;
+  --color-text: #f4f4f4;
+  --color-text-muted: #9e9e9e;
+
+  --color-forest-primary: #1f3d2b;
+  --color-forest-accent: #2d5a3d;
+  --color-forest-light: #598e6a;
+
+  --color-success: #4ade80;
+  --color-warning: #facc15;
+  --color-danger: #f87171;
+
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+}

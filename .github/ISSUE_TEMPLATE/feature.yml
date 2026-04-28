@@ -1,0 +1,31 @@
+name: Feature request
+description: Suggest a new capability or improvement
+title: "[feat] "
+labels: ["enhancement", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the suggestion. Please remember Mr. Moneypenny's design constraints — privacy by architecture, no relay, small dependency tree — when proposing features.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      placeholder: Describe the user-visible problem or unmet need.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: textarea
+    id: privacy
+    attributes:
+      label: Privacy implications
+      description: Does this proposal require any new outbound network calls, data collection, or third-party integrations? If so, describe.
