@@ -17,7 +17,10 @@ pub enum DateRange {
     ThisYear,
     Ytd,
     /// Inclusive range; `to` is the last day to include.
-    Custom { from: Date, to: Date },
+    Custom {
+        from: Date,
+        to: Date,
+    },
 }
 
 impl DateRange {

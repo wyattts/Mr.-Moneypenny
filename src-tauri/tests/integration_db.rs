@@ -30,11 +30,16 @@ fn migrations_are_idempotent() {
 fn seed_categories_loaded_and_marked() {
     let conn = fresh_db();
     let count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM categories WHERE is_seed = 1", [], |r| {
-            r.get(0)
-        })
+        .query_row(
+            "SELECT COUNT(*) FROM categories WHERE is_seed = 1",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
-    assert!(count >= 25, "expected at least 25 seed categories, got {count}");
+    assert!(
+        count >= 25,
+        "expected at least 25 seed categories, got {count}"
+    );
 
     // Both kinds present
     let fixed: i64 = conn
@@ -158,7 +163,9 @@ fn cannot_hard_delete_seed_category() {
 #[test]
 fn budget_round_trips() {
     let conn = fresh_db();
-    let dining = categories::get_by_name(&conn, "Dining Out").unwrap().unwrap();
+    let dining = categories::get_by_name(&conn, "Dining Out")
+        .unwrap()
+        .unwrap();
     let id = budgets::insert(
         &conn,
         &NewBudget {

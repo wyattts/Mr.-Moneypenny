@@ -249,7 +249,7 @@ fn compute_daily_trend(
     let last = (end.to_offset(offset) - Duration::seconds(1)).date();
     while day <= last {
         buckets.insert(day, (0, 0));
-        day = day + Duration::days(1);
+        day += Duration::days(1);
     }
 
     for e in &exps {
@@ -453,12 +453,8 @@ fn compute_mom(conn: &Connection, now: OffsetDateTime) -> Result<MoMComparison> 
         .with_time(Time::MIDNIGHT)
         .assume_offset(offset);
 
-    let this_period = expenses::sum_in_range_by_kind(
-        conn,
-        this_start,
-        now,
-        CategoryKind::Variable,
-    )?;
+    let this_period =
+        expenses::sum_in_range_by_kind(conn, this_start, now, CategoryKind::Variable)?;
     let last_period = expenses::sum_in_range_by_kind(
         conn,
         prev_month_first,

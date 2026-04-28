@@ -47,9 +47,8 @@ pub fn insert(conn: &Connection, e: &NewExpense) -> Result<i64> {
 }
 
 pub fn get(conn: &Connection, id: i64) -> Result<Option<Expense>> {
-    let mut stmt = conn.prepare_cached(&format!(
-        "SELECT {SELECT_COLS} FROM expenses WHERE id = ?1"
-    ))?;
+    let mut stmt =
+        conn.prepare_cached(&format!("SELECT {SELECT_COLS} FROM expenses WHERE id = ?1"))?;
     let row = stmt
         .query_row(params![id], map_row)
         .map(Some)
@@ -113,11 +112,7 @@ pub fn sum_in_range_by_kind(
 }
 
 /// Total spend (all categorized + uncategorized) in [start, end).
-pub fn sum_in_range(
-    conn: &Connection,
-    start: OffsetDateTime,
-    end: OffsetDateTime,
-) -> Result<i64> {
+pub fn sum_in_range(conn: &Connection, start: OffsetDateTime, end: OffsetDateTime) -> Result<i64> {
     let mut stmt = conn.prepare_cached(
         "SELECT COALESCE(SUM(amount_cents), 0)
          FROM expenses

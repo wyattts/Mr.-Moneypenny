@@ -22,9 +22,8 @@ const MIGRATIONS: &[(u32, &str, &str)] = &[
 /// necessary, and apply runtime PRAGMAs (foreign keys, WAL).
 pub fn open(path: &Path) -> Result<Connection> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).with_context(|| {
-            format!("creating database parent directory {}", parent.display())
-        })?;
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating database parent directory {}", parent.display()))?;
     }
     let conn = Connection::open(path)
         .with_context(|| format!("opening database at {}", path.display()))?;

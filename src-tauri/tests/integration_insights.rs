@@ -1,7 +1,7 @@
 //! Integration tests for the dashboard aggregation queries.
 
 use moneypenny_lib::db;
-use moneypenny_lib::domain::{CategoryKind, ExpenseSource, NewExpense};
+use moneypenny_lib::domain::{ExpenseSource, NewExpense};
 use moneypenny_lib::insights::{dashboard, DateRange};
 use moneypenny_lib::repository::{categories, expenses};
 use rusqlite::Connection;
@@ -92,7 +92,7 @@ fn rent_on_day_two_scenario_dashboard_says_on_pace() {
     set_target(&conn, "Coffee", 8_000); // $80
     set_target(&conn, "Groceries", 50_000); // $500
     set_target(&conn, "Dining Out", 22_000); // $220
-    // Variable budget total = $80 + $500 + $220 = $800
+                                             // Variable budget total = $80 + $500 + $220 = $800
 
     // Day 2 of April
     let now = datetime!(2026-04-02 12:00:00 UTC);
@@ -276,7 +276,11 @@ fn upcoming_fixed_excludes_already_paid_categories() {
     );
 
     let snap = dashboard(&conn, DateRange::ThisMonth, now).unwrap();
-    let names: Vec<_> = snap.upcoming_fixed.iter().map(|u| u.name.as_str()).collect();
+    let names: Vec<_> = snap
+        .upcoming_fixed
+        .iter()
+        .map(|u| u.name.as_str())
+        .collect();
     assert!(
         !names.contains(&"Rent / Mortgage"),
         "rent paid → should not be in upcoming"

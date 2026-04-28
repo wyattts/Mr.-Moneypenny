@@ -55,7 +55,9 @@ pub fn current_month_bounds(now: OffsetDateTime) -> (OffsetDateTime, OffsetDateT
         Date::from_calendar_date(date.year(), date.month().next(), 1)
     }
     .expect("day 1 of next month is always valid");
-    let start = start_date.with_time(Time::MIDNIGHT).assume_offset(now.offset());
+    let start = start_date
+        .with_time(Time::MIDNIGHT)
+        .assume_offset(now.offset());
     let end = next_month_date
         .with_time(Time::MIDNIGHT)
         .assume_offset(now.offset());

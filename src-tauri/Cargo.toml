@@ -15,10 +15,10 @@ name = "moneypenny_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
-tauri-build = { version = "2", features = [] }
+tauri-build = { version = "2", features = [], optional = true }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = [], optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rusqlite = { version = "0.32", features = ["bundled", "time"] }
@@ -32,7 +32,12 @@ directories = "5"
 tempfile = "3"
 
 [features]
-# This feature is used for production builds or when a dev server is not specified, DO NOT REMOVE!!
+# `desktop` pulls in tauri runtime + build script. Default enables it for
+# normal `tauri dev` / `tauri build`. `cargo test --no-default-features`
+# skips it so domain/insights tests run without GTK system libraries.
+default = ["desktop"]
+desktop = ["dep:tauri", "dep:tauri-build"]
+# Required for production tauri builds, DO NOT REMOVE.
 custom-protocol = ["tauri/custom-protocol"]
 
 [profile.dev]
