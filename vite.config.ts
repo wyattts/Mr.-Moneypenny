@@ -3,9 +3,10 @@ import react from "@vitejs/plugin-react";
 import path from "node:path";
 
 const HMR_PORT = 1421;
+const host = process.env.TAURI_DEV_HOST;
 
 // https://vite.dev/config/
-export default defineConfig(async () => ({
+export default defineConfig({
   plugins: [react()],
   resolve: {
     alias: {
@@ -17,9 +18,9 @@ export default defineConfig(async () => ({
   server: {
     port: 1420,
     strictPort: true,
-    host: process.env.TAURI_DEV_HOST ?? false,
-    hmr: process.env.TAURI_DEV_HOST
-      ? { protocol: "ws", host: process.env.TAURI_DEV_HOST, port: HMR_PORT }
+    host: host ?? false,
+    hmr: host
+      ? { protocol: "ws", host, port: HMR_PORT }
       : undefined,
     watch: {
       ignored: ["**/src-tauri/**"],
@@ -31,4 +32,4 @@ export default defineConfig(async () => ({
     minify: !process.env.TAURI_ENV_DEBUG ? "esbuild" : false,
     sourcemap: !!process.env.TAURI_ENV_DEBUG,
   },
-}));
+});

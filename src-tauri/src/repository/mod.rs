@@ -5,3 +5,4 @@
 pub mod budgets;
 pub mod categories;
 pub mod expenses;
+pub mod settings;

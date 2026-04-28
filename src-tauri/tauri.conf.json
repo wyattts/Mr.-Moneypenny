@@ -43,7 +43,7 @@
     "longDescription": "Mr. Moneypenny is a privacy-first FOSS personal-budgeting app. You log expenses by chatting with a personal Telegram bot powered by your choice of Claude API or local Ollama. All data lives on your computer; the project operates no servers.",
     "copyright": "Copyright © 2026 Wyatt Smith. Licensed under AGPL-3.0-or-later.",
     "publisher": "Wyatt Smith",
-    "homepage": "https://github.com/wyattsmith-oss/moneypenny",
+    "homepage": "https://github.com/wyattts/Mr.-Moneypenny",
     "license": "AGPL-3.0-or-later"
   }
 }

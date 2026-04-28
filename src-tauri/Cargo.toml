@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Mr. Moneypenny — privacy-first FOSS budgeting app"
 authors = ["Wyatt Smith"]
 license = "AGPL-3.0-or-later"
-repository = "https://github.com/wyattsmith-oss/moneypenny"
+repository = "https://github.com/wyattts/Mr.-Moneypenny"
 edition = "2021"
 rust-version = "1.77"
 
@@ -26,11 +26,13 @@ time = { version = "0.3", features = ["serde-well-known", "serde-human-readable"
 anyhow = "1"
 thiserror = "2"
 tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 directories = "5"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
 async-trait = "0.1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "http2"] }
 rand = "0.8"
+keyring = { version = "3", features = ["apple-native", "windows-native", "linux-native"] }
 
 [dev-dependencies]
 tempfile = "3"
