@@ -29,7 +29,7 @@ const MAIN_TEXT: Record<Size, string> = {
 export function Wordmark({ size = "md" }: { size?: Size }) {
   return (
     <span className="flex items-baseline gap-1 select-none whitespace-nowrap">
-      <span className={`${PREFIX_TEXT[size]} font-light italic text-graphite-300`}>
+      <span className={`${PREFIX_TEXT[size]} font-medium italic text-graphite-200`}>
         Mr.
       </span>
       <span

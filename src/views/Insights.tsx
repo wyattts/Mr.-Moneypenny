@@ -293,6 +293,8 @@ function ChartsRow({
               <Tooltip
                 formatter={(v: number) => formatMoney(Number(v), currency, locale)}
                 contentStyle={tooltipStyle}
+                labelStyle={tooltipLabelStyle}
+                itemStyle={tooltipItemStyle}
               />
               <Legend wrapperStyle={{ color: "#9e9e9e", fontSize: 12 }} />
             </PieChart>
@@ -319,6 +321,8 @@ function ChartsRow({
                   formatMoney(Math.round(Number(v) * 100), currency, locale)
                 }
                 contentStyle={tooltipStyle}
+                labelStyle={tooltipLabelStyle}
+                itemStyle={tooltipItemStyle}
               />
               <Legend wrapperStyle={{ color: "#9e9e9e", fontSize: 12 }} />
               <Line
@@ -361,12 +365,17 @@ function Empty() {
   );
 }
 
+// Recharts tooltip styling. `contentStyle` styles the wrapper div, but the
+// label (category name / X-axis value) and items (data rows) inherit black
+// from the chart unless we set them explicitly.
 const tooltipStyle = {
   background: "#1f1f1f",
   border: "1px solid #3a3a3a",
   color: "#f4f4f4",
   fontSize: 12,
 };
+const tooltipLabelStyle = { color: "#f4f4f4" };
+const tooltipItemStyle = { color: "#f4f4f4" };
 
 // ---------------------------------------------------------------------
 // Member spend (only with >1 household members)
@@ -398,6 +407,8 @@ function MemberRow({
               formatMoney(Math.round(Number(v) * 100), currency, locale)
             }
             contentStyle={tooltipStyle}
+            labelStyle={tooltipLabelStyle}
+            itemStyle={tooltipItemStyle}
           />
           <Bar dataKey="Spent" fill="#3d7a4f" radius={[0, 4, 4, 0]} />
         </BarChart>
