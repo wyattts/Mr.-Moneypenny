@@ -135,14 +135,10 @@ pub struct ListCategoriesInput {
 #[derive(Debug, Clone, Deserialize)]
 pub struct SetBudgetInput {
     pub category: String,
+    /// Monthly budget amount in major currency units. The bot only
+    /// supports monthly budgets internally; the LLM is responsible for
+    /// converting "$X per week" or "$Y per year" before calling.
     pub amount: f64,
-    /// "weekly" | "monthly" | "yearly". Defaults to "monthly".
-    #[serde(default = "default_budget_period")]
-    pub period: String,
-}
-
-fn default_budget_period() -> String {
-    "monthly".into()
 }
 
 // ListHouseholdMembers takes no input.
@@ -297,19 +293,17 @@ fn list_categories_spec() -> ToolSpec {
 fn set_budget_spec() -> ToolSpec {
     ToolSpec {
         name: ToolName::SetBudget.as_str().into(),
-        description: "Set a category's budget. Confirm with the user before \
-                      calling — budgets are user-config, not transactions."
+        description: "Set a category's MONTHLY budget. Confirm with the \
+                      user before calling — budgets are user-config, not \
+                      transactions. The bot only supports monthly budgets; \
+                      if the user says \"$X per week\", multiply by 4.345 \
+                      to get the monthly equivalent before calling."
             .into(),
         input_schema: json!({
             "type": "object",
             "properties": {
                 "category": { "type": "string", "description": "Exact category name." },
-                "amount": { "type": "number", "description": "Budget amount in major currency units." },
-                "period": {
-                    "type": "string",
-                    "enum": ["weekly", "monthly", "yearly"],
-                    "description": "Budget period. Default monthly."
-                }
+                "amount": { "type": "number", "description": "Monthly budget amount in major currency units." }
             },
             "required": ["category", "amount"]
         }),

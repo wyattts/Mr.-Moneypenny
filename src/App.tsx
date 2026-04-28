@@ -9,7 +9,6 @@ import { MainApp } from "@/views/MainApp";
 import { Insights } from "@/views/Insights";
 import { Ledger } from "@/views/Ledger";
 import { Categories } from "@/views/Categories";
-import { Budgets } from "@/views/Budgets";
 import { Household } from "@/views/Household";
 import { Settings } from "@/views/Settings";
 
@@ -71,7 +70,6 @@ export default function App() {
         <Route path="/insights" element={<Insights />} />
         <Route path="/ledger" element={<Ledger />} />
         <Route path="/categories" element={<Categories />} />
-        <Route path="/budgets" element={<Budgets />} />
         <Route path="/household" element={<Household />} />
         <Route path="/settings" element={<Settings />} />
         <Route path="*" element={<Navigate to="/insights" replace />} />

@@ -50,7 +50,7 @@ Closing the window minimizes to the system tray so the bot stays online without 
 
 - **Insights dashboard** — KPI strip with budget pacing, category donut, daily trend (variable + fixed), per-household-member attribution, top expenses, over-budget warnings, upcoming-fixed list, month-over-month delta.
 - **Ledger** — searchable / filterable list of every expense with inline delete.
-- **Categories / Budgets** — edit defaults, add new, set monthly targets.
+- **Categories** — edit defaults, add new, toggle activation, set monthly budgets.
 - **Household** — invite a partner via a 6-digit pairing code; per-member spend shown on the dashboard.
 - **Settings** — rotate keys, switch LLM provider, toggle background mode and auto-start.
 

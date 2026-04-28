@@ -18,11 +18,9 @@ use time::format_description::well_known::Rfc3339;
 use time::macros::format_description;
 use time::{Date, OffsetDateTime, Time};
 
-use crate::domain::{
-    BudgetPeriod, Category, CategoryKind, Expense, ExpenseSource, NewBudget, NewExpense,
-};
+use crate::domain::{Category, CategoryKind, Expense, ExpenseSource, NewExpense};
 use crate::insights::{dashboard, range::DateRange};
-use crate::repository::{budgets, categories, expenses};
+use crate::repository::{categories, expenses};
 
 use super::tools::{
     AddExpenseInput, DeleteExpenseInput, ListCategoriesInput, ListHouseholdMembersInput,
@@ -306,7 +304,7 @@ fn exec_list_categories(conn: &Connection, input: &Value) -> Result<Value> {
     Ok(json!({ "ok": true, "categories": slim }))
 }
 
-fn exec_set_budget(conn: &Connection, ctx: &CallContext, input: &Value) -> Result<Value> {
+fn exec_set_budget(conn: &Connection, _ctx: &CallContext, input: &Value) -> Result<Value> {
     let parsed: SetBudgetInput =
         serde_json::from_value(input.clone()).context("set_budget: invalid arguments")?;
     if !(parsed.amount.is_finite() && parsed.amount >= 0.0) {
@@ -315,23 +313,16 @@ fn exec_set_budget(conn: &Connection, ctx: &CallContext, input: &Value) -> Resul
         ));
     }
     let cat = resolve_category(conn, &parsed.category)?;
-    let period: BudgetPeriod = parsed.period.parse()?;
-    let id = budgets::insert(
-        conn,
-        &NewBudget {
-            category_id: cat.id,
-            amount_cents: (parsed.amount * 100.0).round() as i64,
-            period,
-            effective_from: ctx.now,
-            effective_to: None,
-        },
-    )?;
+    let amount_cents = (parsed.amount * 100.0).round() as i64;
+    // Writes to categories.monthly_target_cents — the same field the
+    // dashboard, the LLM summarize_period tool, and over-budget detection
+    // all read. Only monthly is supported; the LLM is instructed to
+    // multiply weekly/yearly amounts to get the monthly equivalent.
+    categories::set_monthly_target(conn, cat.id, Some(amount_cents))?;
     Ok(json!({
         "ok": true,
-        "budget_id": id,
         "category": cat.name,
-        "amount_cents": (parsed.amount * 100.0).round() as i64,
-        "period": period.as_str(),
+        "monthly_target_cents": amount_cents,
     }))
 }
 

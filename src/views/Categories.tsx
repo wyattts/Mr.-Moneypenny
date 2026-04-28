@@ -94,7 +94,7 @@ export function Categories() {
     <div>
       <ViewHeader
         title="Categories"
-        subtitle="Edit names, targets, and activation. Seed categories can be deactivated but not deleted."
+        subtitle="Set monthly budgets, toggle activation, and add or remove categories. Seed categories can be deactivated but not deleted."
         actions={
           <label className="flex items-center gap-2 text-xs text-graphite-300">
             <input
@@ -181,7 +181,7 @@ function CategoryGroup({
             />
           </label>
           <label className="flex flex-col gap-1">
-            <span className="text-xs text-graphite-300">Monthly target ($)</span>
+            <span className="text-xs text-graphite-300">Monthly budget ($)</span>
             <input
               type="number"
               step="0.01"

@@ -129,8 +129,6 @@ mod app {
                 delete_expense,
                 create_category,
                 delete_category,
-                list_budgets_for_category,
-                set_category_budget,
                 remove_household_member,
                 get_run_in_background,
                 set_run_in_background,

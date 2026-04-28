@@ -9,13 +9,13 @@ use tauri::State;
 use time::{Date, Duration, OffsetDateTime, Time};
 
 use crate::app_state::AppState;
-use crate::domain::{BudgetPeriod, CategoryKind, ExpenseSource, NewBudget, NewCategory};
+use crate::domain::{CategoryKind, ExpenseSource, NewCategory};
 use crate::insights::{dashboard, range::DateRange, DashboardSnapshot};
 use crate::llm::anthropic::{AnthropicProvider, DEFAULT_MODEL as DEFAULT_ANTHROPIC_MODEL};
 use crate::llm::ollama::OllamaProvider;
 use crate::llm::system_prompt::SystemPrompt;
 use crate::llm::{ChatRequest, LLMProvider, Message};
-use crate::repository::{budgets, categories, expenses, settings};
+use crate::repository::{categories, expenses, settings};
 use crate::secrets;
 use crate::telegram::auth::{self, AuthorizedChat};
 use crate::telegram::client::{TelegramApi, TelegramClient};
@@ -569,65 +569,6 @@ pub async fn create_category(
 pub async fn delete_category(id: i64, state: State<'_, AppState>) -> Result<bool, String> {
     let conn = state.db.lock().unwrap();
     categories::delete(&conn, id).map_err(err)
-}
-
-// ---------------------------------------------------------------------
-// Budgets.
-// ---------------------------------------------------------------------
-
-#[derive(Debug, Serialize)]
-pub struct BudgetView {
-    pub id: i64,
-    pub category_id: i64,
-    pub amount_cents: i64,
-    pub period: String,
-    #[serde(with = "time::serde::rfc3339")]
-    pub effective_from: OffsetDateTime,
-    #[serde(with = "time::serde::rfc3339::option")]
-    pub effective_to: Option<OffsetDateTime>,
-}
-
-#[tauri::command]
-pub async fn list_budgets_for_category(
-    category_id: i64,
-    state: State<'_, AppState>,
-) -> Result<Vec<BudgetView>, String> {
-    let conn = state.db.lock().unwrap();
-    let bs = budgets::list_for_category(&conn, category_id).map_err(err)?;
-    Ok(bs
-        .into_iter()
-        .map(|b| BudgetView {
-            id: b.id,
-            category_id: b.category_id,
-            amount_cents: b.amount_cents,
-            period: b.period.as_str().to_string(),
-            effective_from: b.effective_from,
-            effective_to: b.effective_to,
-        })
-        .collect())
-}
-
-#[tauri::command]
-pub async fn set_category_budget(
-    category_id: i64,
-    amount_cents: i64,
-    period: String,
-    state: State<'_, AppState>,
-) -> Result<i64, String> {
-    let period: BudgetPeriod = period.parse().map_err(err)?;
-    let now = OffsetDateTime::now_utc();
-    let conn = state.db.lock().unwrap();
-    budgets::insert(
-        &conn,
-        &NewBudget {
-            category_id,
-            amount_cents,
-            period,
-            effective_from: now,
-            effective_to: None,
-        },
-    )
-    .map_err(err)
 }
 
 // ---------------------------------------------------------------------

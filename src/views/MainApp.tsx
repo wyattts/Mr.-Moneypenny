@@ -10,7 +10,6 @@ const NAV: { to: string; label: string; icon: string }[] = [
   { to: "/insights", label: "Insights", icon: "▤" },
   { to: "/ledger", label: "Ledger", icon: "≡" },
   { to: "/categories", label: "Categories", icon: "⊞" },
-  { to: "/budgets", label: "Budgets", icon: "$" },
   { to: "/household", label: "Household", icon: "♕" },
   { to: "/settings", label: "Settings", icon: "⚙" },
 ];

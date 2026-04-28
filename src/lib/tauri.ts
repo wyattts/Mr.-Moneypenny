@@ -254,25 +254,6 @@ export const createCategory = (arg: NewCategoryArg): Promise<number> =>
 export const deleteCategory = (id: number): Promise<boolean> =>
   invoke("delete_category", { id });
 
-export interface BudgetView {
-  id: number;
-  category_id: number;
-  amount_cents: number;
-  period: "weekly" | "monthly" | "yearly";
-  effective_from: string;
-  effective_to: string | null;
-}
-
-export const listBudgetsForCategory = (categoryId: number): Promise<BudgetView[]> =>
-  invoke("list_budgets_for_category", { categoryId });
-
-export const setCategoryBudget = (
-  categoryId: number,
-  amountCents: number,
-  period: "weekly" | "monthly" | "yearly",
-): Promise<number> =>
-  invoke("set_category_budget", { categoryId, amountCents, period });
-
 export const removeHouseholdMember = (chatId: number): Promise<boolean> =>
   invoke("remove_household_member", { chatId });
 

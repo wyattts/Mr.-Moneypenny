@@ -378,7 +378,8 @@ fn list_categories_returns_seed_set() {
 // ---- set_budget ----
 
 #[test]
-fn set_budget_happy_path() {
+fn set_budget_updates_category_monthly_target() {
+    use moneypenny_lib::repository::categories;
     let conn = fresh_db();
     let ctx = ctx_solo();
     let v = parse_ok(execute(
@@ -388,13 +389,19 @@ fn set_budget_happy_path() {
         "set_budget",
         &json!({ "category": "Dining Out", "amount": 250.0 }),
     ));
-    assert_eq!(v["amount_cents"], 25_000);
+    assert_eq!(v["monthly_target_cents"], 25_000);
     assert_eq!(v["category"], "Dining Out");
-    assert_eq!(v["period"], "monthly");
+
+    // Persisted on the category itself — the same field the dashboard,
+    // summarize_period, and over-budget detection all read.
+    let dining = categories::get_by_name(&conn, "Dining Out")
+        .unwrap()
+        .unwrap();
+    assert_eq!(dining.monthly_target_cents, Some(25_000));
 }
 
 #[test]
-fn set_budget_invalid_period_rejected() {
+fn set_budget_negative_rejected() {
     let conn = fresh_db();
     let ctx = ctx_solo();
     let out = execute(
@@ -402,9 +409,9 @@ fn set_budget_invalid_period_rejected() {
         &ctx,
         "tu_1",
         "set_budget",
-        &json!({ "category": "Coffee", "amount": 50, "period": "fortnight" }),
+        &json!({ "category": "Coffee", "amount": -50 }),
     );
-    assert_err_contains(out, "invalid budget period");
+    assert_err_contains(out, "non-negative");
 }
 
 // ---- list_household_members ----
