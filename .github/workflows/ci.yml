@@ -118,4 +118,9 @@ jobs:
             librsvg2-dev
       - run: npm ci
       - name: Build Tauri app
+        env:
+          # linuxdeploy bundles a `strip` that pre-dates ELF .relr.dyn
+          # sections; suppress its stripping so the AppImage build
+          # succeeds on modern binutils.
+          NO_STRIP: true
         run: npm run tauri build -- --target ${{ matrix.target }}

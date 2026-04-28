@@ -6,9 +6,24 @@ Mr. Moneypenny is a desktop app that pairs with a personal Telegram bot. You log
 
 ## Status
 
-🚧 **Pre-alpha.** Active development. Not yet usable.
+🚧 **0.1.0 — early alpha.** End-to-end works on Linux (smoke-tested on Fedora 43 + Mutter/Wayland). macOS and Windows builds are produced by CI but unsigned until [project sponsorship](https://github.com/sponsors/wyattts) covers code-signing certificates. The branding pass is still pending.
 
-The implementation plan lives at [`docs/architecture.md`](docs/architecture.md). The current focus is bootstrapping the Tauri app, the SQLite schema, and the Telegram polling loop.
+## Install
+
+Pre-built artifacts are at [Releases](https://github.com/wyattts/Mr.-Moneypenny/releases). See [`docs/distribution.md`](docs/distribution.md) for per-platform install steps + signature verification.
+
+If you'd rather build from source:
+
+```bash
+git clone https://github.com/wyattts/Mr.-Moneypenny.git
+cd Mr.-Moneypenny
+npm install
+NO_STRIP=true npm run tauri:build       # Linux release artifacts
+# OR
+npm run tauri:dev                       # development with hot-reload
+```
+
+Full prerequisites in [`BUILDING.md`](BUILDING.md).
 
 ## Goals
 
@@ -28,6 +43,16 @@ You ────────►  Telegram (your bot)  ────────�
 ```
 
 Mr. Moneypenny on your desktop holds an open long-poll connection to Telegram. When you message the bot from any device (phone, laptop, web), the desktop receives the message, asks the LLM to parse it into a structured operation, applies the operation to your local database, and sends a response back through Telegram.
+
+Closing the window minimizes to the system tray so the bot stays online without a visible window. Auto-start on login is opt-in.
+
+## What you get in the desktop app
+
+- **Insights dashboard** — KPI strip with budget pacing, category donut, daily trend (variable + fixed), per-household-member attribution, top expenses, over-budget warnings, upcoming-fixed list, month-over-month delta.
+- **Ledger** — searchable / filterable list of every expense with inline delete.
+- **Categories / Budgets** — edit defaults, add new, set monthly targets.
+- **Household** — invite a partner via a 6-digit pairing code; per-member spend shown on the dashboard.
+- **Settings** — rotate keys, switch LLM provider, toggle background mode and auto-start.
 
 ## License
 
