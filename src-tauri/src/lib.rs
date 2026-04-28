@@ -5,6 +5,7 @@ pub mod domain;
 pub mod insights;
 pub mod llm;
 pub mod repository;
+pub mod telegram;
 
 #[cfg(feature = "desktop")]
 mod app {
