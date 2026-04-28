@@ -283,7 +283,7 @@ function ChartsRow({
                 nameKey="name"
                 innerRadius={60}
                 outerRadius={100}
-                stroke="#1a1a1a"
+                stroke="var(--c-graphite-900)"
                 strokeWidth={2}
               >
                 {topCats.map((_, i) => (
@@ -296,7 +296,7 @@ function ChartsRow({
                 labelStyle={tooltipLabelStyle}
                 itemStyle={tooltipItemStyle}
               />
-              <Legend wrapperStyle={{ color: "#9e9e9e", fontSize: 12 }} />
+              <Legend wrapperStyle={{ color: "var(--c-graphite-300)", fontSize: 12 }} />
             </PieChart>
           </ResponsiveContainer>
         )}
@@ -308,14 +308,14 @@ function ChartsRow({
         ) : (
           <ResponsiveContainer width="100%" height={260}>
             <LineChart data={trendData}>
-              <CartesianGrid stroke="#3a3a3a" strokeDasharray="3 3" />
+              <CartesianGrid stroke={gridStroke} strokeDasharray="3 3" />
               <XAxis
                 dataKey="date"
-                stroke="#9e9e9e"
+                stroke={axisStroke}
                 tick={{ fontSize: 10 }}
                 tickFormatter={(d) => d.slice(5)}
               />
-              <YAxis stroke="#9e9e9e" tick={{ fontSize: 10 }} />
+              <YAxis stroke={axisStroke} tick={{ fontSize: 10 }} />
               <Tooltip
                 formatter={(v: number) =>
                   formatMoney(Math.round(Number(v) * 100), currency, locale)
@@ -324,7 +324,7 @@ function ChartsRow({
                 labelStyle={tooltipLabelStyle}
                 itemStyle={tooltipItemStyle}
               />
-              <Legend wrapperStyle={{ color: "#9e9e9e", fontSize: 12 }} />
+              <Legend wrapperStyle={{ color: "var(--c-graphite-300)", fontSize: 12 }} />
               <Line
                 type="monotone"
                 dataKey="Variable"
@@ -335,7 +335,7 @@ function ChartsRow({
               <Line
                 type="monotone"
                 dataKey="Fixed"
-                stroke="#9e9e9e"
+                stroke="var(--c-graphite-400)"
                 strokeDasharray="5 5"
                 strokeWidth={2}
                 dot={false}
@@ -367,15 +367,18 @@ function Empty() {
 
 // Recharts tooltip styling. `contentStyle` styles the wrapper div, but the
 // label (category name / X-axis value) and items (data rows) inherit black
-// from the chart unless we set them explicitly.
+// from the chart unless we set them explicitly. We point at CSS variables
+// so the tooltip swaps with the theme.
 const tooltipStyle = {
-  background: "#1f1f1f",
-  border: "1px solid #3a3a3a",
-  color: "#f4f4f4",
+  background: "var(--c-graphite-800)",
+  border: "1px solid var(--c-graphite-600)",
+  color: "var(--c-graphite-50)",
   fontSize: 12,
 };
-const tooltipLabelStyle = { color: "#f4f4f4" };
-const tooltipItemStyle = { color: "#f4f4f4" };
+const tooltipLabelStyle = { color: "var(--c-graphite-50)" };
+const tooltipItemStyle = { color: "var(--c-graphite-50)" };
+const gridStroke = "var(--c-graphite-700)";
+const axisStroke = "var(--c-graphite-400)";
 
 // ---------------------------------------------------------------------
 // Member spend (only with >1 household members)
@@ -399,9 +402,9 @@ function MemberRow({
     <ChartPanel title="Spend by household member">
       <ResponsiveContainer width="100%" height={Math.max(120, data.member_spend.length * 36)}>
         <BarChart data={chartData} layout="vertical" margin={{ left: 60 }}>
-          <CartesianGrid stroke="#3a3a3a" strokeDasharray="3 3" horizontal={false} />
-          <XAxis type="number" stroke="#9e9e9e" tick={{ fontSize: 10 }} />
-          <YAxis type="category" dataKey="name" stroke="#9e9e9e" tick={{ fontSize: 12 }} />
+          <CartesianGrid stroke={gridStroke} strokeDasharray="3 3" horizontal={false} />
+          <XAxis type="number" stroke={axisStroke} tick={{ fontSize: 10 }} />
+          <YAxis type="category" dataKey="name" stroke={axisStroke} tick={{ fontSize: 12 }} />
           <Tooltip
             formatter={(v: number) =>
               formatMoney(Math.round(Number(v) * 100), currency, locale)

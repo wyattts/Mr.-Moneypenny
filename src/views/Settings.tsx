@@ -12,6 +12,7 @@ import {
   testAnthropic,
 } from "@/lib/tauri";
 import type { SetupState } from "@/lib/tauri";
+import { ThemeToggle } from "@/components/ThemeToggle";
 import { ViewHeader } from "./ViewHeader";
 import { ErrorBanner, InfoBanner } from "@/wizard/components/Layout";
 import { GhostButton, PrimaryButton, SecondaryButton } from "@/wizard/components/Buttons";
@@ -69,6 +70,18 @@ export function Settings() {
       <div className="mx-auto max-w-3xl space-y-6 px-8 py-8">
         {error ? <ErrorBanner>{error}</ErrorBanner> : null}
         {info ? <InfoBanner>{info}</InfoBanner> : null}
+
+        <Section title="Appearance" description="How Mr. Moneypenny is themed in the desktop window.">
+          <div className="flex items-center justify-between">
+            <div>
+              <span className="block text-sm text-graphite-50">Theme</span>
+              <span className="block text-xs text-graphite-400">
+                System follows your OS preference and updates live.
+              </span>
+            </div>
+            <ThemeToggle />
+          </div>
+        </Section>
 
         <Section title="Background mode" description="How should the app behave when you close the window?">
           <ToggleRow

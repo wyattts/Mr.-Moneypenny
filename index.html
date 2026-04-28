@@ -1,20 +1,47 @@
 <!doctype html>
-<html lang="en" style="background:#1a1a1a">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="color-scheme" content="dark" />
+    <meta name="color-scheme" content="dark light" />
     <title>Mr. Moneypenny</title>
     <style>
-      /* Pre-CSS paint matches the app theme so the window doesn't flash
-         white before React + Tailwind mount. */
+      /* Pre-Tailwind paint matches the active theme so the window doesn't
+         flash white before React + Tailwind mount. We re-declare just the
+         two vars used by the body shell; the full palette comes in via
+         src/styles/theme.css once it's loaded. */
+      :root {
+        --c-graphite-900: #1a1a1a;
+        --c-graphite-50: #f4f4f4;
+      }
+      :root.light {
+        --c-graphite-900: #ffffff;
+        --c-graphite-50: #0a0a0a;
+      }
       html,
       body {
-        background: #1a1a1a;
-        color: #f4f4f4;
+        background: var(--c-graphite-900);
+        color: var(--c-graphite-50);
         margin: 0;
       }
     </style>
+    <script>
+      // Apply the saved theme before the page paints.
+      (function () {
+        try {
+          var saved = localStorage.getItem("moneypenny.theme");
+          var theme = saved || "auto";
+          var prefersLight = !window.matchMedia(
+            "(prefers-color-scheme: dark)",
+          ).matches;
+          var isLight =
+            theme === "light" || (theme === "auto" && prefersLight);
+          if (isLight) document.documentElement.classList.add("light");
+        } catch (e) {
+          /* localStorage unavailable — stay on default dark */
+        }
+      })();
+    </script>
   </head>
   <body class="bg-graphite-900 text-graphite-50 antialiased">
     <div id="root"></div>

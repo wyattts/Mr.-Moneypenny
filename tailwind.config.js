@@ -5,7 +5,7 @@ export default {
   theme: {
     extend: {
       colors: {
-        // Forest green primary palette
+        // Forest green primary palette — same in both themes (brand color).
         forest: {
           50: "#e8f0eb",
           100: "#c5d8cc",
@@ -18,19 +18,21 @@ export default {
           800: "#15291e",
           900: "#0c1812",
         },
-        // Dark grey surface palette
+        // Surface / text palette — wired to CSS variables so the theme
+        // toggle can swap dark ↔ light by changing only what the vars
+        // resolve to (see src/styles/theme.css).
         graphite: {
-          50: "#f4f4f4",
-          100: "#e0e0e0",
-          200: "#bdbdbd",
-          300: "#9e9e9e",
-          400: "#707070",
-          500: "#4a4a4a",
-          600: "#3a3a3a",
-          700: "#2a2a2a", // surface
-          800: "#1f1f1f",
-          900: "#1a1a1a", // background
-          950: "#0d0d0d",
+          50: "var(--c-graphite-50)",
+          100: "var(--c-graphite-100)",
+          200: "var(--c-graphite-200)",
+          300: "var(--c-graphite-300)",
+          400: "var(--c-graphite-400)",
+          500: "var(--c-graphite-500)",
+          600: "var(--c-graphite-600)",
+          700: "var(--c-graphite-700)",
+          800: "var(--c-graphite-800)",
+          900: "var(--c-graphite-900)",
+          950: "var(--c-graphite-950)",
         },
       },
       fontFamily: {
