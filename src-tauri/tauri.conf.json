@@ -21,7 +21,8 @@
         "fullscreen": false,
         "decorations": true,
         "transparent": false,
-        "theme": "Dark"
+        "theme": "Dark",
+        "backgroundColor": "#1a1a1a"
       }
     ],
     "security": {

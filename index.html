@@ -1,10 +1,20 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" style="background:#1a1a1a">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="dark" />
     <title>Mr. Moneypenny</title>
+    <style>
+      /* Pre-CSS paint matches the app theme so the window doesn't flash
+         white before React + Tailwind mount. */
+      html,
+      body {
+        background: #1a1a1a;
+        color: #f4f4f4;
+        margin: 0;
+      }
+    </style>
   </head>
   <body class="bg-graphite-900 text-graphite-50 antialiased">
     <div id="root"></div>

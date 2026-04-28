@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Navigate, Route, Routes } from "react-router-dom";
 
+import { Brand } from "@/components/Brand";
 import { getSetupState } from "@/lib/tauri";
 import { stepFromSavedNumber, useWizard } from "@/lib/store";
 import { Wizard } from "@/wizard/Wizard";
@@ -40,17 +41,21 @@ export default function App() {
 
   if (loading) {
     return (
-      <div className="flex h-screen items-center justify-center bg-graphite-900 text-graphite-300">
-        Loading…
+      <div className="flex h-screen flex-col items-center justify-center gap-6 bg-graphite-900">
+        <Brand size="lg" />
+        <p className="text-xs uppercase tracking-widest text-graphite-500">Loading…</p>
       </div>
     );
   }
 
   if (error) {
     return (
-      <div className="flex h-screen flex-col items-center justify-center gap-3 bg-graphite-900 px-8 text-center text-graphite-200">
-        <h1 className="text-xl font-semibold text-red-300">Couldn&apos;t load setup state</h1>
-        <p className="text-sm text-graphite-400">{error}</p>
+      <div className="flex h-screen flex-col items-center justify-center gap-4 bg-graphite-900 px-8 text-center">
+        <Brand size="md" />
+        <h1 className="mt-4 text-xl font-semibold text-red-300">
+          Couldn&apos;t load setup state
+        </h1>
+        <p className="max-w-md text-sm text-graphite-400">{error}</p>
       </div>
     );
   }

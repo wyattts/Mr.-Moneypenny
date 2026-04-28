@@ -1,5 +1,7 @@
 import type { ReactNode } from "react";
 
+import { Brand } from "@/components/Brand";
+
 export function StepLayout({
   title,
   subtitle,
@@ -18,10 +20,7 @@ export function StepLayout({
   return (
     <div className="flex h-full flex-col">
       <header className="flex items-center justify-between border-b border-graphite-700 px-8 py-5">
-        <div className="flex items-center gap-3">
-          <img src="/logo.png" alt="Mr. Moneypenny" className="h-9 w-9" />
-          <span className="text-lg font-semibold text-forest-300">Mr. Moneypenny</span>
-        </div>
+        <Brand size="lg" />
         <div className="text-xs uppercase tracking-wider text-graphite-400">
           Step {stepIndex} of {totalSteps}
         </div>

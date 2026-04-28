@@ -198,11 +198,17 @@ mod app {
         let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
         let menu = Menu::with_items(app, &[&show, &quit])?;
 
-        let icon = app.default_window_icon().cloned();
+        // Tray-specific icon: tighter crop than the bundle/window icon so
+        // the character reads at 22-32 px without padding eating the body.
+        // Embed at compile time so we don't need a runtime resource lookup.
+        let tray_icon = tauri::image::Image::from_bytes(include_bytes!("../icons/tray-icon.png"))
+            .ok()
+            .or_else(|| app.default_window_icon().cloned());
+
         let mut builder = TrayIconBuilder::with_id("main")
             .menu(&menu)
             .show_menu_on_left_click(false);
-        if let Some(i) = icon {
+        if let Some(i) = tray_icon {
             builder = builder.icon(i);
         }
 

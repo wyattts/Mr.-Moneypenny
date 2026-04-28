@@ -4,6 +4,8 @@
  */
 import { NavLink, Outlet } from "react-router-dom";
 
+import { Brand } from "@/components/Brand";
+
 const NAV: { to: string; label: string; icon: string }[] = [
   { to: "/insights", label: "Insights", icon: "▤" },
   { to: "/ledger", label: "Ledger", icon: "≡" },
@@ -16,10 +18,9 @@ const NAV: { to: string; label: string; icon: string }[] = [
 export function MainApp() {
   return (
     <div className="flex h-screen bg-graphite-900 text-graphite-100">
-      <aside className="flex w-56 shrink-0 flex-col border-r border-graphite-700 bg-graphite-950">
-        <header className="flex items-center gap-3 border-b border-graphite-800 px-4 py-4">
-          <img src="/logo.png" alt="" className="h-7 w-7" />
-          <span className="text-sm font-semibold text-forest-300">Mr. Moneypenny</span>
+      <aside className="flex w-60 shrink-0 flex-col border-r border-graphite-700 bg-graphite-950">
+        <header className="border-b border-graphite-800 px-4 py-4">
+          <Brand size="md" />
         </header>
         <nav className="flex-1 px-2 py-4">
           {NAV.map((n) => (
