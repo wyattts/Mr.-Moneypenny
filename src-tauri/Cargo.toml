@@ -18,7 +18,8 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [], optional = true }
 
 [dependencies]
-tauri = { version = "2", features = [], optional = true }
+tauri = { version = "2", features = ["tray-icon"], optional = true }
+tauri-plugin-autostart = { version = "2", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rusqlite = { version = "0.32", features = ["bundled", "time"] }
@@ -43,7 +44,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"
 # normal `tauri dev` / `tauri build`. `cargo test --no-default-features`
 # skips it so domain/insights tests run without GTK system libraries.
 default = ["desktop"]
-desktop = ["dep:tauri", "dep:tauri-build"]
+desktop = ["dep:tauri", "dep:tauri-build", "dep:tauri-plugin-autostart"]
 # Required for production tauri builds, DO NOT REMOVE.
 custom-protocol = ["tauri/custom-protocol"]
 

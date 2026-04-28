@@ -6,14 +6,16 @@
 
 use serde::{Deserialize, Serialize};
 use tauri::State;
+use time::{Date, Duration, OffsetDateTime, Time};
 
 use crate::app_state::AppState;
-use crate::domain::CategoryKind;
+use crate::domain::{BudgetPeriod, CategoryKind, ExpenseSource, NewBudget, NewCategory};
+use crate::insights::{dashboard, range::DateRange, DashboardSnapshot};
 use crate::llm::anthropic::{AnthropicProvider, DEFAULT_MODEL as DEFAULT_ANTHROPIC_MODEL};
 use crate::llm::ollama::OllamaProvider;
 use crate::llm::system_prompt::SystemPrompt;
 use crate::llm::{ChatRequest, LLMProvider, Message};
-use crate::repository::{categories, settings};
+use crate::repository::{budgets, categories, expenses, settings};
 use crate::secrets;
 use crate::telegram::auth::{self, AuthorizedChat};
 use crate::telegram::client::{TelegramApi, TelegramClient};
@@ -338,6 +340,7 @@ pub async fn set_category_active(
 // ---------------------------------------------------------------------
 
 #[tauri::command]
+#[allow(clippy::collapsible_match)]
 pub async fn finalize_setup(state: State<'_, AppState>) -> Result<(), String> {
     {
         let conn = state.db.lock().unwrap();
@@ -377,6 +380,322 @@ pub async fn finalize_setup(state: State<'_, AppState>) -> Result<(), String> {
     // Make sure the poller is running with the final config.
     state.ensure_poller_running().map_err(err)?;
     Ok(())
+}
+
+// ---------------------------------------------------------------------
+// Dashboard.
+// ---------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RangeArg {
+    ThisWeek,
+    ThisMonth,
+    ThisQuarter,
+    ThisYear,
+    Ytd,
+    Custom { from: Date, to: Date },
+}
+
+impl From<RangeArg> for DateRange {
+    fn from(value: RangeArg) -> Self {
+        match value {
+            RangeArg::ThisWeek => DateRange::ThisWeek,
+            RangeArg::ThisMonth => DateRange::ThisMonth,
+            RangeArg::ThisQuarter => DateRange::ThisQuarter,
+            RangeArg::ThisYear => DateRange::ThisYear,
+            RangeArg::Ytd => DateRange::Ytd,
+            RangeArg::Custom { from, to } => DateRange::Custom { from, to },
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn get_dashboard(
+    range: RangeArg,
+    state: State<'_, AppState>,
+) -> Result<DashboardSnapshot, String> {
+    let conn = state.db.lock().unwrap();
+    dashboard(&conn, range.into(), OffsetDateTime::now_utc()).map_err(err)
+}
+
+// ---------------------------------------------------------------------
+// Ledger / expenses.
+// ---------------------------------------------------------------------
+
+#[derive(Debug, Deserialize, Default)]
+pub struct ExpenseFilters {
+    #[serde(default)]
+    pub category_id: Option<i64>,
+    #[serde(default)]
+    pub start_date: Option<Date>,
+    #[serde(default)]
+    pub end_date: Option<Date>,
+    #[serde(default)]
+    pub search: Option<String>,
+    #[serde(default)]
+    pub limit: Option<u32>,
+    #[serde(default)]
+    pub offset: Option<u32>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct LedgerRow {
+    pub id: i64,
+    pub amount_cents: i64,
+    pub currency: String,
+    pub category_id: Option<i64>,
+    pub category_name: Option<String>,
+    pub category_kind: Option<String>,
+    pub description: Option<String>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub occurred_at: OffsetDateTime,
+    pub source: String,
+    pub logged_by_chat_id: Option<i64>,
+    pub logged_by_name: Option<String>,
+}
+
+#[tauri::command]
+pub async fn list_expenses(
+    filters: ExpenseFilters,
+    state: State<'_, AppState>,
+) -> Result<Vec<LedgerRow>, String> {
+    let limit = filters.limit.unwrap_or(100).min(500);
+    let offset = filters.offset.unwrap_or(0);
+    let now = OffsetDateTime::now_utc();
+    let tz = now.offset();
+
+    let conn = state.db.lock().unwrap();
+    let mut sql = String::from(
+        "SELECT e.id, e.amount_cents, e.currency, e.category_id, c.name, c.kind, e.description,
+                e.occurred_at, e.source, e.logged_by_chat_id, t.display_name
+         FROM expenses e
+         LEFT JOIN categories c ON c.id = e.category_id
+         LEFT JOIN telegram_authorized_chats t ON t.chat_id = e.logged_by_chat_id
+         WHERE 1=1",
+    );
+    let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+
+    if let Some(id) = filters.category_id {
+        sql.push_str(" AND e.category_id = ?");
+        params.push(Box::new(id));
+    }
+    if let Some(d) = filters.start_date {
+        sql.push_str(" AND e.occurred_at >= ?");
+        params.push(Box::new(d.with_time(Time::MIDNIGHT).assume_offset(tz)));
+    }
+    if let Some(d) = filters.end_date {
+        let next = d + Duration::days(1);
+        sql.push_str(" AND e.occurred_at < ?");
+        params.push(Box::new(next.with_time(Time::MIDNIGHT).assume_offset(tz)));
+    }
+    if let Some(s) = filters.search.as_ref().filter(|s| !s.trim().is_empty()) {
+        sql.push_str(" AND (e.description LIKE ? OR e.raw_message LIKE ?)");
+        let pattern = format!("%{}%", s.trim());
+        params.push(Box::new(pattern.clone()));
+        params.push(Box::new(pattern));
+    }
+    sql.push_str(" ORDER BY e.occurred_at DESC, e.id DESC LIMIT ? OFFSET ?");
+    params.push(Box::new(limit));
+    params.push(Box::new(offset));
+
+    let mut stmt = conn.prepare(&sql).map_err(err)?;
+    let rows = stmt
+        .query_map(rusqlite::params_from_iter(params.iter()), |r| {
+            let kind: Option<CategoryKind> = r.get(5)?;
+            Ok(LedgerRow {
+                id: r.get(0)?,
+                amount_cents: r.get(1)?,
+                currency: r.get(2)?,
+                category_id: r.get(3)?,
+                category_name: r.get(4)?,
+                category_kind: kind.map(|k| k.as_str().to_string()),
+                description: r.get(6)?,
+                occurred_at: r.get(7)?,
+                source: r.get::<_, ExpenseSource>(8)?.as_str().to_string(),
+                logged_by_chat_id: r.get(9)?,
+                logged_by_name: r.get(10)?,
+            })
+        })
+        .map_err(err)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(err)?;
+    Ok(rows)
+}
+
+#[tauri::command]
+pub async fn delete_expense(id: i64, state: State<'_, AppState>) -> Result<bool, String> {
+    let conn = state.db.lock().unwrap();
+    expenses::delete(&conn, id).map_err(err)
+}
+
+// ---------------------------------------------------------------------
+// Categories (CRUD beyond setup).
+// ---------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct NewCategoryArg {
+    pub name: String,
+    pub kind: String, // "fixed" | "variable"
+    #[serde(default)]
+    pub monthly_target_cents: Option<i64>,
+    #[serde(default)]
+    pub is_recurring: bool,
+    #[serde(default)]
+    pub recurrence_day_of_month: Option<u8>,
+}
+
+#[tauri::command]
+pub async fn create_category(
+    arg: NewCategoryArg,
+    state: State<'_, AppState>,
+) -> Result<i64, String> {
+    let kind: CategoryKind = arg.kind.parse().map_err(err)?;
+    let conn = state.db.lock().unwrap();
+    categories::insert(
+        &conn,
+        &NewCategory {
+            name: arg.name,
+            kind,
+            monthly_target_cents: arg.monthly_target_cents,
+            is_recurring: arg.is_recurring,
+            recurrence_day_of_month: arg.recurrence_day_of_month,
+        },
+    )
+    .map_err(err)
+}
+
+#[tauri::command]
+pub async fn delete_category(id: i64, state: State<'_, AppState>) -> Result<bool, String> {
+    let conn = state.db.lock().unwrap();
+    categories::delete(&conn, id).map_err(err)
+}
+
+// ---------------------------------------------------------------------
+// Budgets.
+// ---------------------------------------------------------------------
+
+#[derive(Debug, Serialize)]
+pub struct BudgetView {
+    pub id: i64,
+    pub category_id: i64,
+    pub amount_cents: i64,
+    pub period: String,
+    #[serde(with = "time::serde::rfc3339")]
+    pub effective_from: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub effective_to: Option<OffsetDateTime>,
+}
+
+#[tauri::command]
+pub async fn list_budgets_for_category(
+    category_id: i64,
+    state: State<'_, AppState>,
+) -> Result<Vec<BudgetView>, String> {
+    let conn = state.db.lock().unwrap();
+    let bs = budgets::list_for_category(&conn, category_id).map_err(err)?;
+    Ok(bs
+        .into_iter()
+        .map(|b| BudgetView {
+            id: b.id,
+            category_id: b.category_id,
+            amount_cents: b.amount_cents,
+            period: b.period.as_str().to_string(),
+            effective_from: b.effective_from,
+            effective_to: b.effective_to,
+        })
+        .collect())
+}
+
+#[tauri::command]
+pub async fn set_category_budget(
+    category_id: i64,
+    amount_cents: i64,
+    period: String,
+    state: State<'_, AppState>,
+) -> Result<i64, String> {
+    let period: BudgetPeriod = period.parse().map_err(err)?;
+    let now = OffsetDateTime::now_utc();
+    let conn = state.db.lock().unwrap();
+    budgets::insert(
+        &conn,
+        &NewBudget {
+            category_id,
+            amount_cents,
+            period,
+            effective_from: now,
+            effective_to: None,
+        },
+    )
+    .map_err(err)
+}
+
+// ---------------------------------------------------------------------
+// Household.
+// ---------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn remove_household_member(
+    chat_id: i64,
+    state: State<'_, AppState>,
+) -> Result<bool, String> {
+    let conn = state.db.lock().unwrap();
+    auth::remove_member(&conn, chat_id).map_err(err)
+}
+
+// ---------------------------------------------------------------------
+// Background mode + autostart.
+// ---------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn get_run_in_background(state: State<'_, AppState>) -> Result<bool, String> {
+    let conn = state.db.lock().unwrap();
+    Ok(settings::get(&conn, settings::keys::RUN_IN_BACKGROUND)
+        .map_err(err)?
+        .as_deref()
+        != Some("0"))
+}
+
+#[tauri::command]
+pub async fn set_run_in_background(
+    enabled: bool,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let conn = state.db.lock().unwrap();
+    settings::set(
+        &conn,
+        settings::keys::RUN_IN_BACKGROUND,
+        if enabled { "1" } else { "0" },
+    )
+    .map_err(err)
+}
+
+#[tauri::command]
+pub async fn get_autostart(app: tauri::AppHandle) -> Result<bool, String> {
+    use tauri_plugin_autostart::ManagerExt;
+    app.autolaunch().is_enabled().map_err(err)
+}
+
+#[tauri::command]
+pub async fn set_autostart(
+    enabled: bool,
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    use tauri_plugin_autostart::ManagerExt;
+    let manager = app.autolaunch();
+    if enabled {
+        manager.enable().map_err(err)?;
+    } else {
+        manager.disable().map_err(err)?;
+    }
+    let conn = state.db.lock().unwrap();
+    settings::set(
+        &conn,
+        settings::keys::AUTOSTART,
+        if enabled { "1" } else { "0" },
+    )
+    .map_err(err)
 }
 
 // ---------------------------------------------------------------------

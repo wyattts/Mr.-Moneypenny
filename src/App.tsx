@@ -1,9 +1,16 @@
 import { useEffect, useState } from "react";
+import { Navigate, Route, Routes } from "react-router-dom";
 
 import { getSetupState } from "@/lib/tauri";
 import { stepFromSavedNumber, useWizard } from "@/lib/store";
 import { Wizard } from "@/wizard/Wizard";
-import { PostSetupPlaceholder } from "@/views/PostSetupPlaceholder";
+import { MainApp } from "@/views/MainApp";
+import { Insights } from "@/views/Insights";
+import { Ledger } from "@/views/Ledger";
+import { Categories } from "@/views/Categories";
+import { Budgets } from "@/views/Budgets";
+import { Household } from "@/views/Household";
+import { Settings } from "@/views/Settings";
 
 export default function App() {
   const setup = useWizard((s) => s.setup);
@@ -48,9 +55,22 @@ export default function App() {
     );
   }
 
-  if (setup?.setup_complete) {
-    return <PostSetupPlaceholder />;
+  if (!setup?.setup_complete) {
+    return <Wizard />;
   }
 
-  return <Wizard />;
+  return (
+    <Routes>
+      <Route element={<MainApp />}>
+        <Route index element={<Navigate to="/insights" replace />} />
+        <Route path="/insights" element={<Insights />} />
+        <Route path="/ledger" element={<Ledger />} />
+        <Route path="/categories" element={<Categories />} />
+        <Route path="/budgets" element={<Budgets />} />
+        <Route path="/household" element={<Household />} />
+        <Route path="/settings" element={<Settings />} />
+        <Route path="*" element={<Navigate to="/insights" replace />} />
+      </Route>
+    </Routes>
+  );
 }

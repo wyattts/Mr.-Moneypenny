@@ -17,6 +17,12 @@ mod app {
     use crate::app_state::AppState;
     use crate::commands::*;
     use crate::db;
+    use crate::repository::settings;
+
+    use tauri::menu::{Menu, MenuItem};
+    use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+    use tauri::{Manager, WindowEvent};
+    use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 
     #[cfg_attr(mobile, tauri::mobile_entry_point)]
     pub fn run() {
@@ -34,7 +40,6 @@ mod app {
             }
         }
 
-        // Bring up logging once; cheap and survives reload of tauri::Builder.
         let _ = tracing_subscriber::fmt::try_init();
 
         let path = db::default_db_path().expect("could not resolve db path");
@@ -42,22 +47,39 @@ mod app {
         db::migrate(&conn).expect("could not migrate db");
         let state = AppState::new(conn);
 
+        let silent = std::env::args().any(|a| a == "--silent");
+
         tauri::Builder::default()
+            .plugin(tauri_plugin_autostart::init(
+                MacosLauncher::LaunchAgent,
+                Some(vec!["--silent"]),
+            ))
             .manage(state)
-            .setup(|app| {
-                use tauri::Manager;
-                // Tokio runtime is live by the time setup() runs, so this
-                // is the right place to spawn the poll task.
+            .setup(move |app| {
+                // Apply first-run defaults for bg-mode and autostart, then
+                // sync the OS autostart state with our saved setting.
+                apply_initial_defaults(app)?;
+
+                // Build tray icon + menu.
+                build_tray(app)?;
+
+                // If launched via --silent (e.g., autostart), hide the
+                // window so we live entirely in the tray.
+                if silent {
+                    if let Some(w) = app.get_webview_window("main") {
+                        let _ = w.hide();
+                    }
+                }
+
+                // Tokio runtime is live by setup() so this is the right
+                // place to spawn the poller.
                 let state = app.state::<AppState>();
                 let setup_complete = {
                     let conn = state.db.lock().unwrap();
-                    crate::repository::settings::get(
-                        &conn,
-                        crate::repository::settings::keys::SETUP_COMPLETE,
-                    )
-                    .ok()
-                    .flatten()
-                    .as_deref()
+                    settings::get(&conn, settings::keys::SETUP_COMPLETE)
+                        .ok()
+                        .flatten()
+                        .as_deref()
                         == Some("1")
                 };
                 if setup_complete {
@@ -66,6 +88,23 @@ mod app {
                     }
                 }
                 Ok(())
+            })
+            .on_window_event(|window, event| {
+                if let WindowEvent::CloseRequested { api, .. } = event {
+                    let state: tauri::State<AppState> = window.state();
+                    let bg_mode = {
+                        let conn = state.db.lock().unwrap();
+                        settings::get(&conn, settings::keys::RUN_IN_BACKGROUND)
+                            .ok()
+                            .flatten()
+                            .as_deref()
+                            != Some("0")
+                    };
+                    if bg_mode {
+                        let _ = window.hide();
+                        api.prevent_close();
+                    }
+                }
             })
             .invoke_handler(tauri::generate_handler![
                 ping,
@@ -85,9 +124,116 @@ mod app {
                 set_category_target,
                 set_category_active,
                 finalize_setup,
+                get_dashboard,
+                list_expenses,
+                delete_expense,
+                create_category,
+                delete_category,
+                list_budgets_for_category,
+                set_category_budget,
+                remove_household_member,
+                get_run_in_background,
+                set_run_in_background,
+                get_autostart,
+                set_autostart,
             ])
             .run(tauri::generate_context!())
             .expect("error while running tauri application");
+    }
+
+    /// On first run, apply OS-specific defaults for bg-mode and autostart.
+    /// Then sync the OS autostart state to the saved setting (so manual
+    /// edits via Preferences/Task Scheduler are corrected on next launch).
+    fn apply_initial_defaults(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+        let state = app.state::<AppState>();
+
+        // RUN_IN_BACKGROUND default = 1 on every platform.
+        let bg_saved = {
+            let conn = state.db.lock().unwrap();
+            settings::get(&conn, settings::keys::RUN_IN_BACKGROUND)
+                .ok()
+                .flatten()
+        };
+        if bg_saved.is_none() {
+            let conn = state.db.lock().unwrap();
+            let _ = settings::set(&conn, settings::keys::RUN_IN_BACKGROUND, "1");
+        }
+
+        // AUTOSTART: default ON on macOS / Windows, OFF on Linux (because
+        // GNOME doesn't show tray icons without the AppIndicator extension).
+        let auto_saved = {
+            let conn = state.db.lock().unwrap();
+            settings::get(&conn, settings::keys::AUTOSTART)
+                .ok()
+                .flatten()
+        };
+        let auto_default = cfg!(any(target_os = "macos", target_os = "windows"));
+        let auto_desired = match auto_saved.as_deref() {
+            Some("1") => true,
+            Some("0") => false,
+            _ => {
+                let conn = state.db.lock().unwrap();
+                let _ = settings::set(
+                    &conn,
+                    settings::keys::AUTOSTART,
+                    if auto_default { "1" } else { "0" },
+                );
+                auto_default
+            }
+        };
+        let manager = app.autolaunch();
+        let current = manager.is_enabled().unwrap_or(false);
+        if current != auto_desired {
+            if auto_desired {
+                let _ = manager.enable();
+            } else {
+                let _ = manager.disable();
+            }
+        }
+        Ok(())
+    }
+
+    fn build_tray(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+        let show = MenuItem::with_id(app, "show", "Open Mr. Moneypenny", true, None::<&str>)?;
+        let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+        let menu = Menu::with_items(app, &[&show, &quit])?;
+
+        let icon = app.default_window_icon().cloned();
+        let mut builder = TrayIconBuilder::with_id("main")
+            .menu(&menu)
+            .show_menu_on_left_click(false);
+        if let Some(i) = icon {
+            builder = builder.icon(i);
+        }
+
+        let _tray = builder
+            .on_tray_icon_event(|tray, event| {
+                if let TrayIconEvent::Click {
+                    button: MouseButton::Left,
+                    button_state: MouseButtonState::Up,
+                    ..
+                } = event
+                {
+                    let app = tray.app_handle();
+                    show_main_window(app);
+                }
+            })
+            .on_menu_event(|app, event| match event.id.as_ref() {
+                "show" => show_main_window(app),
+                "quit" => app.exit(0),
+                _ => {}
+            })
+            .build(app)?;
+
+        Ok(())
+    }
+
+    fn show_main_window(app: &tauri::AppHandle) {
+        if let Some(w) = app.get_webview_window("main") {
+            let _ = w.show();
+            let _ = w.unminimize();
+            let _ = w.set_focus();
+        }
     }
 }
 

@@ -90,3 +90,195 @@ export const setCategoryActive = (id: number, isActive: boolean): Promise<void> 
   invoke("set_category_active", { id, isActive });
 
 export const finalizeSetup = (): Promise<void> => invoke("finalize_setup");
+
+// ---------------------------------------------------------------------
+// Phase 4b: dashboard, ledger, categories CRUD, budgets, household,
+// background-mode + autostart toggles.
+// ---------------------------------------------------------------------
+
+export type RangeKind =
+  | "this_week"
+  | "this_month"
+  | "this_quarter"
+  | "this_year"
+  | "ytd";
+
+export type RangeArg =
+  | { kind: RangeKind }
+  | { kind: "custom"; from: string; to: string }; // ISO yyyy-mm-dd
+
+export interface PeriodSnapshot {
+  progress: number;
+  day_of_month: number;
+  days_in_period: number;
+  days_remaining: number;
+  fixed_budget_cents: number;
+  fixed_actual_cents: number;
+  fixed_pending_cents: number;
+  variable_budget_cents: number;
+  variable_spent_cents: number;
+  variable_remaining_cents: number;
+  variable_pace_expected_cents: number;
+  on_pace: boolean;
+  daily_variable_allowance_cents: number;
+}
+
+export interface KpiCard {
+  variable_remaining_cents: number;
+  daily_variable_allowance_cents: number;
+  total_spent_cents: number;
+  days_remaining: number;
+  on_pace: boolean;
+}
+
+export interface CategoryTotal {
+  category_id: number;
+  name: string;
+  kind: "fixed" | "variable";
+  total_cents: number;
+}
+
+export interface DailyTrendPoint {
+  date: string; // YYYY-MM-DD
+  fixed_cents: number;
+  variable_cents: number;
+}
+
+export interface FixedVariableBreakdown {
+  fixed_committed_cents: number;
+  variable_spent_cents: number;
+  variable_remaining_cents: number;
+}
+
+export interface MemberSpend {
+  chat_id: number;
+  display_name: string;
+  total_cents: number;
+}
+
+export interface ExpenseRow {
+  id: number;
+  amount_cents: number;
+  currency: string;
+  category_id: number | null;
+  description: string | null;
+  occurred_at: string;
+  created_at: string;
+  source: "telegram" | "manual";
+  raw_message: string | null;
+  llm_confidence: number | null;
+  logged_by_chat_id: number | null;
+}
+
+export interface OverBudgetCategory {
+  category_id: number;
+  name: string;
+  spent_cents: number;
+  target_cents: number;
+  overage_cents: number;
+}
+
+export interface UpcomingFixed {
+  category_id: number;
+  name: string;
+  recurrence_day_of_month: number;
+  expected_amount_cents: number | null;
+}
+
+export interface MoMComparison {
+  variable_spent_this_period_cents: number;
+  variable_spent_same_point_last_month_cents: number;
+  delta_cents: number;
+  delta_pct: number | null;
+}
+
+export interface DashboardSnapshot {
+  range: RangeArg;
+  start: string;
+  end: string;
+  period: PeriodSnapshot | null;
+  kpi: KpiCard;
+  category_totals: CategoryTotal[];
+  daily_trend: DailyTrendPoint[];
+  fixed_vs_variable: FixedVariableBreakdown;
+  member_spend: MemberSpend[];
+  top_expenses: ExpenseRow[];
+  over_budget: OverBudgetCategory[];
+  upcoming_fixed: UpcomingFixed[];
+  mom_comparison: MoMComparison | null;
+}
+
+export const getDashboard = (range: RangeArg): Promise<DashboardSnapshot> =>
+  invoke("get_dashboard", { range });
+
+export interface LedgerRow {
+  id: number;
+  amount_cents: number;
+  currency: string;
+  category_id: number | null;
+  category_name: string | null;
+  category_kind: "fixed" | "variable" | null;
+  description: string | null;
+  occurred_at: string;
+  source: "telegram" | "manual";
+  logged_by_chat_id: number | null;
+  logged_by_name: string | null;
+}
+
+export interface ExpenseFilters {
+  category_id?: number | undefined;
+  start_date?: string | undefined; // YYYY-MM-DD
+  end_date?: string | undefined;
+  search?: string | undefined;
+  limit?: number | undefined;
+  offset?: number | undefined;
+}
+
+export const listExpenses = (filters: ExpenseFilters): Promise<LedgerRow[]> =>
+  invoke("list_expenses", { filters });
+
+export const deleteExpense = (id: number): Promise<boolean> =>
+  invoke("delete_expense", { id });
+
+export interface NewCategoryArg {
+  name: string;
+  kind: "fixed" | "variable";
+  monthly_target_cents?: number | undefined;
+  is_recurring?: boolean | undefined;
+  recurrence_day_of_month?: number | undefined;
+}
+
+export const createCategory = (arg: NewCategoryArg): Promise<number> =>
+  invoke("create_category", { arg });
+
+export const deleteCategory = (id: number): Promise<boolean> =>
+  invoke("delete_category", { id });
+
+export interface BudgetView {
+  id: number;
+  category_id: number;
+  amount_cents: number;
+  period: "weekly" | "monthly" | "yearly";
+  effective_from: string;
+  effective_to: string | null;
+}
+
+export const listBudgetsForCategory = (categoryId: number): Promise<BudgetView[]> =>
+  invoke("list_budgets_for_category", { categoryId });
+
+export const setCategoryBudget = (
+  categoryId: number,
+  amountCents: number,
+  period: "weekly" | "monthly" | "yearly",
+): Promise<number> =>
+  invoke("set_category_budget", { categoryId, amountCents, period });
+
+export const removeHouseholdMember = (chatId: number): Promise<boolean> =>
+  invoke("remove_household_member", { chatId });
+
+export const getRunInBackground = (): Promise<boolean> => invoke("get_run_in_background");
+export const setRunInBackground = (enabled: boolean): Promise<void> =>
+  invoke("set_run_in_background", { enabled });
+export const getAutostart = (): Promise<boolean> => invoke("get_autostart");
+export const setAutostart = (enabled: boolean): Promise<void> =>
+  invoke("set_autostart", { enabled });

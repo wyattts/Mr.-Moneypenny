@@ -51,6 +51,8 @@ pub mod keys {
     pub const SETUP_COMPLETE: &str = "setup_complete"; // "1" | "0"
     pub const SETUP_STEP: &str = "setup_step"; // last completed step number
     pub const PRIVACY_MODE: &str = "privacy_mode"; // "1" | "0" (off by default)
+    pub const RUN_IN_BACKGROUND: &str = "run_in_background"; // "1" | "0"; default 1
+    pub const AUTOSTART: &str = "autostart"; // "1" | "0"; OS-specific default
 }
 
 #[cfg(test)]
