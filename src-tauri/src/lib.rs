@@ -1,5 +1,10 @@
 #![forbid(unsafe_code)]
 
+pub mod db;
+pub mod domain;
+pub mod insights;
+pub mod repository;
+
 #[tauri::command]
 fn ping() -> &'static str {
     "pong"
