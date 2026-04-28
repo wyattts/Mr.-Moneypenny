@@ -114,23 +114,57 @@ export function TelegramStep() {
         {/* Stage 1: bot token */}
         <Section
           number="1"
-          title="Create a bot via @BotFather and paste its token below."
+          title="Create a personal Telegram bot."
           done={stage !== "token"}
         >
-          <ol className="ml-5 list-decimal text-sm text-graphite-300">
+          <p className="text-sm text-graphite-300">
+            BotFather is the official bot for creating bots — search for{" "}
+            <code className="font-mono">@BotFather</code> in Telegram (it has a
+            blue verified checkmark) or open it directly:{" "}
+            <a
+              href="https://t.me/BotFather"
+              target="_blank"
+              rel="noreferrer"
+              className="text-forest-300 underline"
+            >
+              t.me/BotFather
+            </a>
+            .
+          </p>
+          <ol className="mt-3 ml-5 list-decimal space-y-2 text-sm text-graphite-300">
             <li>
-              In Telegram, open{" "}
-              <a
-                href="https://t.me/BotFather"
-                className="text-forest-300 underline"
-              >
-                @BotFather
-              </a>{" "}
-              and send <code className="font-mono">/newbot</code>.
+              Tap <strong>Start</strong> in the BotFather chat (or send{" "}
+              <code className="font-mono">/start</code> if you&apos;ve used it
+              before).
             </li>
-            <li>Pick a display name (e.g. &ldquo;My Moneypenny&rdquo;) and a username ending in <code className="font-mono">bot</code>.</li>
-            <li>Copy the API token BotFather sends back. Paste it here.</li>
+            <li>
+              Send <code className="font-mono">/newbot</code>.
+            </li>
+            <li>
+              When BotFather asks for a name, reply with whatever display name
+              you like — e.g. <em>My Moneypenny</em>. This is what shows up
+              in your chats list.
+            </li>
+            <li>
+              When it asks for a username, reply with anything ending in{" "}
+              <code className="font-mono">bot</code> — e.g.{" "}
+              <code className="font-mono">wyatt_moneypenny_bot</code>.
+              Usernames must be globally unique; if BotFather says it&apos;s
+              taken, try another.
+            </li>
+            <li>
+              BotFather will reply with a token that looks like{" "}
+              <code className="font-mono">123456789:ABC-Def1234ghIkl-zyx57W2v1u</code>.
+              Copy it and paste below.
+            </li>
           </ol>
+          <div className="mt-3 rounded-md border border-graphite-700 bg-graphite-800 px-3 py-2 text-xs text-graphite-400">
+            <strong className="text-graphite-200">Privacy:</strong> the bot is
+            yours. The token goes straight to your OS keychain — never to disk
+            in plaintext, never to the project. Even though anyone could find
+            your bot&apos;s username, Mr. Moneypenny only responds to chats
+            you&apos;ve explicitly paired in the next step.
+          </div>
           {stage === "token" ? (
             <div className="mt-3 flex gap-2">
               <input
@@ -158,30 +192,40 @@ export function TelegramStep() {
         {stage !== "token" ? (
           <Section
             number="2"
-            title="Give yourself a display name and generate a pairing code."
+            title="Pick a display name and generate a pairing code."
             done={stage === "waiting" || stage === "paired"}
           >
             {stage === "code" ? (
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  placeholder="Wyatt"
-                  value={displayName}
-                  onChange={(e) => setDisplayName(e.target.value)}
-                  className="flex-1 rounded-md border border-graphite-600 bg-graphite-800 px-3 py-2 text-sm text-graphite-50 focus:border-forest-400 focus:outline-none"
-                />
-                <PrimaryButton onClick={issueCode} disabled={busy}>
-                  {busy ? "…" : "Generate code"}
-                </PrimaryButton>
-              </div>
+              <>
+                <p className="text-sm text-graphite-300">
+                  This is how the bot will refer to you in summaries (
+                  <em>&ldquo;Wyatt spent $42 on dining&rdquo;</em>). Use your
+                  first name or a household label. You can rename later in
+                  Settings → Household.
+                </p>
+                <div className="mt-3 flex gap-2">
+                  <input
+                    type="text"
+                    placeholder="Wyatt"
+                    value={displayName}
+                    onChange={(e) => setDisplayName(e.target.value)}
+                    className="flex-1 rounded-md border border-graphite-600 bg-graphite-800 px-3 py-2 text-sm text-graphite-50 focus:border-forest-400 focus:outline-none"
+                  />
+                  <PrimaryButton onClick={issueCode} disabled={busy}>
+                    {busy ? "…" : "Generate code"}
+                  </PrimaryButton>
+                </div>
+              </>
             ) : pairingCode ? (
               <div className="rounded-md border border-graphite-600 bg-graphite-800 p-4">
-                <div className="text-sm text-graphite-300">Your pairing code:</div>
+                <div className="text-sm text-graphite-300">
+                  Pairing code for <strong>{pairingDisplayName}</strong>:
+                </div>
                 <div className="mt-1 font-mono text-3xl tracking-widest text-forest-200">
                   {pairingCode}
                 </div>
                 <div className="mt-2 text-xs text-graphite-400">
-                  This code expires in 10 minutes.
+                  Single-use, expires in 10 minutes.
                 </div>
               </div>
             ) : null}
@@ -190,16 +234,26 @@ export function TelegramStep() {
 
         {/* Stage 3: waiting for /start */}
         {stage === "waiting" ? (
-          <Section number="3" title="In Telegram, send your bot the start command.">
-            <p className="text-sm text-graphite-300">
-              Open the chat with{" "}
-              <code className="font-mono">@{botInfo?.username ?? botInfo?.first_name}</code>{" "}
-              and send:
-            </p>
-            <pre className="mt-2 rounded-md bg-graphite-800 px-3 py-2 font-mono text-sm text-forest-200">
+          <Section number="3" title="Send your bot the pairing message.">
+            <ol className="ml-5 list-decimal space-y-1 text-sm text-graphite-300">
+              <li>
+                Open Telegram and find your bot{" "}
+                <code className="font-mono">
+                  @{botInfo?.username ?? botInfo?.first_name}
+                </code>{" "}
+                (search by username or scroll your chats — BotFather&apos;s
+                reply linked to it).
+              </li>
+              <li>Tap <strong>Start</strong> at the bottom of the chat.</li>
+              <li>Then send exactly:</li>
+            </ol>
+            <pre className="mt-2 rounded-md border border-graphite-600 bg-graphite-800 px-3 py-2 font-mono text-sm text-forest-200">
               /start {pairingCode}
             </pre>
-            <p className="mt-2 text-xs text-graphite-400">Listening for the message…</p>
+            <p className="mt-3 flex items-center gap-2 text-xs text-graphite-400">
+              <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-forest-400"></span>
+              Listening for the message — this page advances automatically.
+            </p>
           </Section>
         ) : null}
 
