@@ -3,6 +3,7 @@
 pub mod db;
 pub mod domain;
 pub mod insights;
+pub mod llm;
 pub mod repository;
 
 #[cfg(feature = "desktop")]
