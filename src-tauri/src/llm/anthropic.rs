@@ -14,8 +14,11 @@ use super::{ChatRequest, ChatResponse, ContentBlock, LLMProvider, Role, StopReas
 
 const DEFAULT_BASE_URL: &str = "https://api.anthropic.com";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
-/// Default model. Override per AnthropicProvider construction if needed.
-pub const DEFAULT_MODEL: &str = "claude-sonnet-4-6";
+/// Default model. Haiku is ~4–5× cheaper than Sonnet and its tool-use
+/// accuracy on Mr. Moneypenny's structured workload (`add_expense`,
+/// `summarize_period`, etc.) is more than sufficient. Users can override
+/// via the saved `anthropic_model` setting.
+pub const DEFAULT_MODEL: &str = "claude-haiku-4-5-20251001";
 
 pub struct AnthropicProvider {
     client: Client,
@@ -328,7 +331,7 @@ mod tests {
             tools: all_tools(),
             max_tokens: 1024,
         };
-        let body = build_body("claude-sonnet-4-6", &req);
+        let body = build_body("claude-haiku-4-5-20251001", &req);
 
         // Stable system block has cache_control; volatile does not.
         assert_eq!(body.system.len(), 2);
