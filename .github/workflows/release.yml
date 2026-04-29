@@ -93,6 +93,15 @@ jobs:
             echo "GPG_SIGNING_KEY not set; skipping AppImage signing."
             exit 0
           fi
+          # Configure gpg-agent to allow loopback pinentry. Without
+          # this the agent falls back to a curses pinentry that the
+          # headless runner can't open ("Inappropriate ioctl for
+          # device"). With it, signing works regardless of whether
+          # the key has a passphrase.
+          mkdir -p ~/.gnupg
+          chmod 700 ~/.gnupg
+          echo "allow-loopback-pinentry" >> ~/.gnupg/gpg-agent.conf
+          gpg-connect-agent reloadagent /bye || true
           echo "$GPG_SIGNING_KEY" | gpg --batch --import
           for f in src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage; do
             if [ -n "$GPG_PASSPHRASE" ]; then
@@ -100,10 +109,14 @@ jobs:
                   --passphrase "$GPG_PASSPHRASE" \
                   --detach-sign --armor "$f"
             else
-              # No passphrase set on the signing key — let gpg-agent
-              # handle it without --passphrase, which would otherwise
-              # error with "No passphrase given" when the empty string
-              # is passed.
-              gpg --batch --yes --detach-sign --armor "$f"
+              # No passphrase set on the signing key — feed an empty
+              # passphrase via fd 0 with --pinentry-mode loopback. gpg
+              # rejects bare `--passphrase ""` ("No passphrase given")
+              # and rejects no --passphrase + no TTY ("Inappropriate
+              # ioctl"); piping empty stdin to --passphrase-fd 0 is
+              # the form gpg accepts for no-passphrase keys.
+              echo "" | gpg --batch --yes --pinentry-mode loopback \
+                  --passphrase-fd 0 \
+                  --detach-sign --armor "$f"
             fi
           done
