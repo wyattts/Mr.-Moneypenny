@@ -4,6 +4,16 @@ All notable changes to Mr. Moneypenny are documented here. The format roughly fo
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-04-29
+
+### Fixed
+
+- **Telegram token rotation now actually rotates the running poller.** v0.1.2 saved the new token to the keychain and called `ensure_poller_running`, which is idempotent — the old poller kept running with the old `TelegramClient` (and therefore the old credentials) captured at startup. After rotating to a new bot, `/start <code>` messages landed in the new bot's update queue but were never read. Saving a new token now tears down the old poll loop and spawns a fresh one against the new token. Old loop self-terminates within ~30s; brief overlap is harmless because the two pollers target different Telegram endpoints.
+
+### Internal
+
+- New `AppState::restart_poller()` helper. The `save_telegram_token` command now calls it instead of `ensure_poller_running`.
+
 ## [0.1.2] - 2026-04-29
 
 ### Changed

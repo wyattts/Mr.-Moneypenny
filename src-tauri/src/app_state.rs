@@ -113,6 +113,29 @@ impl AppState {
         let inner = self.inner.lock().unwrap();
         inner.shutdown.store(true, Ordering::Relaxed);
     }
+
+    /// Tear down the running poller (if any) and spawn a fresh one with
+    /// whatever Telegram token + LLM provider is currently saved. Used
+    /// after a token rotation so the in-memory `TelegramClient` (which
+    /// captured the old token at spawn time) is replaced.
+    ///
+    /// The previous task exits at its next loop tick — at most one
+    /// long-poll timeout (~30s) later. The new task targets a different
+    /// Telegram endpoint when the bot is genuinely new, so the overlap
+    /// is harmless. Even when the user re-saves the same token, the
+    /// resulting 409 Conflict on the new poller's first `getUpdates`
+    /// call is recovered via the existing exponential-backoff path
+    /// once the old poller exits.
+    #[cfg(feature = "desktop")]
+    pub fn restart_poller(&self) -> Result<()> {
+        {
+            let mut inner = self.inner.lock().unwrap();
+            inner.shutdown.store(true, Ordering::Relaxed);
+            inner.started = false;
+            inner.shutdown = Arc::new(AtomicBool::new(false));
+        }
+        self.ensure_poller_running()
+    }
 }
 
 /// Build the configured LLM provider based on `llm_provider` setting.

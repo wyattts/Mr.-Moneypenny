@@ -233,8 +233,11 @@ pub async fn save_telegram_token(
 
     secrets::store(secrets::keys::TELEGRAM_BOT_TOKEN, trimmed).map_err(err)?;
 
-    // Spawn the poller now so /start <code> can be received.
-    state.ensure_poller_running().map_err(err)?;
+    // Restart (or first-spawn) the poller so the in-memory TelegramClient
+    // picks up the new token. Plain ensure_poller_running is no-op once
+    // started, which would leave the previous bot's poll loop running
+    // against the old credentials and the new bot silently unattended.
+    state.restart_poller().map_err(err)?;
 
     Ok(TelegramBotInfo {
         id: me.id,
