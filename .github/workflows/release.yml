@@ -120,3 +120,16 @@ jobs:
                   --detach-sign --armor "$f"
             fi
           done
+
+      - name: Upload AppImage signature to release
+        if: matrix.platform == 'ubuntu-22.04'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # tauri-action uploads the AppImage itself but not our detached
+          # GPG signature. Push the .asc into the same draft release so
+          # users can verify integrity without an extra step.
+          for f in src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage.asc; do
+            [ -e "$f" ] || continue
+            gh release upload "${{ github.ref_name }}" "$f" --clobber
+          done
