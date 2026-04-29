@@ -4,6 +4,12 @@ All notable changes to Mr. Moneypenny are documented here. The format roughly fo
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-04-29
+
+### Changed
+
+- Default Anthropic model is now `claude-haiku-4-5-20251001` (was `claude-sonnet-4-6`). Cuts API cost ~4–5× for typical workloads. Existing v0.1.0 installs auto-pick-up Haiku on next launch unless they've explicitly set `anthropic_model`. Users who prefer Sonnet's heavier reasoning can override via the `anthropic_model` setting key (Settings UI control planned for v0.2.0).
+
 ## [0.1.0] - early-alpha
 
 First end-to-end working build. Smoke-tested on Fedora 43 (GNOME / Wayland).
