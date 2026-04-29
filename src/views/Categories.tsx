@@ -16,7 +16,7 @@ export function Categories() {
   const [cats, setCats] = useState<CategoryView[]>([]);
   const [showInactive, setShowInactive] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [adding, setAdding] = useState<"fixed" | "variable" | null>(null);
+  const [adding, setAdding] = useState<"fixed" | "variable" | "investing" | null>(null);
 
   useEffect(() => {
     void load();
@@ -70,7 +70,7 @@ export function Categories() {
     }
   }
 
-  async function add(name: string, kind: "fixed" | "variable", targetDollars: string) {
+  async function add(name: string, kind: "fixed" | "variable" | "investing", targetDollars: string) {
     const cents = targetDollars.trim()
       ? Math.round(Number(targetDollars) * 100)
       : undefined;
@@ -89,6 +89,7 @@ export function Categories() {
 
   const fixed = cats.filter((c) => c.kind === "fixed");
   const variable = cats.filter((c) => c.kind === "variable");
+  const investing = cats.filter((c) => c.kind === "investing");
 
   return (
     <div>
@@ -128,6 +129,17 @@ export function Categories() {
           onAdd={() => setAdding("variable")}
           onCancelAdd={() => setAdding(null)}
           onSubmit={(n, t) => add(n, "variable", t)}
+          onTargetChange={updateTarget}
+          onToggleActive={toggleActive}
+          onRemove={remove}
+        />
+        <CategoryGroup
+          label="Saving / Investing"
+          cats={investing}
+          adding={adding === "investing"}
+          onAdd={() => setAdding("investing")}
+          onCancelAdd={() => setAdding(null)}
+          onSubmit={(n, t) => add(n, "investing", t)}
           onTargetChange={updateTarget}
           onToggleActive={toggleActive}
           onRemove={remove}

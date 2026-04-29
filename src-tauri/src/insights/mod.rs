@@ -57,6 +57,10 @@ pub struct CategoryTotal {
     pub name: String,
     pub kind: CategoryKind,
     pub total_cents: i64,
+    /// Monthly target on the category, if any. The dashboard's per-category
+    /// bar chart uses this to switch colors: fixed/variable turn orange
+    /// when `total > target`, investing turns deep green when met/exceeded.
+    pub monthly_target_cents: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -210,11 +214,12 @@ fn query_category_totals(
     end: OffsetDateTime,
 ) -> Result<Vec<CategoryTotal>> {
     let mut stmt = conn.prepare_cached(
-        "SELECT c.id, c.name, c.kind, COALESCE(SUM(e.amount_cents), 0) AS total
+        "SELECT c.id, c.name, c.kind, c.monthly_target_cents,
+                COALESCE(SUM(e.amount_cents), 0) AS total
          FROM categories c
          LEFT JOIN expenses e ON e.category_id = c.id
              AND e.occurred_at >= ?1 AND e.occurred_at < ?2
-         GROUP BY c.id, c.name, c.kind
+         GROUP BY c.id, c.name, c.kind, c.monthly_target_cents
          HAVING total > 0
          ORDER BY total DESC",
     )?;
@@ -224,7 +229,8 @@ fn query_category_totals(
                 category_id: r.get(0)?,
                 name: r.get(1)?,
                 kind: r.get(2)?,
-                total_cents: r.get(3)?,
+                monthly_target_cents: r.get(3)?,
+                total_cents: r.get(4)?,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -258,6 +264,11 @@ fn compute_daily_trend(
         match e.category_id.and_then(|id| kinds.get(&id).copied()) {
             Some(CategoryKind::Fixed) => bucket.0 += e.amount_cents,
             Some(CategoryKind::Variable) => bucket.1 += e.amount_cents,
+            // Investing contributions don't show on the daily fixed-vs-
+            // variable line chart — they're outflows but not "spend" in
+            // the budget-pacing sense. They appear in the per-category
+            // bar chart instead.
+            Some(CategoryKind::Investing) => {}
             None => {} // uncategorized expenses don't pace either bucket
         }
     }
@@ -308,6 +319,9 @@ fn query_active_targets(conn: &Connection) -> Result<(i64, i64)> {
         match kind {
             CategoryKind::Fixed => fixed = total,
             CategoryKind::Variable => variable = total,
+            // Investing targets are tracked separately and don't feed
+            // the variable/fixed pacing math.
+            CategoryKind::Investing => {}
         }
     }
     Ok((variable, fixed))

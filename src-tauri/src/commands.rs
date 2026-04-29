@@ -311,10 +311,7 @@ pub async fn list_categories(
         .into_iter()
         .map(|c| CategoryView {
             id: c.id,
-            kind: match c.kind {
-                CategoryKind::Fixed => "fixed".into(),
-                CategoryKind::Variable => "variable".into(),
-            },
+            kind: c.kind.as_str().into(),
             name: c.name,
             monthly_target_cents: c.monthly_target_cents,
             is_recurring: c.is_recurring,

@@ -21,6 +21,11 @@ const MIGRATIONS: &[(u32, &str, &str)] = &[
         "0003_curate_seed_actives",
         include_str!("migrations/0003_curate_seed_actives.sql"),
     ),
+    (
+        4,
+        "0004_investing_kind",
+        include_str!("migrations/0004_investing_kind.sql"),
+    ),
 ];
 
 /// Open a SQLite connection at the given path, creating the file if
@@ -155,12 +160,12 @@ mod tests {
         )
         .unwrap();
 
-        // Now apply migration 0003.
+        // Now apply migrations 0003+0004.
         migrate(&conn).unwrap();
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 3);
+        assert_eq!(v, 4);
 
         let active = collect_active_seed_names(&conn);
         let mut expected: Vec<String> = EXPECTED_DEFAULT_ACTIVE
@@ -198,6 +203,86 @@ mod tests {
             )
             .unwrap();
         assert_eq!(row, (0, 0), "user category must be untouched");
+    }
+
+    #[test]
+    fn investing_seed_categories_present_and_inactive_by_default() {
+        let conn = open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT name, is_active FROM categories \
+                 WHERE kind = 'investing' AND is_seed = 1 ORDER BY name",
+            )
+            .unwrap();
+        let rows: Vec<(String, i64)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        let names: Vec<_> = rows.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, ["401k", "Investing", "Roth IRA", "Savings"]);
+        for (name, active) in &rows {
+            assert_eq!(*active, 0, "{name} should be inactive by default");
+        }
+    }
+
+    #[test]
+    fn migration_0004_preserves_existing_user_categories() {
+        // Simulate a v0.1.3 database: apply 0001+0002+0003, add a user
+        // category and a couple of expenses, then apply 0004.
+        let conn = open_in_memory().unwrap();
+        for (version, _name, sql) in MIGRATIONS {
+            if *version <= 3 {
+                conn.execute_batch(sql).unwrap();
+            }
+        }
+        conn.execute(
+            "INSERT INTO categories (name, kind, is_recurring, is_active, is_seed) \
+             VALUES ('Boats', 'variable', 0, 1, 0)",
+            [],
+        )
+        .unwrap();
+        let boat_id: i64 = conn
+            .query_row("SELECT id FROM categories WHERE name = 'Boats'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        conn.execute(
+            "INSERT INTO expenses (amount_cents, category_id, occurred_at, source) \
+             VALUES (1000, ?1, '2026-04-01T12:00:00Z', 'manual')",
+            [boat_id],
+        )
+        .unwrap();
+
+        // Apply 0004 (and any later migrations).
+        migrate(&conn).unwrap();
+
+        // Boats survives with its expense intact.
+        let still_there: i64 = conn
+            .query_row(
+                "SELECT id FROM categories WHERE name = 'Boats' AND is_seed = 0",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(still_there, boat_id);
+        let expense_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM expenses WHERE category_id = ?1",
+                [boat_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(expense_count, 1);
+
+        // Investing kind now accepted.
+        conn.execute(
+            "INSERT INTO categories (name, kind, is_recurring, is_active, is_seed) \
+             VALUES ('Brokerage', 'investing', 0, 1, 0)",
+            [],
+        )
+        .unwrap();
     }
 
     #[test]

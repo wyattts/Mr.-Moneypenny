@@ -1,4 +1,5 @@
-//! Categories — fixed (recurring/inevitable) or variable (discretionary).
+//! Categories — fixed (recurring/inevitable), variable (discretionary),
+//! or investing (savings / retirement contributions).
 
 use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ToSql, ToSqlOutput, ValueRef};
 use serde::{Deserialize, Serialize};
@@ -11,6 +12,11 @@ pub enum CategoryKind {
     Fixed,
     /// Discretionary spend: groceries, dining, entertainment.
     Variable,
+    /// Savings + retirement contributions: Roth IRA, 401k, brokerage.
+    /// "Spending" against an investing category is a *good* outflow —
+    /// hitting or exceeding the monthly target is the goal, not a
+    /// cause for the over-budget warning that fixed/variable use.
+    Investing,
 }
 
 impl CategoryKind {
@@ -18,6 +24,7 @@ impl CategoryKind {
         match self {
             CategoryKind::Fixed => "fixed",
             CategoryKind::Variable => "variable",
+            CategoryKind::Investing => "investing",
         }
     }
 }
@@ -28,6 +35,7 @@ impl std::str::FromStr for CategoryKind {
         match s {
             "fixed" => Ok(CategoryKind::Fixed),
             "variable" => Ok(CategoryKind::Variable),
+            "investing" => Ok(CategoryKind::Investing),
             other => anyhow::bail!("invalid category kind: {other}"),
         }
     }

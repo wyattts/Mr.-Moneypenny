@@ -41,4 +41,9 @@ INSERT OR IGNORE INTO categories (name, kind, is_recurring, is_active, is_seed) 
   ('Charity',                   'variable', 0, 0, 1),
   ('Misc',                      'variable', 0, 1, 1);
 
+-- Note: investing-kind seed rows (Savings / 401k / Investing / Roth IRA)
+-- are inserted by migration 0004, which also widens the `kind` CHECK
+-- constraint to admit 'investing'. They cannot be inserted here because
+-- the 0001 schema only allows 'fixed' / 'variable'.
+
 PRAGMA user_version = 2;

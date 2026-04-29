@@ -106,10 +106,12 @@ fn build_volatile(input: &SystemPromptInput) -> String {
     let _ = writeln!(out, "\n# Active categories\n");
     let mut fixed: Vec<&str> = Vec::new();
     let mut variable: Vec<&str> = Vec::new();
+    let mut investing: Vec<&str> = Vec::new();
     for (name, kind) in &input.categories {
         match kind {
             CategoryKind::Fixed => fixed.push(name.as_str()),
             CategoryKind::Variable => variable.push(name.as_str()),
+            CategoryKind::Investing => investing.push(name.as_str()),
         }
     }
     if !fixed.is_empty() {
@@ -117,6 +119,9 @@ fn build_volatile(input: &SystemPromptInput) -> String {
     }
     if !variable.is_empty() {
         let _ = writeln!(out, "Variable: {}", variable.join(", "));
+    }
+    if !investing.is_empty() {
+        let _ = writeln!(out, "Investing: {}", investing.join(", "));
     }
 
     out

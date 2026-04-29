@@ -121,6 +121,7 @@ export function Insights() {
           <>
             <KpiStrip data={data} currency={currency} locale={locale} />
             <ChartsRow data={data} currency={currency} locale={locale} />
+            <CategoryBarRow data={data} currency={currency} locale={locale} />
             {members.length > 1 ? (
               <MemberRow data={data} currency={currency} locale={locale} />
             ) : null}
@@ -255,6 +256,7 @@ function ChartsRow({
         name: "Other",
         kind: "variable" as const,
         total_cents: otherCents,
+        monthly_target_cents: null,
       },
     ];
   }, [data.category_totals]);
@@ -379,6 +381,113 @@ const tooltipLabelStyle = { color: "var(--c-graphite-50)" };
 const tooltipItemStyle = { color: "var(--c-graphite-50)" };
 const gridStroke = "var(--c-graphite-700)";
 const axisStroke = "var(--c-graphite-400)";
+
+// ---------------------------------------------------------------------
+// Per-category bar chart
+//
+// One bar per category that had spend in the selected range, regardless
+// of kind (fixed / variable / investing). Coloring rules:
+//   - Fixed or variable: graphite-200 by default; turns ORANGE when
+//     spend > monthly_target_cents (i.e., over budget).
+//   - Investing: light forest green by default; turns DEEP forest green
+//     when spend >= monthly_target_cents (i.e., savings goal hit).
+// Categories with no monthly_target_cents stay at the default tone for
+// their kind (no over/under to compare against).
+// ---------------------------------------------------------------------
+
+const BAR_COLOR_FIXED_VARIABLE_DEFAULT = "var(--c-graphite-300)";
+const BAR_COLOR_OVER_BUDGET = "#fb923c"; // orange-400
+const BAR_COLOR_INVESTING_DEFAULT = "#9ebda9"; // light forest
+const BAR_COLOR_INVESTING_GOAL_MET = "#225c34"; // deep forest
+
+function barColor(c: {
+  kind: "fixed" | "variable" | "investing";
+  total_cents: number;
+  monthly_target_cents: number | null;
+}): string {
+  if (c.kind === "investing") {
+    if (c.monthly_target_cents != null && c.total_cents >= c.monthly_target_cents) {
+      return BAR_COLOR_INVESTING_GOAL_MET;
+    }
+    return BAR_COLOR_INVESTING_DEFAULT;
+  }
+  // fixed | variable
+  if (c.monthly_target_cents != null && c.total_cents > c.monthly_target_cents) {
+    return BAR_COLOR_OVER_BUDGET;
+  }
+  return BAR_COLOR_FIXED_VARIABLE_DEFAULT;
+}
+
+function CategoryBarRow({
+  data,
+  currency,
+  locale,
+}: {
+  data: DashboardSnapshot;
+  currency: string;
+  locale: string | null;
+}) {
+  const rows = useMemo(
+    () =>
+      [...data.category_totals]
+        .sort((a, b) => b.total_cents - a.total_cents)
+        .map((c) => ({
+          name: c.name,
+          kind: c.kind,
+          monthly_target_cents: c.monthly_target_cents,
+          total_cents: c.total_cents,
+          Spent: c.total_cents / 100,
+          fill: barColor(c),
+        })),
+    [data.category_totals],
+  );
+
+  if (rows.length === 0) return null;
+  // Vertical layout so long category names don't get truncated; height
+  // scales with row count.
+  const height = Math.max(180, rows.length * 28 + 40);
+
+  return (
+    <ChartPanel title="Spending by category — over budget = orange, savings goal met = deep green">
+      <ResponsiveContainer width="100%" height={height}>
+        <BarChart data={rows} layout="vertical" margin={{ left: 24, right: 16 }}>
+          <CartesianGrid stroke={gridStroke} strokeDasharray="3 3" horizontal={false} />
+          <XAxis
+            type="number"
+            stroke={axisStroke}
+            tick={{ fontSize: 10 }}
+            tickFormatter={(v: number) => formatMoney(Math.round(Number(v) * 100), currency, locale)}
+          />
+          <YAxis
+            type="category"
+            dataKey="name"
+            stroke={axisStroke}
+            tick={{ fontSize: 12 }}
+            width={140}
+          />
+          <Tooltip
+            formatter={(v: number, _n, item) => {
+              const target = (item.payload as { monthly_target_cents: number | null })
+                .monthly_target_cents;
+              const spent = formatMoney(Math.round(Number(v) * 100), currency, locale);
+              if (target == null) return [spent, "Spent"];
+              const tgt = formatMoney(target, currency, locale);
+              return [`${spent} / ${tgt}`, "Spent / Budget"];
+            }}
+            contentStyle={tooltipStyle}
+            labelStyle={tooltipLabelStyle}
+            itemStyle={tooltipItemStyle}
+          />
+          <Bar dataKey="Spent" radius={[0, 4, 4, 0]}>
+            {rows.map((r, i) => (
+              <Cell key={i} fill={r.fill} />
+            ))}
+          </Bar>
+        </BarChart>
+      </ResponsiveContainer>
+    </ChartPanel>
+  );
+}
 
 // ---------------------------------------------------------------------
 // Member spend (only with >1 household members)

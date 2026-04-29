@@ -34,7 +34,7 @@ export interface AuthorizedChat {
 export interface CategoryView {
   id: number;
   name: string;
-  kind: "fixed" | "variable";
+  kind: "fixed" | "variable" | "investing";
   monthly_target_cents: number | null;
   is_recurring: boolean;
   recurrence_day_of_month: number | null;
@@ -137,8 +137,9 @@ export interface KpiCard {
 export interface CategoryTotal {
   category_id: number;
   name: string;
-  kind: "fixed" | "variable";
+  kind: "fixed" | "variable" | "investing";
   total_cents: number;
+  monthly_target_cents: number | null;
 }
 
 export interface DailyTrendPoint {
@@ -220,7 +221,7 @@ export interface LedgerRow {
   currency: string;
   category_id: number | null;
   category_name: string | null;
-  category_kind: "fixed" | "variable" | null;
+  category_kind: "fixed" | "variable" | "investing" | null;
   description: string | null;
   occurred_at: string;
   source: "telegram" | "manual";
@@ -245,7 +246,7 @@ export const deleteExpense = (id: number): Promise<boolean> =>
 
 export interface NewCategoryArg {
   name: string;
-  kind: "fixed" | "variable";
+  kind: "fixed" | "variable" | "investing";
   monthly_target_cents?: number | undefined;
   is_recurring?: boolean | undefined;
   recurrence_day_of_month?: number | undefined;
