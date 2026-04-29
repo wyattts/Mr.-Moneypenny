@@ -138,6 +138,12 @@ fn tool_use_response(name: &str, input: serde_json::Value) -> ChatResponse {
 fn fresh() -> Connection {
     let c = db::open_in_memory().unwrap();
     db::migrate(&c).unwrap();
+    // Migration 0003 disables most seed categories (only 14 active by
+    // default). These router tests use Coffee as the canonical example
+    // for the LLM tool path; reactivate everything seeded so they
+    // don't depend on the curated default-active list.
+    c.execute("UPDATE categories SET is_active = 1 WHERE is_seed = 1", [])
+        .unwrap();
     c
 }
 

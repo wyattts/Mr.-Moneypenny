@@ -16,6 +16,11 @@ const MIGRATIONS: &[(u32, &str, &str)] = &[
         "0002_seed_categories",
         include_str!("migrations/0002_seed_categories.sql"),
     ),
+    (
+        3,
+        "0003_curate_seed_actives",
+        include_str!("migrations/0003_curate_seed_actives.sql"),
+    ),
 ];
 
 /// Open a SQLite connection at the given path, creating the file if
@@ -63,4 +68,145 @@ pub fn default_db_path() -> Result<PathBuf> {
     let dirs = directories::ProjectDirs::from("dev", "moneypenny", "moneypenny")
         .context("could not resolve platform data directory")?;
     Ok(dirs.data_dir().join("db.sqlite"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Apply migrations 0001 and 0002 only — simulates a database left
+    /// behind by v0.1.1, before migration 0003 was introduced.
+    fn apply_through_v2(conn: &Connection) -> Result<()> {
+        for (version, _name, sql) in MIGRATIONS {
+            if *version <= 2 {
+                conn.execute_batch(sql)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn collect_active_seed_names(conn: &Connection) -> Vec<String> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT name FROM categories WHERE is_seed = 1 AND is_active = 1 ORDER BY name",
+            )
+            .unwrap();
+        stmt.query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect()
+    }
+
+    const EXPECTED_DEFAULT_ACTIVE: &[&str] = &[
+        "Auto Insurance",
+        "Clothing",
+        "Dining Out",
+        "Entertainment",
+        "Groceries",
+        "Health Insurance",
+        "Household",
+        "Internet",
+        "Misc",
+        "Personal Care",
+        "Phone",
+        "Rent / Mortgage",
+        "Renters / Home Insurance",
+        "Transportation / Gas",
+    ];
+
+    #[test]
+    fn fresh_install_has_curated_default_actives() {
+        let conn = open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let active = collect_active_seed_names(&conn);
+        assert_eq!(active.len(), EXPECTED_DEFAULT_ACTIVE.len());
+        for (i, name) in EXPECTED_DEFAULT_ACTIVE.iter().enumerate() {
+            assert_eq!(&active[i], name, "mismatch at idx {i}");
+        }
+    }
+
+    #[test]
+    fn upgrade_migration_preserves_engaged_categories() {
+        let conn = open_in_memory().unwrap();
+        // Simulate a v0.1.1 install: everything seeded as active.
+        apply_through_v2(&conn).unwrap();
+        let updated = conn
+            .execute("UPDATE categories SET is_active = 1 WHERE is_seed = 1", [])
+            .unwrap();
+        assert_eq!(updated, 29);
+
+        // User logged a Coffee expense.
+        let coffee_id: i64 = conn
+            .query_row("SELECT id FROM categories WHERE name = 'Coffee'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        conn.execute(
+            "INSERT INTO expenses (amount_cents, category_id, occurred_at, source) \
+             VALUES (500, ?1, '2026-04-01T12:00:00Z', 'manual')",
+            [coffee_id],
+        )
+        .unwrap();
+
+        // User set a target on Pets.
+        conn.execute(
+            "UPDATE categories SET monthly_target_cents = 5000 WHERE name = 'Pets'",
+            [],
+        )
+        .unwrap();
+
+        // Now apply migration 0003.
+        migrate(&conn).unwrap();
+        let v: u32 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, 3);
+
+        let active = collect_active_seed_names(&conn);
+        let mut expected: Vec<String> = EXPECTED_DEFAULT_ACTIVE
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        expected.push("Coffee".into());
+        expected.push("Pets".into());
+        expected.sort();
+        assert_eq!(active, expected, "engaged categories must be preserved");
+    }
+
+    #[test]
+    fn upgrade_migration_does_not_touch_user_categories() {
+        let conn = open_in_memory().unwrap();
+        apply_through_v2(&conn).unwrap();
+        // Force everything seed-active to mimic v0.1.1 baseline.
+        conn.execute("UPDATE categories SET is_active = 1 WHERE is_seed = 1", [])
+            .unwrap();
+        // User created a custom category and left it inactive.
+        conn.execute(
+            "INSERT INTO categories (name, kind, is_recurring, is_active, is_seed) \
+             VALUES ('Boats', 'variable', 0, 0, 0)",
+            [],
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        let row: (i64, i64) = conn
+            .query_row(
+                "SELECT is_active, is_seed FROM categories WHERE name = 'Boats'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(row, (0, 0), "user category must be untouched");
+    }
+
+    #[test]
+    fn migrate_is_idempotent() {
+        let conn = open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let active_first = collect_active_seed_names(&conn);
+        migrate(&conn).unwrap();
+        let active_second = collect_active_seed_names(&conn);
+        assert_eq!(active_first, active_second);
+    }
 }

@@ -74,6 +74,9 @@ export const generatePairingCode = (displayName: string): Promise<string> =>
 export const listAuthorizedChats = (): Promise<AuthorizedChat[]> =>
   invoke("list_authorized_chats");
 
+export const clearAuthorizedChats = (): Promise<number> =>
+  invoke("clear_authorized_chats");
+
 export const saveCurrencyLocale = (currency: string, locale: string): Promise<void> =>
   invoke("save_currency_locale", { currency, locale });
 

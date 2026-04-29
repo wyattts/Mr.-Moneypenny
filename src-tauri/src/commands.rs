@@ -260,6 +260,15 @@ pub async fn list_authorized_chats(
     auth::list_members(&conn).map_err(err)
 }
 
+/// Wipe every authorized chat and pending pairing code. Used by the
+/// Settings UI's "factory reset" toggle when rotating the bot token.
+/// Returns the number of authorized chats that were removed.
+#[tauri::command]
+pub async fn clear_authorized_chats(state: State<'_, AppState>) -> Result<usize, String> {
+    let conn = state.db.lock().unwrap();
+    auth::clear_all(&conn).map_err(err)
+}
+
 // ---------------------------------------------------------------------
 // Currency, locale, categories.
 // ---------------------------------------------------------------------

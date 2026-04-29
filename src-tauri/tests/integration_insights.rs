@@ -11,6 +11,11 @@ use time::OffsetDateTime;
 fn fresh_db() -> Connection {
     let conn = db::open_in_memory().unwrap();
     db::migrate(&conn).unwrap();
+    // Insights queries filter by is_active = 1. Migration 0003 ships only
+    // 14 default-active seeds; reactivate the rest so these tests stay
+    // independent of the curated default-active list (Coffee, etc.).
+    conn.execute("UPDATE categories SET is_active = 1 WHERE is_seed = 1", [])
+        .unwrap();
     conn
 }
 

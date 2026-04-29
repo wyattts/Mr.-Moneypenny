@@ -242,6 +242,23 @@ pub fn expire_old_pairings(conn: &Connection, now: OffsetDateTime) -> Result<usi
     Ok(n)
 }
 
+/// Wipe every authorized chat and any pending pairing codes. Called from
+/// the Settings UI's "factory reset" path after rotating the bot token,
+/// when the user wants to start over with a clean whitelist. Returns the
+/// number of authorized chats removed (pairings are also cleared but
+/// are not counted).
+///
+/// Note: this deletes the owner row too, by design — the user is
+/// explicitly asking to reset, and the next /start <code> redemption
+/// will become the new owner.
+pub fn clear_all(conn: &Connection) -> Result<usize> {
+    let tx = conn.unchecked_transaction()?;
+    let n = tx.execute("DELETE FROM telegram_authorized_chats", [])?;
+    tx.execute("DELETE FROM telegram_pending_pairings", [])?;
+    tx.commit()?;
+    Ok(n)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -340,6 +357,51 @@ mod tests {
         redeem_pairing_code(&conn, 111, &c, now).unwrap();
         let err = remove_member(&conn, 111).unwrap_err();
         assert!(err.to_string().contains("cannot remove the owner"));
+    }
+
+    #[test]
+    fn clear_all_removes_owner_and_members_and_pending() {
+        let conn = fresh();
+        let now = datetime!(2026-04-28 12:00:00 UTC);
+        let c1 = generate_pairing_code(&conn, "Wyatt", now).unwrap();
+        redeem_pairing_code(&conn, 111, &c1, now).unwrap();
+        let c2 = generate_pairing_code(&conn, "Spouse", now).unwrap();
+        redeem_pairing_code(&conn, 222, &c2, now).unwrap();
+        // A pairing that hasn't been redeemed yet — should also be cleared.
+        let _orphan = generate_pairing_code(&conn, "Orphan", now).unwrap();
+
+        let n = clear_all(&conn).unwrap();
+        assert_eq!(n, 2, "should report two authorized chats removed");
+        assert!(list_members(&conn).unwrap().is_empty());
+        let pending: i64 = conn
+            .query_row("SELECT COUNT(*) FROM telegram_pending_pairings", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(pending, 0);
+    }
+
+    #[test]
+    fn clear_all_idempotent_on_empty_db() {
+        let conn = fresh();
+        let n = clear_all(&conn).unwrap();
+        assert_eq!(n, 0);
+        // Second call: still no error, still 0.
+        let n = clear_all(&conn).unwrap();
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn clear_all_then_first_redeem_becomes_owner_again() {
+        let conn = fresh();
+        let now = datetime!(2026-04-28 12:00:00 UTC);
+        let c1 = generate_pairing_code(&conn, "Wyatt", now).unwrap();
+        redeem_pairing_code(&conn, 111, &c1, now).unwrap();
+        clear_all(&conn).unwrap();
+
+        let c2 = generate_pairing_code(&conn, "Wyatt2", now).unwrap();
+        let auth = redeem_pairing_code(&conn, 999, &c2, now).unwrap();
+        assert_eq!(auth.role, Role::Owner);
     }
 
     #[test]

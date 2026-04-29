@@ -10,6 +10,13 @@ use time::macros::datetime;
 fn fresh_db() -> Connection {
     let conn = db::open_in_memory().unwrap();
     db::migrate(&conn).unwrap();
+    // These tests exercise dispatcher behavior across the full seed set
+    // (e.g. Coffee is the canonical example for add_expense). Migration
+    // 0003 ships only 14 default-active seeds; the remainder are flipped
+    // off. Reactivate everything seeded so tests aren't coupled to the
+    // curated default-active list.
+    conn.execute("UPDATE categories SET is_active = 1 WHERE is_seed = 1", [])
+        .unwrap();
     conn
 }
 

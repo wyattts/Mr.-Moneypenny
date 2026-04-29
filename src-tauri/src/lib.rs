@@ -119,6 +119,7 @@ mod app {
                 save_telegram_token,
                 generate_pairing_code,
                 list_authorized_chats,
+                clear_authorized_chats,
                 save_currency_locale,
                 list_categories,
                 set_category_target,

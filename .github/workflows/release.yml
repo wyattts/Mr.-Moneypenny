@@ -95,7 +95,15 @@ jobs:
           fi
           echo "$GPG_SIGNING_KEY" | gpg --batch --import
           for f in src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage; do
-            gpg --batch --yes --pinentry-mode loopback \
-                --passphrase "$GPG_PASSPHRASE" \
-                --detach-sign --armor "$f"
+            if [ -n "$GPG_PASSPHRASE" ]; then
+              gpg --batch --yes --pinentry-mode loopback \
+                  --passphrase "$GPG_PASSPHRASE" \
+                  --detach-sign --armor "$f"
+            else
+              # No passphrase set on the signing key — let gpg-agent
+              # handle it without --passphrase, which would otherwise
+              # error with "No passphrase given" when the empty string
+              # is passed.
+              gpg --batch --yes --detach-sign --armor "$f"
+            fi
           done
