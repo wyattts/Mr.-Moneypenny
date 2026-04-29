@@ -34,7 +34,17 @@ curl -L -o Mr.Moneypenny.AppImage.asc \
 gpg --verify Mr.Moneypenny.AppImage.asc Mr.Moneypenny.AppImage
 ```
 
-Expect a "Good signature from Mr. Moneypenny Releases" line. The fingerprint is published in the release notes — double-check it matches.
+Expect a "Good signature from Mr. Moneypenny Releases" line. The current signing-key fingerprint is:
+
+```
+B1C9 DCA0 3318 3DAD AAFC  CD9B 500F 6628 44F8 6E10
+```
+
+After importing, you can confirm it locally with:
+
+```bash
+gpg --fingerprint 'wyatts+moneypenny@proton.me'
+```
 
 ### GNOME tray-icon caveat
 
