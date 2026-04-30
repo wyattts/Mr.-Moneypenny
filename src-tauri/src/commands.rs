@@ -404,6 +404,7 @@ pub enum RangeArg {
     ThisYear,
     Ytd,
     Custom { from: Date, to: Date },
+    Month { year: i32, month: u8 },
 }
 
 impl From<RangeArg> for DateRange {
@@ -415,6 +416,7 @@ impl From<RangeArg> for DateRange {
             RangeArg::ThisYear => DateRange::ThisYear,
             RangeArg::Ytd => DateRange::Ytd,
             RangeArg::Custom { from, to } => DateRange::Custom { from, to },
+            RangeArg::Month { year, month } => DateRange::Month { year, month },
         }
     }
 }

@@ -4,6 +4,12 @@ All notable changes to Mr. Moneypenny are documented here. The format roughly fo
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-04-30
+
+### Fixed
+
+- **Insights dashboard was broken in v0.2.3**: every load failed with `invalid args 'range' for command 'get_dashboard': unknown variant 'month', expected one of 'this_week', 'this_month', 'this_quarter', 'this_year', 'ytd', 'custom'`. v0.2.3 added a `Month { year, month }` variant to the internal `DateRange` enum but missed the *IPC-boundary* `RangeArg` enum that deserializes the frontend payload. Serde rejected `kind: "month"` before it ever reached the converted `DateRange`. Adds the matching variant to `RangeArg` and the From impl.
+
 ## [0.2.3] - 2026-04-30
 
 ### Added
