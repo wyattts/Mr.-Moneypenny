@@ -4,6 +4,25 @@ All notable changes to Mr. Moneypenny are documented here. The format roughly fo
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-04-30
+
+### Added
+
+- **Variable spending trajectory chart** on the Insights dashboard. Plots cumulative variable spend day-by-day, plus a least-squares line of best fit extrapolated to month-end, plus the variable budget as a flat reference line. Subtitle reads off whether the trend is projecting over or under budget.
+- **Sum-total cards** at the top of the Categories tab: grand total plus per-kind subtotals (Fixed, Variable, Saving / Investing). Sums only include active categories with a saved monthly target — what's actually contributing to the live monthly plan.
+
+### Changed
+
+- **Insights time-range dropdown is now a calendar-month picker.** The app's budget model is monthly; the prior week / quarter / year / YTD ranges aggregated across multiple months in ways the totals/pacing math couldn't honor. The dropdown now lists the last 12 calendar months (current first); each selection scopes the dashboard to that month. Past-month views show static totals + over-budget detection but skip pacing/MoM (those only make sense for the current month).
+- **KPI text wraps inside its box.** "Daily allowance" with longer numbers was clipping. Cards now use `text-xl` + `break-words` so primary and secondary lines wrap cleanly.
+- **Per-category bar chart bars are a uniform thickness** (~18px) regardless of how many categories have spend in the period — small bar counts no longer stretch each bar to fill the chart. The chart panel grows or shrinks; the bars don't.
+- **Bar chart title** dropped its "over budget = orange, savings goal met = deep green" explainer subtitle. The coloring is intuitive enough on its own.
+
+### Internal
+
+- New `DateRange::Month { year, month }` variant + `is_monthly` / `is_current_month` helpers. `insights/mod.rs` now gates each panel on the right helper: pacing snapshot + MoM + upcoming-fixed only render for the current month, but over-budget detection works for any monthly view.
+- `KpiCard` gains `variable_budget_cents` and `fixed_budget_cents` so the new trajectory chart can draw the variable-budget cap line for any monthly range.
+
 ## [0.2.2] - 2026-04-30
 
 ### Added

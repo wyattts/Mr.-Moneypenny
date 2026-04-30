@@ -16,6 +16,14 @@ pub enum DateRange {
     ThisQuarter,
     ThisYear,
     Ytd,
+    /// Specific calendar month, used by the Insights dashboard's month
+    /// picker. `month` is 1-12. Resolves to the first-of-month through
+    /// first-of-next-month half-open interval, identical to `ThisMonth`
+    /// when `(year, month)` matches today.
+    Month {
+        year: i32,
+        month: u8,
+    },
     /// Inclusive range; `to` is the last day to include.
     Custom {
         from: Date,
@@ -24,6 +32,24 @@ pub enum DateRange {
 }
 
 impl DateRange {
+    /// Whether this range represents a single calendar month — required
+    /// to surface monthly aggregates like total budget and over-budget
+    /// detection. Quarter / year / week / YTD return false.
+    pub fn is_monthly(&self) -> bool {
+        matches!(self, DateRange::ThisMonth | DateRange::Month { .. })
+    }
+
+    /// Whether this range represents the *current* calendar month —
+    /// required for live pacing math (variable_remaining, daily
+    /// allowance, on_pace) and MoM comparison.
+    pub fn is_current_month(&self, now: OffsetDateTime) -> bool {
+        match self {
+            DateRange::ThisMonth => true,
+            DateRange::Month { year, month } => *year == now.year() && *month == now.month() as u8,
+            _ => false,
+        }
+    }
+
     pub fn resolve(&self, now: OffsetDateTime) -> (OffsetDateTime, OffsetDateTime) {
         let offset = now.offset();
         let today = now.date();
@@ -113,6 +139,21 @@ impl DateRange {
                         .assume_offset(offset),
                 )
             }
+            DateRange::Month { year, month } => {
+                let m = Month::try_from(month).expect("month must be 1-12");
+                let start =
+                    Date::from_calendar_date(year, m, 1).expect("first of month always valid");
+                let next = if m == Month::December {
+                    Date::from_calendar_date(year + 1, Month::January, 1)
+                } else {
+                    Date::from_calendar_date(year, m.next(), 1)
+                }
+                .expect("next month always valid");
+                (
+                    start.with_time(Time::MIDNIGHT).assume_offset(offset),
+                    next.with_time(Time::MIDNIGHT).assume_offset(offset),
+                )
+            }
         }
     }
 }
@@ -178,6 +219,56 @@ mod tests {
         let (start, end) = DateRange::Ytd.resolve(now);
         assert_eq!(start, datetime!(2026-01-01 00:00:00 UTC));
         assert_eq!(end, datetime!(2026-04-29 00:00:00 UTC));
+    }
+
+    #[test]
+    fn month_variant_resolves_to_calendar_month_bounds() {
+        let now = datetime!(2026-04-15 12:00:00 UTC);
+        let r = DateRange::Month {
+            year: 2026,
+            month: 3,
+        };
+        let (start, end) = r.resolve(now);
+        assert_eq!(start, datetime!(2026-03-01 00:00:00 UTC));
+        assert_eq!(end, datetime!(2026-04-01 00:00:00 UTC));
+    }
+
+    #[test]
+    fn month_variant_december_wraps_year() {
+        let now = datetime!(2026-04-15 12:00:00 UTC);
+        let r = DateRange::Month {
+            year: 2025,
+            month: 12,
+        };
+        let (start, end) = r.resolve(now);
+        assert_eq!(start, datetime!(2025-12-01 00:00:00 UTC));
+        assert_eq!(end, datetime!(2026-01-01 00:00:00 UTC));
+    }
+
+    #[test]
+    fn month_variant_is_current_when_year_month_match_now() {
+        let now = datetime!(2026-04-15 12:00:00 UTC);
+        let cur = DateRange::Month {
+            year: 2026,
+            month: 4,
+        };
+        assert!(cur.is_current_month(now));
+        assert!(cur.is_monthly());
+
+        let prev = DateRange::Month {
+            year: 2026,
+            month: 3,
+        };
+        assert!(!prev.is_current_month(now));
+        assert!(prev.is_monthly());
+    }
+
+    #[test]
+    fn this_quarter_is_not_monthly() {
+        assert!(!DateRange::ThisQuarter.is_monthly());
+        assert!(!DateRange::ThisYear.is_monthly());
+        assert!(!DateRange::ThisWeek.is_monthly());
+        assert!(!DateRange::Ytd.is_monthly());
     }
 
     #[test]

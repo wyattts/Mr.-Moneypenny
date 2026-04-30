@@ -52,11 +52,18 @@ pub struct KpiCard {
     /// Sum of `monthly_target_cents` across active fixed + variable
     /// categories. Investing targets are excluded — they're savings
     /// goals, not a spending allowance. Zero when range is not
-    /// ThisMonth (the budget model is monthly).
+    /// monthly-shaped.
     pub total_budget_cents: i64,
     /// `total_budget_cents - total_spent_cents`. Can go negative when
-    /// the user is over total budget. Zero when range is not ThisMonth.
+    /// the user is over total budget. Zero when range is not monthly.
     pub total_remaining_cents: i64,
+    /// Sum of `monthly_target_cents` across active *variable*
+    /// categories. Used by the dashboard's variable-trajectory chart
+    /// to draw the budget cap line. Zero when range is not monthly.
+    pub variable_budget_cents: i64,
+    /// Sum of `monthly_target_cents` across active *fixed* categories.
+    /// Provided for completeness alongside `variable_budget_cents`.
+    pub fixed_budget_cents: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -141,11 +148,29 @@ pub fn dashboard(
         .sum();
     let total_spent_cents: i64 = category_totals.iter().map(|c| c.total_cents).sum();
 
-    // Period snapshot is only meaningful for ThisMonth (the budget model
-    // is monthly). Derive KPI from it when available; otherwise produce
-    // a simpler KPI without pacing.
-    let (period, kpi) = if matches!(range, DateRange::ThisMonth) {
-        let (variable_budget_cents, fixed_budget_cents) = query_active_targets(conn)?;
+    // Period pacing math is only meaningful when the selected range is
+    // the *current* calendar month — variable_remaining and the daily
+    // allowance both depend on "today" being inside the period. For a
+    // prior-month view, surface the static totals (budget / remaining /
+    // spent) without the pacing fields.
+    let is_current = range.is_current_month(now);
+    let is_monthly = range.is_monthly();
+    let (variable_budget_cents, fixed_budget_cents) = if is_monthly {
+        query_active_targets(conn)?
+    } else {
+        (0, 0)
+    };
+    let total_budget_cents = if is_monthly {
+        fixed_budget_cents + variable_budget_cents
+    } else {
+        0
+    };
+    let total_remaining_cents = if is_monthly {
+        total_budget_cents - total_spent_cents
+    } else {
+        0
+    };
+    let (period, kpi) = if is_current {
         let snap = compute_snapshot(
             now,
             fixed_budget_cents,
@@ -153,8 +178,6 @@ pub fn dashboard(
             variable_budget_cents,
             variable_total,
         );
-        let total_budget_cents = fixed_budget_cents + variable_budget_cents;
-        let total_remaining_cents = total_budget_cents - total_spent_cents;
         let kpi = KpiCard {
             variable_remaining_cents: snap.variable_remaining_cents,
             daily_variable_allowance_cents: snap.daily_variable_allowance_cents,
@@ -163,6 +186,8 @@ pub fn dashboard(
             on_pace: snap.on_pace,
             total_budget_cents,
             total_remaining_cents,
+            variable_budget_cents,
+            fixed_budget_cents,
         };
         (Some(snap), kpi)
     } else {
@@ -172,8 +197,10 @@ pub fn dashboard(
             total_spent_cents,
             days_remaining: 0,
             on_pace: true,
-            total_budget_cents: 0,
-            total_remaining_cents: 0,
+            total_budget_cents,
+            total_remaining_cents,
+            variable_budget_cents,
+            fixed_budget_cents,
         };
         (None, kpi)
     };
@@ -189,17 +216,17 @@ pub fn dashboard(
 
     let member_spend = query_member_spend(conn, start, end)?;
     let top_expenses = query_top_expenses(conn, start, end, 5)?;
-    let over_budget = if matches!(range, DateRange::ThisMonth) {
+    let over_budget = if is_monthly {
         query_over_budget(conn, start, end)?
     } else {
         Vec::new()
     };
-    let upcoming_fixed = if matches!(range, DateRange::ThisMonth) {
+    let upcoming_fixed = if is_current {
         query_upcoming_fixed(conn, now)?
     } else {
         Vec::new()
     };
-    let mom_comparison = if matches!(range, DateRange::ThisMonth) {
+    let mom_comparison = if is_current {
         Some(compute_mom(conn, now)?)
     } else {
         None

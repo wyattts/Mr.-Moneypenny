@@ -108,7 +108,8 @@ export type RangeKind =
 
 export type RangeArg =
   | { kind: RangeKind }
-  | { kind: "custom"; from: string; to: string }; // ISO yyyy-mm-dd
+  | { kind: "custom"; from: string; to: string } // ISO yyyy-mm-dd
+  | { kind: "month"; year: number; month: number }; // month is 1-12
 
 export interface PeriodSnapshot {
   progress: number;
@@ -134,6 +135,8 @@ export interface KpiCard {
   on_pace: boolean;
   total_budget_cents: number;
   total_remaining_cents: number;
+  variable_budget_cents: number;
+  fixed_budget_cents: number;
 }
 
 export interface CategoryTotal {

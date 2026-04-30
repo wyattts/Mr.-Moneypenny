@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import {
   createCategory,
   deleteCategory,
+  getSetupState,
   listCategories,
   setCategoryActive,
   setCategoryTarget,
@@ -11,21 +12,53 @@ import type { CategoryView } from "@/lib/tauri";
 import { ViewHeader } from "./ViewHeader";
 import { ErrorBanner } from "@/wizard/components/Layout";
 import { GhostButton, PrimaryButton, SecondaryButton } from "@/wizard/components/Buttons";
+import { formatMoney } from "@/lib/format";
+
+/**
+ * Sum monthly_target_cents across the given categories. Inactive
+ * categories are excluded — they're not contributing to your live
+ * monthly plan even if they have a saved target. Categories without
+ * a target contribute zero.
+ */
+function sumActiveTargets(cats: CategoryView[]): number {
+  return cats
+    .filter((c) => c.is_active && c.monthly_target_cents != null)
+    .reduce((acc, c) => acc + (c.monthly_target_cents ?? 0), 0);
+}
 
 export function Categories() {
   const [cats, setCats] = useState<CategoryView[]>([]);
   const [showInactive, setShowInactive] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [adding, setAdding] = useState<"fixed" | "variable" | "investing" | null>(null);
+  const [currency, setCurrency] = useState("USD");
+  const [locale, setLocale] = useState<string | null>(null);
 
   useEffect(() => {
     void load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showInactive]);
 
-  async function load() {
+  useEffect(() => {
+    void loadSetup();
+  }, []);
+
+  async function loadSetup() {
     try {
-      const list = await listCategories(showInactive);
+      const s = await getSetupState();
+      setCurrency(s.default_currency);
+      setLocale(s.locale);
+    } catch (e) {
+      // Falling back to defaults is fine — currency just reads as USD.
+      console.warn("loadSetup:", e);
+    }
+  }
+
+  async function load() {
+    // Always fetch the full list (including inactive) so the totals
+    // reflect a stable "active monthly plan" number regardless of the
+    // showInactive UI toggle. The toggle only governs what's *rendered*.
+    try {
+      const list = await listCategories(true);
       setCats(list);
     } catch (e) {
       setError(String(e));
@@ -91,6 +124,26 @@ export function Categories() {
   const variable = cats.filter((c) => c.kind === "variable");
   const investing = cats.filter((c) => c.kind === "investing");
 
+  // The four sum-total figures the user sees at the top. All count
+  // only is_active = true rows with a saved monthly_target_cents.
+  const totals = useMemo(() => {
+    const fixedTotal = sumActiveTargets(fixed);
+    const variableTotal = sumActiveTargets(variable);
+    const investingTotal = sumActiveTargets(investing);
+    return {
+      fixed: fixedTotal,
+      variable: variableTotal,
+      investing: investingTotal,
+      grand: fixedTotal + variableTotal + investingTotal,
+    };
+  }, [fixed, variable, investing]);
+
+  // What gets rendered inside each section — the showInactive toggle
+  // only affects display, not the totals.
+  const renderFixed = showInactive ? fixed : fixed.filter((c) => c.is_active);
+  const renderVariable = showInactive ? variable : variable.filter((c) => c.is_active);
+  const renderInvesting = showInactive ? investing : investing.filter((c) => c.is_active);
+
   return (
     <div>
       <ViewHeader
@@ -111,9 +164,23 @@ export function Categories() {
       <div className="mx-auto max-w-4xl space-y-6 px-8 py-8">
         {error ? <ErrorBanner>{error}</ErrorBanner> : null}
 
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <SumTotalCard
+            label="Sum total"
+            value={formatMoney(totals.grand, currency, locale)}
+            emphasize
+          />
+          <SumTotalCard label="Fixed" value={formatMoney(totals.fixed, currency, locale)} />
+          <SumTotalCard label="Variable" value={formatMoney(totals.variable, currency, locale)} />
+          <SumTotalCard
+            label="Saving / Investing"
+            value={formatMoney(totals.investing, currency, locale)}
+          />
+        </div>
+
         <CategoryGroup
           label="Fixed (recurring monthly)"
-          cats={fixed}
+          cats={renderFixed}
           adding={adding === "fixed"}
           onAdd={() => setAdding("fixed")}
           onCancelAdd={() => setAdding(null)}
@@ -124,7 +191,7 @@ export function Categories() {
         />
         <CategoryGroup
           label="Variable (discretionary)"
-          cats={variable}
+          cats={renderVariable}
           adding={adding === "variable"}
           onAdd={() => setAdding("variable")}
           onCancelAdd={() => setAdding(null)}
@@ -135,7 +202,7 @@ export function Categories() {
         />
         <CategoryGroup
           label="Saving / Investing"
-          cats={investing}
+          cats={renderInvesting}
           adding={adding === "investing"}
           onAdd={() => setAdding("investing")}
           onCancelAdd={() => setAdding(null)}
@@ -267,3 +334,25 @@ function CategoryGroup({
     </section>
   );
 }
+
+function SumTotalCard({
+  label,
+  value,
+  emphasize,
+}: {
+  label: string;
+  value: string;
+  emphasize?: boolean;
+}) {
+  return (
+    <div
+      className={`rounded-lg border p-3 ${
+        emphasize ? "border-forest-400 bg-forest-700/20" : "border-graphite-700 bg-graphite-900"
+      }`}
+    >
+      <div className="text-xs uppercase tracking-wide text-graphite-400">{label}</div>
+      <div className="mt-1 break-words font-mono text-lg text-graphite-50">{value}</div>
+    </div>
+  );
+}
+

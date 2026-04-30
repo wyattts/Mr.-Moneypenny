@@ -24,20 +24,31 @@ import type {
   AuthorizedChat,
   DashboardSnapshot,
   RangeArg,
-  RangeKind,
   SetupState,
 } from "@/lib/tauri";
 import { ViewHeader } from "./ViewHeader";
 import { ErrorBanner } from "@/wizard/components/Layout";
 import { formatDate, formatDelta, formatMoney } from "@/lib/format";
 
-const RANGES: { value: RangeKind; label: string }[] = [
-  { value: "this_week", label: "This week" },
-  { value: "this_month", label: "This month" },
-  { value: "this_quarter", label: "This quarter" },
-  { value: "this_year", label: "This year" },
-  { value: "ytd", label: "YTD" },
-];
+/**
+ * Build a list of the last 12 calendar months (current first, working
+ * backwards). Returned as `{year, month, label}` triples. The dashboard
+ * dropdown lets users pick any of these; "this month" maps to the
+ * first entry.
+ */
+function lastTwelveMonths(): { year: number; month: number; label: string }[] {
+  const now = new Date();
+  const out: { year: number; month: number; label: string }[] = [];
+  for (let i = 0; i < 12; i++) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    const label = d.toLocaleDateString(undefined, {
+      year: "numeric",
+      month: "long",
+    });
+    out.push({ year: d.getFullYear(), month: d.getMonth() + 1, label });
+  }
+  return out;
+}
 
 // Forest-green ramp + accents for charts.
 const CATEGORY_COLORS = [
@@ -58,7 +69,11 @@ const REFRESH_INTERVAL_MS = 5_000;
 export function Insights() {
   const [setup, setSetup] = useState<SetupState | null>(null);
   const [members, setMembers] = useState<AuthorizedChat[]>([]);
-  const [range, setRange] = useState<RangeKind>("this_month");
+  const months = useMemo(() => lastTwelveMonths(), []);
+  const [selected, setSelected] = useState(() => {
+    const m = months[0];
+    return m ? `${m.year}-${m.month}` : "";
+  });
   const [data, setData] = useState<DashboardSnapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -74,7 +89,7 @@ export function Insights() {
     const t = window.setInterval(() => void load(), REFRESH_INTERVAL_MS);
     return () => window.clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [range]);
+  }, [selected]);
 
   async function boot() {
     try {
@@ -87,8 +102,13 @@ export function Insights() {
   }
 
   async function load() {
+    const parts = selected.split("-");
+    if (parts.length !== 2) return;
+    const year = Number(parts[0]);
+    const month = Number(parts[1]);
+    if (!Number.isFinite(year) || !Number.isFinite(month)) return;
     try {
-      const arg: RangeArg = { kind: range };
+      const arg: RangeArg = { kind: "month", year, month };
       const snap = await getDashboard(arg);
       setData(snap);
     } catch (e) {
@@ -103,13 +123,13 @@ export function Insights() {
         subtitle="Where you stand."
         actions={
           <select
-            value={range}
-            onChange={(e) => setRange(e.target.value as RangeKind)}
+            value={selected}
+            onChange={(e) => setSelected(e.target.value)}
             className="rounded-md border border-graphite-600 bg-graphite-800 px-3 py-2 text-sm text-graphite-50"
           >
-            {RANGES.map((r) => (
-              <option key={r.value} value={r.value}>
-                {r.label}
+            {months.map((m) => (
+              <option key={`${m.year}-${m.month}`} value={`${m.year}-${m.month}`}>
+                {m.label}
               </option>
             ))}
           </select>
@@ -121,6 +141,7 @@ export function Insights() {
           <>
             <KpiStrip data={data} currency={currency} locale={locale} />
             <ChartsRow data={data} currency={currency} locale={locale} />
+            <VariableTrajectory data={data} currency={currency} locale={locale} />
             <CategoryBarRow data={data} currency={currency} locale={locale} />
             {members.length > 1 ? (
               <MemberRow data={data} currency={currency} locale={locale} />
@@ -148,7 +169,12 @@ function KpiStrip({
   currency: string;
   locale: string | null;
 }) {
-  const isMonth = !!data.period;
+  // `isCurrent` is true only when the user is viewing the current
+  // calendar month — that's the only state where pacing fields
+  // (variable_remaining, daily_allowance, on_pace) are meaningful.
+  // Static monthly totals (total_budget / total_remaining / total_spent
+  // / over_budget) work for any monthly range, so they render regardless.
+  const isCurrent = !!data.period;
   const paceClass = data.kpi.on_pace
     ? "text-forest-200"
     : data.period && data.period.variable_spent_cents > data.period.variable_budget_cents
@@ -156,22 +182,23 @@ function KpiStrip({
       : "text-yellow-300";
   const totalBudget = data.kpi.total_budget_cents;
   const totalRemaining = data.kpi.total_remaining_cents;
-  const totalRemainingClass = !isMonth
-    ? "text-graphite-50"
-    : totalRemaining < 0
-      ? "text-red-300"
-      : totalRemaining < totalBudget / 10
-        ? "text-yellow-300"
-        : "text-forest-200";
+  const totalRemainingClass =
+    totalBudget === 0
+      ? "text-graphite-50"
+      : totalRemaining < 0
+        ? "text-red-300"
+        : totalRemaining < totalBudget / 10
+          ? "text-yellow-300"
+          : "text-forest-200";
   return (
     <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
       <KpiCard
         label="Variable remaining"
-        primary={isMonth ? formatMoney(data.kpi.variable_remaining_cents, currency, locale) : "—"}
+        primary={isCurrent ? formatMoney(data.kpi.variable_remaining_cents, currency, locale) : "—"}
         secondary={
-          isMonth
+          isCurrent
             ? `of ${formatMoney(data.fixed_vs_variable.variable_spent_cents + data.kpi.variable_remaining_cents, currency, locale)}`
-            : ""
+            : "current month only"
         }
         valueClass={paceClass}
         emphasize
@@ -179,24 +206,24 @@ function KpiStrip({
       <KpiCard
         label="Daily allowance"
         primary={
-          isMonth
+          isCurrent
             ? formatMoney(data.kpi.daily_variable_allowance_cents, currency, locale) + "/day"
             : "—"
         }
-        secondary={isMonth ? `for ${data.kpi.days_remaining} days remaining` : ""}
+        secondary={isCurrent ? `for ${data.kpi.days_remaining} days remaining` : "current month only"}
       />
       <KpiCard
         label="Total budget"
-        primary={isMonth ? formatMoney(totalBudget, currency, locale) : "—"}
-        secondary={isMonth ? "fixed + variable monthly targets" : ""}
+        primary={formatMoney(totalBudget, currency, locale)}
+        secondary="fixed + variable monthly targets"
       />
       <KpiCard
         label="Total remaining"
-        primary={isMonth ? formatMoney(totalRemaining, currency, locale) : "—"}
+        primary={formatMoney(totalRemaining, currency, locale)}
         secondary={
-          isMonth && totalBudget > 0
+          totalBudget > 0
             ? `${Math.round((data.kpi.total_spent_cents / totalBudget) * 100)}% of budget spent`
-            : ""
+            : "no budget set"
         }
         valueClass={totalRemainingClass}
       />
@@ -206,9 +233,9 @@ function KpiStrip({
         secondary={`${data.category_totals.length} active categories`}
       />
       <KpiCard
-        label={isMonth ? "Status" : "Period"}
+        label={isCurrent ? "Status" : "Period"}
         primary={
-          isMonth
+          isCurrent
             ? data.kpi.on_pace
               ? "On pace"
               : "Trending over"
@@ -219,7 +246,7 @@ function KpiStrip({
             ? `vs last month: ${formatDelta(data.mom_comparison.delta_pct)}`
             : ""
         }
-        valueClass={isMonth ? paceClass : "text-graphite-50"}
+        valueClass={isCurrent ? paceClass : "text-graphite-50"}
       />
     </div>
   );
@@ -245,11 +272,13 @@ function KpiCard({
       }`}
     >
       <div className="text-xs uppercase tracking-wide text-graphite-400">{label}</div>
-      <div className={`mt-1 font-mono text-2xl ${valueClass ?? "text-graphite-50"}`}>
+      <div
+        className={`mt-1 break-words font-mono text-xl ${valueClass ?? "text-graphite-50"}`}
+      >
         {primary}
       </div>
       {secondary ? (
-        <div className="mt-1 text-xs text-graphite-500">{secondary}</div>
+        <div className="mt-1 break-words text-xs text-graphite-500">{secondary}</div>
       ) : null}
     </div>
   );
@@ -383,6 +412,151 @@ function ChartPanel({ title, children }: { title: string; children: React.ReactN
   );
 }
 
+// ---------------------------------------------------------------------
+// Variable-spending trajectory
+//
+// Cumulative variable spend per day, plus a least-squares regression
+// extrapolating to month-end, plus the variable budget as a flat
+// reference line. Tells the user at a glance whether they're on track
+// to hit, blow, or undershoot their variable budget.
+// ---------------------------------------------------------------------
+
+function VariableTrajectory({
+  data,
+  currency,
+  locale,
+}: {
+  data: DashboardSnapshot;
+  currency: string;
+  locale: string | null;
+}) {
+  const variableBudget = data.kpi.variable_budget_cents;
+  const trend = data.daily_trend;
+  const isCurrent = !!data.period;
+  // For the current month we know "today's day-of-month"; for past
+  // months the regression covers every day.
+  const todayDom = isCurrent && data.period ? data.period.day_of_month : trend.length;
+
+  const series = useMemo(() => {
+    if (trend.length === 0) return [];
+    // Build (day, cumulative_variable_dollars) rows. Day index is
+    // 1-based so it matches a calendar day-of-month.
+    let cum = 0;
+    const days = trend.map((p, i) => {
+      cum += p.variable_cents;
+      return {
+        day: i + 1,
+        cumulative_cents: cum,
+        actual: cum / 100,
+      };
+    });
+
+    // Linear regression on days the user has actually reached. For
+    // current month: days 1..todayDom. For past month: every day.
+    const points = days.slice(0, todayDom);
+    let slope = 0;
+    let intercept = 0;
+    if (points.length >= 2) {
+      const n = points.length;
+      const sumX = points.reduce((acc, p) => acc + p.day, 0);
+      const sumY = points.reduce((acc, p) => acc + p.cumulative_cents, 0);
+      const sumXY = points.reduce((acc, p) => acc + p.day * p.cumulative_cents, 0);
+      const sumX2 = points.reduce((acc, p) => acc + p.day * p.day, 0);
+      const denom = n * sumX2 - sumX * sumX;
+      if (denom !== 0) {
+        slope = (n * sumXY - sumX * sumY) / denom;
+        intercept = (sumY - slope * sumX) / n;
+      }
+    }
+
+    // Compose chart-ready rows. `Trend` is null for days before the
+    // user could have generated any signal (so the dashed line
+    // doesn't sit at $0 for the whole month).
+    const haveTrend = points.length >= 2;
+    return days.map((d) => ({
+      day: d.day,
+      Actual: d.day <= todayDom ? d.actual : null,
+      Trend: haveTrend ? Math.max(0, (slope * d.day + intercept) / 100) : null,
+      Budget: variableBudget / 100,
+    }));
+  }, [trend, todayDom, variableBudget]);
+
+  if (series.length === 0) return null;
+
+  const projectedEndOfMonth =
+    series.length > 0
+      ? (series[series.length - 1] as { Trend: number | null }).Trend ?? null
+      : null;
+  const subtitleHint =
+    isCurrent && projectedEndOfMonth !== null && variableBudget > 0
+      ? projectedEndOfMonth * 100 > variableBudget
+        ? `Projecting ${formatMoney(Math.round(projectedEndOfMonth * 100), currency, locale)} by month-end — over the ${formatMoney(variableBudget, currency, locale)} variable budget.`
+        : `Projecting ${formatMoney(Math.round(projectedEndOfMonth * 100), currency, locale)} by month-end — under the ${formatMoney(variableBudget, currency, locale)} variable budget.`
+      : null;
+
+  return (
+    <div className="rounded-lg border border-graphite-700 bg-graphite-900 p-4">
+      <h3 className="text-sm font-semibold text-forest-300">Variable spending trajectory</h3>
+      {subtitleHint ? (
+        <p className="mb-2 text-xs text-graphite-400">{subtitleHint}</p>
+      ) : (
+        <div className="mb-2" />
+      )}
+      <ResponsiveContainer width="100%" height={260}>
+        <LineChart data={series}>
+          <CartesianGrid stroke={gridStroke} strokeDasharray="3 3" />
+          <XAxis
+            dataKey="day"
+            stroke={axisStroke}
+            tick={{ fontSize: 10 }}
+            tickFormatter={(d) => String(d)}
+          />
+          <YAxis
+            stroke={axisStroke}
+            tick={{ fontSize: 10 }}
+            tickFormatter={(v: number) => formatMoney(Math.round(Number(v) * 100), currency, locale)}
+          />
+          <Tooltip
+            formatter={(v: number) =>
+              v == null ? "—" : formatMoney(Math.round(Number(v) * 100), currency, locale)
+            }
+            labelFormatter={(d) => `Day ${d}`}
+            contentStyle={tooltipStyle}
+            labelStyle={tooltipLabelStyle}
+            itemStyle={tooltipItemStyle}
+          />
+          <Legend wrapperStyle={{ color: "var(--c-graphite-300)", fontSize: 12 }} />
+          <Line
+            type="monotone"
+            dataKey="Actual"
+            stroke="#3d7a4f"
+            strokeWidth={2}
+            dot={false}
+            connectNulls={false}
+          />
+          <Line
+            type="monotone"
+            dataKey="Trend"
+            stroke="var(--c-graphite-300)"
+            strokeDasharray="6 4"
+            strokeWidth={2}
+            dot={false}
+            connectNulls
+          />
+          <Line
+            type="monotone"
+            dataKey="Budget"
+            stroke="#fb923c"
+            strokeDasharray="2 4"
+            strokeWidth={1.5}
+            dot={false}
+          />
+        </LineChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
 function Empty() {
   return (
     <div className="flex h-[260px] items-center justify-center text-sm text-graphite-500">
@@ -467,12 +641,15 @@ function CategoryBarRow({
   );
 
   if (rows.length === 0) return null;
-  // Vertical layout so long category names don't get truncated; height
-  // scales with row count.
-  const height = Math.max(180, rows.length * 28 + 40);
+  // Vertical layout so long category names don't get truncated. Each
+  // row gets a fixed height regardless of how many rows there are, so
+  // bars don't balloon when the user has only 1-2 categories with spend.
+  const ROW_HEIGHT = 32;
+  const BAR_THICKNESS = 18;
+  const height = Math.max(160, rows.length * ROW_HEIGHT + 40);
 
   return (
-    <ChartPanel title="Spending by category — over budget = orange, savings goal met = deep green">
+    <ChartPanel title="Spending by category">
       <ResponsiveContainer width="100%" height={height}>
         <BarChart data={rows} layout="vertical" margin={{ left: 24, right: 16 }}>
           <CartesianGrid stroke={gridStroke} strokeDasharray="3 3" horizontal={false} />
@@ -502,7 +679,7 @@ function CategoryBarRow({
             labelStyle={tooltipLabelStyle}
             itemStyle={tooltipItemStyle}
           />
-          <Bar dataKey="Spent" radius={[0, 4, 4, 0]}>
+          <Bar dataKey="Spent" radius={[0, 4, 4, 0]} barSize={BAR_THICKNESS}>
             {rows.map((r, i) => (
               <Cell key={i} fill={r.fill} />
             ))}
