@@ -4,6 +4,18 @@ All notable changes to Mr. Moneypenny are documented here. The format roughly fo
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-04-30
+
+### Added
+
+- **Total budget** and **Total remaining** KPI cards on the Insights dashboard. Previously the strip only surfaced variable-spend pacing (because that's the actionable daily-allowance signal); now the headline numbers — fixed + variable budgeted, fixed + variable remaining — are visible at a glance too. The "Total remaining" card colors itself: green when >10% of budget left, yellow when <10%, red when over budget.
+- "Total remaining" secondary line now shows the `% of budget spent` so you can read pace without doing math.
+
+### Internal
+
+- `KpiCard` gains `total_budget_cents` and `total_remaining_cents`. Both are populated only for the `ThisMonth` range (the budget model is monthly); other ranges render "—" for these cards. Investing-kind targets are intentionally excluded from the total — they're savings goals, not a spending allowance, and they already have their own visual on the per-category bar chart.
+- KPI strip re-laid-out from a 4-card grid to a 6-card grid (`grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6`) so the new cards fit cleanly across breakpoints.
+
 ## [0.2.1] - 2026-04-30
 
 ### Added

@@ -154,8 +154,17 @@ function KpiStrip({
     : data.period && data.period.variable_spent_cents > data.period.variable_budget_cents
       ? "text-red-300"
       : "text-yellow-300";
+  const totalBudget = data.kpi.total_budget_cents;
+  const totalRemaining = data.kpi.total_remaining_cents;
+  const totalRemainingClass = !isMonth
+    ? "text-graphite-50"
+    : totalRemaining < 0
+      ? "text-red-300"
+      : totalRemaining < totalBudget / 10
+        ? "text-yellow-300"
+        : "text-forest-200";
   return (
-    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
       <KpiCard
         label="Variable remaining"
         primary={isMonth ? formatMoney(data.kpi.variable_remaining_cents, currency, locale) : "—"}
@@ -175,6 +184,21 @@ function KpiStrip({
             : "—"
         }
         secondary={isMonth ? `for ${data.kpi.days_remaining} days remaining` : ""}
+      />
+      <KpiCard
+        label="Total budget"
+        primary={isMonth ? formatMoney(totalBudget, currency, locale) : "—"}
+        secondary={isMonth ? "fixed + variable monthly targets" : ""}
+      />
+      <KpiCard
+        label="Total remaining"
+        primary={isMonth ? formatMoney(totalRemaining, currency, locale) : "—"}
+        secondary={
+          isMonth && totalBudget > 0
+            ? `${Math.round((data.kpi.total_spent_cents / totalBudget) * 100)}% of budget spent`
+            : ""
+        }
+        valueClass={totalRemainingClass}
       />
       <KpiCard
         label="Total spent"

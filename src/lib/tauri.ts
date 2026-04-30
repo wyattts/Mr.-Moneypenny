@@ -132,6 +132,8 @@ export interface KpiCard {
   total_spent_cents: number;
   days_remaining: number;
   on_pace: boolean;
+  total_budget_cents: number;
+  total_remaining_cents: number;
 }
 
 export interface CategoryTotal {

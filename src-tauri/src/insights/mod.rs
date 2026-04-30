@@ -49,6 +49,14 @@ pub struct KpiCard {
     pub total_spent_cents: i64,
     pub days_remaining: u8,
     pub on_pace: bool,
+    /// Sum of `monthly_target_cents` across active fixed + variable
+    /// categories. Investing targets are excluded — they're savings
+    /// goals, not a spending allowance. Zero when range is not
+    /// ThisMonth (the budget model is monthly).
+    pub total_budget_cents: i64,
+    /// `total_budget_cents - total_spent_cents`. Can go negative when
+    /// the user is over total budget. Zero when range is not ThisMonth.
+    pub total_remaining_cents: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -145,12 +153,16 @@ pub fn dashboard(
             variable_budget_cents,
             variable_total,
         );
+        let total_budget_cents = fixed_budget_cents + variable_budget_cents;
+        let total_remaining_cents = total_budget_cents - total_spent_cents;
         let kpi = KpiCard {
             variable_remaining_cents: snap.variable_remaining_cents,
             daily_variable_allowance_cents: snap.daily_variable_allowance_cents,
             total_spent_cents,
             days_remaining: snap.days_remaining,
             on_pace: snap.on_pace,
+            total_budget_cents,
+            total_remaining_cents,
         };
         (Some(snap), kpi)
     } else {
@@ -160,6 +172,8 @@ pub fn dashboard(
             total_spent_cents,
             days_remaining: 0,
             on_pace: true,
+            total_budget_cents: 0,
+            total_remaining_cents: 0,
         };
         (None, kpi)
     };
