@@ -38,3 +38,6 @@ desktop.ini
 # Logs / crashes
 *.log
 crashes/
+
+# Local-only patch spec inbox (per-version markdown drafts)
+Patches/
