@@ -1,6 +1,6 @@
 [package]
 name = "moneypenny"
-version = "0.1.4"
+version = "0.2.0"
 description = "Mr. Moneypenny — privacy-first FOSS budgeting app"
 authors = ["Wyatt Smith"]
 license = "AGPL-3.0-or-later"
@@ -20,6 +20,7 @@ tauri-build = { version = "2", features = [], optional = true }
 [dependencies]
 tauri = { version = "2", features = ["tray-icon", "image-png"], optional = true }
 tauri-plugin-autostart = { version = "2", optional = true }
+tauri-plugin-updater = { version = "2", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rusqlite = { version = "0.32", features = ["bundled", "time"] }
@@ -44,7 +45,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"
 # normal `tauri dev` / `tauri build`. `cargo test --no-default-features`
 # skips it so domain/insights tests run without GTK system libraries.
 default = ["desktop"]
-desktop = ["dep:tauri", "dep:tauri-build", "dep:tauri-plugin-autostart"]
+desktop = ["dep:tauri", "dep:tauri-build", "dep:tauri-plugin-autostart", "dep:tauri-plugin-updater"]
 # Required for production tauri builds, DO NOT REMOVE.
 custom-protocol = ["tauri/custom-protocol"]
 

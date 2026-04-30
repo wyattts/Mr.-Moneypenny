@@ -5,6 +5,7 @@
 import { NavLink, Outlet } from "react-router-dom";
 
 import { Brand } from "@/components/Brand";
+import { UpdateBanner } from "@/components/UpdateBanner";
 
 const NAV: { to: string; label: string; icon: string }[] = [
   { to: "/insights", label: "Insights", icon: "▤" },
@@ -44,6 +45,7 @@ export function MainApp() {
         </footer>
       </aside>
       <main className="flex-1 overflow-y-auto">
+        <UpdateBanner />
         <Outlet />
       </main>
     </div>

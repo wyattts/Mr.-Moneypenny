@@ -4,6 +4,25 @@ All notable changes to Mr. Moneypenny are documented here. The format roughly fo
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-04-30
+
+### Added
+
+- **In-app auto-update** for AppImage / DMG / MSI / EXE installs via [`tauri-plugin-updater`](https://v2.tauri.app/plugin/updater/) against GitHub Releases.
+  - On launch (toggleable in Settings → "App updates" → "Check for updates on launch", default ON) the app pings GitHub Releases for the manifest. If a newer version exists, a sticky banner offers **Install** or **Skip** at the top of the main window.
+  - Settings → "App updates" → **Check now** triggers a manual check.
+  - Update payloads are signed with a project-specific ed25519 key (separate from the GPG key that signs the AppImage download). The pubkey is embedded in the binary; tampered updates fail verification and the install is refused.
+  - One outbound request to `api.github.com` per launch when the toggle is ON. No analytics, no telemetry, nothing else changes about the project's privacy posture.
+- **RPM and DEB packages do not auto-update** — system package managers own their install path. Those users keep upgrading via `sudo dnf upgrade ./Mr.Moneypenny.rpm` or `sudo apt upgrade ./Mr.Moneypenny.deb`. A real Fedora COPR / Debian PPA is a separate, larger project; it's on the long-term roadmap but not in this release.
+
+### Internal
+
+- New `tauri-plugin-updater` dependency, gated on the existing `desktop` feature so headless tests still run with `cargo test --no-default-features`.
+- New Tauri commands: `check_for_update`, `install_update`, `get_check_updates_on_launch`, `set_check_updates_on_launch`. Settings key `check_updates_on_launch` mirrors the existing `run_in_background` / `autostart` toggle pattern.
+- CSP `connect-src` now includes `https://api.github.com`, `https://github.com`, and `https://objects.githubusercontent.com` — the only outbound destinations the updater touches.
+- `tauri.conf.json` gains a `bundle.createUpdaterArtifacts: true` flag and a `plugins.updater` stanza with the GitHub-Releases manifest endpoint and the embedded ed25519 pubkey.
+- `release.yml` passes `TAURI_SIGNING_PRIVATE_KEY` + `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` into `tauri-action`, which now produces signed updater bundles + per-platform `latest.json` patches alongside the regular installers.
+
 ## [0.1.4] - 2026-04-29
 
 ### Added

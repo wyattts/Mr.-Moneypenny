@@ -138,12 +138,19 @@ Mr. Moneypenny doesn't sync your data to anything by default. To back up:
 
 ## Updating
 
-The app does **not** auto-update by default. To upgrade:
-1. Download the new release artifact.
-2. Replace your old AppImage / `.app` / `.exe` with the new one.
-3. Your data and settings are preserved (they live in the user data directory, not the binary).
+Starting with **v0.2.0**, the app checks for new releases on launch (toggleable in Settings → "App updates"). When a newer version is available the main window shows a sticky banner with **Install** / **Skip**. Installs are downloaded directly from GitHub Releases, signed with the project's ed25519 updater key (separate from the GPG release-signing key), and verified by the binary before they run.
 
-A future release will add an opt-in updater (off by default in Privacy Mode). Until then, watch the [Releases](https://github.com/wyattts/Mr.-Moneypenny/releases) page or use GitHub's "Watch → Releases" feature.
+| Install format | Auto-update? |
+|---|---|
+| AppImage | ✅ via in-app updater |
+| macOS `.dmg` (`.app`) | ✅ via in-app updater |
+| Windows `.exe` (NSIS) / `.msi` | ✅ via in-app updater |
+| `.deb` | ❌ — upgrade via `sudo apt install ./Mr.Moneypenny_X.Y.Z_amd64.deb` |
+| `.rpm` | ❌ — upgrade via `sudo dnf upgrade ./Mr.Moneypenny-X.Y.Z-1.x86_64.rpm` |
+
+Linux package-manager users (`.deb`, `.rpm`) keep upgrading manually because the system package manager owns the install path. A future release may add a Fedora COPR / Debian PPA so those users get distro-native upgrades; for now, watch the [Releases](https://github.com/wyattts/Mr.-Moneypenny/releases) page.
+
+If you want to opt out of update checks entirely, toggle off **Settings → App updates → "Check for updates on launch"**. With that off, the app makes no outbound calls to `api.github.com`. You can still run a manual check via **Settings → Check now**, or upgrade by replacing the binary like before.
 
 ## Uninstalling
 

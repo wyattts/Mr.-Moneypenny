@@ -4,6 +4,7 @@
   "description": "Default capabilities granted to the main window. Keep this minimal; add new permissions only with justification.",
   "windows": ["main"],
   "permissions": [
-    "core:default"
+    "core:default",
+    "updater:default"
   ]
 }

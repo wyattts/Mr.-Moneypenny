@@ -1,16 +1,20 @@
 import { useEffect, useRef, useState } from "react";
 
 import {
+  checkForUpdate,
   clearAuthorizedChats,
   generatePairingCode,
   getAutostart,
+  getCheckUpdatesOnLaunch,
   getRunInBackground,
   getSetupState,
+  installUpdate,
   listAuthorizedChats,
   saveAnthropicKey,
   saveCurrencyLocale,
   saveTelegramToken,
   setAutostart,
+  setCheckUpdatesOnLaunch,
   setRunInBackground,
   testAnthropic,
 } from "@/lib/tauri";
@@ -127,6 +131,16 @@ export function Settings() {
               setInfo(msg);
               void load();
             }}
+            onError={setError}
+          />
+        </Section>
+
+        <Section
+          title="App updates"
+          description="Auto-updates work for AppImage / DMG / MSI / EXE installs. RPM and DEB packages still upgrade through your system package manager."
+        >
+          <UpdateControls
+            onSaved={(msg) => setInfo(msg)}
             onError={setError}
           />
         </Section>
@@ -570,5 +584,91 @@ function RotateTelegramToken({
       </InfoBanner>
       <PrimaryButton onClick={reset}>Done</PrimaryButton>
     </div>
+  );
+}
+
+function UpdateControls({
+  onSaved,
+  onError,
+}: {
+  onSaved: (msg: string) => void;
+  onError: (msg: string) => void;
+}) {
+  const [onLaunch, setOnLaunch] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [pending, setPending] = useState<{ version: string } | null>(null);
+  const [installing, setInstalling] = useState(false);
+
+  useEffect(() => {
+    void load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function load() {
+    try {
+      const v = await getCheckUpdatesOnLaunch();
+      setOnLaunch(v);
+    } catch (e) {
+      onError(String(e));
+    }
+  }
+
+  async function toggle(enabled: boolean) {
+    try {
+      await setCheckUpdatesOnLaunch(enabled);
+      setOnLaunch(enabled);
+    } catch (e) {
+      onError(String(e));
+    }
+  }
+
+  async function checkNow() {
+    setBusy(true);
+    setPending(null);
+    try {
+      const r = await checkForUpdate();
+      if (r.available && r.version) {
+        setPending({ version: r.version });
+        onSaved(`Update available: v${r.version}.`);
+      } else {
+        onSaved(`You're on the latest version (v${r.current_version}).`);
+      }
+    } catch (e) {
+      onError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function install() {
+    setInstalling(true);
+    try {
+      // Resolves only on failure; success triggers a relaunch.
+      await installUpdate();
+    } catch (e) {
+      onError(String(e));
+      setInstalling(false);
+    }
+  }
+
+  return (
+    <>
+      <ToggleRow
+        label="Check for updates on launch"
+        description="On startup, ask GitHub Releases whether a newer version exists. No telemetry — just one HEAD-style request to api.github.com."
+        checked={onLaunch}
+        onChange={toggle}
+      />
+      <div className="flex items-center gap-2">
+        <SecondaryButton onClick={checkNow} disabled={busy || installing}>
+          {busy ? "…" : "Check now"}
+        </SecondaryButton>
+        {pending ? (
+          <PrimaryButton onClick={install} disabled={installing}>
+            {installing ? "Installing…" : `Install v${pending.version}`}
+          </PrimaryButton>
+        ) : null}
+      </div>
+    </>
   );
 }

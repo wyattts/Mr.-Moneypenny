@@ -649,6 +649,85 @@ pub async fn set_autostart(
 }
 
 // ---------------------------------------------------------------------
+// Auto-update (tauri-plugin-updater).
+// ---------------------------------------------------------------------
+
+/// Result of `check_for_update`. `available = false` means the user is
+/// already on the latest version. When available, the frontend uses
+/// `version` + `notes` to populate the in-app banner.
+#[derive(Debug, Serialize)]
+pub struct UpdateInfo {
+    pub available: bool,
+    pub version: Option<String>,
+    pub current_version: String,
+    pub notes: Option<String>,
+}
+
+#[tauri::command]
+pub async fn check_for_update(app: tauri::AppHandle) -> Result<UpdateInfo, String> {
+    use tauri_plugin_updater::UpdaterExt;
+    let current_version = app.package_info().version.to_string();
+    let updater = app.updater().map_err(err)?;
+    match updater.check().await.map_err(err)? {
+        Some(u) => Ok(UpdateInfo {
+            available: true,
+            version: Some(u.version.clone()),
+            current_version,
+            notes: u.body.clone(),
+        }),
+        None => Ok(UpdateInfo {
+            available: false,
+            version: None,
+            current_version,
+            notes: None,
+        }),
+    }
+}
+
+/// Download and install the pending update, then relaunch. Errors if no
+/// update is currently available (call `check_for_update` first).
+#[tauri::command]
+pub async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri_plugin_updater::UpdaterExt;
+    let updater = app.updater().map_err(err)?;
+    let update = updater
+        .check()
+        .await
+        .map_err(err)?
+        .ok_or_else(|| "no update available".to_string())?;
+    update
+        .download_and_install(|_chunk, _total| {}, || {})
+        .await
+        .map_err(err)?;
+    app.restart();
+}
+
+#[tauri::command]
+pub async fn get_check_updates_on_launch(state: State<'_, AppState>) -> Result<bool, String> {
+    let conn = state.db.lock().unwrap();
+    Ok(
+        settings::get(&conn, settings::keys::CHECK_UPDATES_ON_LAUNCH)
+            .map_err(err)?
+            .as_deref()
+            != Some("0"),
+    )
+}
+
+#[tauri::command]
+pub async fn set_check_updates_on_launch(
+    enabled: bool,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let conn = state.db.lock().unwrap();
+    settings::set(
+        &conn,
+        settings::keys::CHECK_UPDATES_ON_LAUNCH,
+        if enabled { "1" } else { "0" },
+    )
+    .map_err(err)
+}
+
+// ---------------------------------------------------------------------
 // Misc.
 // ---------------------------------------------------------------------
 

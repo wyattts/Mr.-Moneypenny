@@ -62,6 +62,13 @@ jobs:
           # sections; suppress its stripping so the AppImage build
           # succeeds on modern binutils.
           NO_STRIP: true
+          # Tauri updater signing — when these are set, tauri-action
+          # builds the per-platform updater bundle (.AppImage.tar.gz,
+          # .app.tar.gz, .nsis.zip) and emits a signed `latest.json`
+          # manifest into the release. The pubkey embedded in
+          # tauri.conf.json verifies these on the client at update time.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           # macOS signing/notarization (set when sponsorship covers Apple Dev cost)
           # APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           # APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}

@@ -53,6 +53,7 @@ pub mod keys {
     pub const PRIVACY_MODE: &str = "privacy_mode"; // "1" | "0" (off by default)
     pub const RUN_IN_BACKGROUND: &str = "run_in_background"; // "1" | "0"; default 1
     pub const AUTOSTART: &str = "autostart"; // "1" | "0"; OS-specific default
+    pub const CHECK_UPDATES_ON_LAUNCH: &str = "check_updates_on_launch"; // "1" | "0"; default 1
 }
 
 #[cfg(test)]
@@ -88,6 +89,28 @@ mod tests {
         set(&conn, "x", "a").unwrap();
         assert!(delete(&conn, "x").unwrap());
         assert_eq!(get(&conn, "x").unwrap(), None);
+    }
+
+    #[test]
+    fn check_updates_on_launch_default_to_on() {
+        // The CHECK_UPDATES_ON_LAUNCH key is queried with the same "not 0
+        // means yes" pattern as RUN_IN_BACKGROUND. A fresh DB has no
+        // value, which the get_or_default + the consumer's logic
+        // interpret as ON.
+        let conn = fresh();
+        let raw = get(&conn, keys::CHECK_UPDATES_ON_LAUNCH).unwrap();
+        assert!(raw.is_none());
+        // Setting it to "0" disables, "1" re-enables.
+        set(&conn, keys::CHECK_UPDATES_ON_LAUNCH, "0").unwrap();
+        assert_eq!(
+            get(&conn, keys::CHECK_UPDATES_ON_LAUNCH).unwrap().as_deref(),
+            Some("0")
+        );
+        set(&conn, keys::CHECK_UPDATES_ON_LAUNCH, "1").unwrap();
+        assert_eq!(
+            get(&conn, keys::CHECK_UPDATES_ON_LAUNCH).unwrap().as_deref(),
+            Some("1")
+        );
     }
 
     #[test]

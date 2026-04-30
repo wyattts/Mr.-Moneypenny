@@ -267,3 +267,21 @@ export const setRunInBackground = (enabled: boolean): Promise<void> =>
 export const getAutostart = (): Promise<boolean> => invoke("get_autostart");
 export const setAutostart = (enabled: boolean): Promise<void> =>
   invoke("set_autostart", { enabled });
+
+// ---------------------------------------------------------------------
+// Auto-update.
+// ---------------------------------------------------------------------
+
+export interface UpdateInfo {
+  available: boolean;
+  version: string | null;
+  current_version: string;
+  notes: string | null;
+}
+
+export const checkForUpdate = (): Promise<UpdateInfo> => invoke("check_for_update");
+export const installUpdate = (): Promise<void> => invoke("install_update");
+export const getCheckUpdatesOnLaunch = (): Promise<boolean> =>
+  invoke("get_check_updates_on_launch");
+export const setCheckUpdatesOnLaunch = (enabled: boolean): Promise<void> =>
+  invoke("set_check_updates_on_launch", { enabled });

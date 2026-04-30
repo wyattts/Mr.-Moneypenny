@@ -54,6 +54,7 @@ mod app {
                 MacosLauncher::LaunchAgent,
                 Some(vec!["--silent"]),
             ))
+            .plugin(tauri_plugin_updater::Builder::new().build())
             .manage(state)
             .setup(move |app| {
                 // Apply first-run defaults for bg-mode and autostart, then
@@ -135,6 +136,10 @@ mod app {
                 set_run_in_background,
                 get_autostart,
                 set_autostart,
+                check_for_update,
+                install_update,
+                get_check_updates_on_launch,
+                set_check_updates_on_launch,
             ])
             .run(tauri::generate_context!())
             .expect("error while running tauri application");
