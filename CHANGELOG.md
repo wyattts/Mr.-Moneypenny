@@ -8,6 +8,7 @@ All notable changes to Mr. Moneypenny are documented here. The format roughly fo
 
 ### Added
 
+- **Single-instance enforcement on Linux / Windows** via [`tauri-plugin-single-instance`](https://v2.tauri.app/plugin/single-instance/). Previously every desktop-icon click spawned a full second process (own tray entry, own bot poller, own DB lock contention) — easy to rack up memory without realizing it. The new behavior: a second launch hands its argv to the already-running app and exits, and the running window comes to the foreground. macOS already does this natively through the Dock, so the plugin is functionally a no-op there.
 - **In-app auto-update** for AppImage / DMG / MSI / EXE installs via [`tauri-plugin-updater`](https://v2.tauri.app/plugin/updater/) against GitHub Releases.
   - On launch (toggleable in Settings → "App updates" → "Check for updates on launch", default ON) the app pings GitHub Releases for the manifest. If a newer version exists, a sticky banner offers **Install** or **Skip** at the top of the main window.
   - Settings → "App updates" → **Check now** triggers a manual check.

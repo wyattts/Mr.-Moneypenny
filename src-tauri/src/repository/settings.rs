@@ -103,12 +103,16 @@ mod tests {
         // Setting it to "0" disables, "1" re-enables.
         set(&conn, keys::CHECK_UPDATES_ON_LAUNCH, "0").unwrap();
         assert_eq!(
-            get(&conn, keys::CHECK_UPDATES_ON_LAUNCH).unwrap().as_deref(),
+            get(&conn, keys::CHECK_UPDATES_ON_LAUNCH)
+                .unwrap()
+                .as_deref(),
             Some("0")
         );
         set(&conn, keys::CHECK_UPDATES_ON_LAUNCH, "1").unwrap();
         assert_eq!(
-            get(&conn, keys::CHECK_UPDATES_ON_LAUNCH).unwrap().as_deref(),
+            get(&conn, keys::CHECK_UPDATES_ON_LAUNCH)
+                .unwrap()
+                .as_deref(),
             Some("1")
         );
     }

@@ -50,6 +50,24 @@ mod app {
         let silent = std::env::args().any(|a| a == "--silent");
 
         tauri::Builder::default()
+            // Single-instance must be the FIRST plugin: when a second
+            // launch is attempted, the plugin shorts the new process's
+            // startup, hands its argv to the already-running instance,
+            // and exits. Without this, every desktop-icon click on
+            // Linux / Windows spawns another full app + tray entry,
+            // racking up memory for users who don't realize the tray
+            // already has one.
+            .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+                // Existing instance hears about the new launch — show
+                // and focus the window instead of letting a new one
+                // start. macOS handles this natively via the Dock so
+                // the callback there is functionally a no-op.
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.show();
+                    let _ = w.unminimize();
+                    let _ = w.set_focus();
+                }
+            }))
             .plugin(tauri_plugin_autostart::init(
                 MacosLauncher::LaunchAgent,
                 Some(vec!["--silent"]),
