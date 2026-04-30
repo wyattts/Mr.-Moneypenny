@@ -4,6 +4,12 @@ All notable changes to Mr. Moneypenny are documented here. The format roughly fo
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-04-30
+
+### Fixed
+
+- **Bar charts no longer flash a giant white highlight on hover.** Recharts paints a translucent white "cursor" rectangle behind the hovered bar by default, plus restyles the bar itself via its `activeBar` overlay — both visually loud on the dark theme. Disabled both on the per-category and household-member bar charts (`cursor={false}` on Tooltip + `activeBar={false}` on Bar).
+
 ## [0.2.4] - 2026-04-30
 
 ### Fixed

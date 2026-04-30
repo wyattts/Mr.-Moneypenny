@@ -678,8 +678,17 @@ function CategoryBarRow({
             contentStyle={tooltipStyle}
             labelStyle={tooltipLabelStyle}
             itemStyle={tooltipItemStyle}
+            // Recharts paints a translucent white rectangle behind the
+            // hovered bar by default — looks like a flash on the dark
+            // theme. Kill the cursor *and* the active-bar restyle.
+            cursor={false}
           />
-          <Bar dataKey="Spent" radius={[0, 4, 4, 0]} barSize={BAR_THICKNESS}>
+          <Bar
+            dataKey="Spent"
+            radius={[0, 4, 4, 0]}
+            barSize={BAR_THICKNESS}
+            activeBar={false}
+          >
             {rows.map((r, i) => (
               <Cell key={i} fill={r.fill} />
             ))}
@@ -722,8 +731,9 @@ function MemberRow({
             contentStyle={tooltipStyle}
             labelStyle={tooltipLabelStyle}
             itemStyle={tooltipItemStyle}
+            cursor={false}
           />
-          <Bar dataKey="Spent" fill="#3d7a4f" radius={[0, 4, 4, 0]} />
+          <Bar dataKey="Spent" fill="#3d7a4f" radius={[0, 4, 4, 0]} activeBar={false} />
         </BarChart>
       </ResponsiveContainer>
     </ChartPanel>
