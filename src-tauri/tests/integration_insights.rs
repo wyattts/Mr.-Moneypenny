@@ -62,6 +62,29 @@ fn add_expense(
             raw_message: None,
             llm_confidence: None,
             logged_by_chat_id: chat_id,
+            is_refund: false,
+            refund_for_expense_id: None,
+        },
+    )
+    .unwrap();
+}
+
+fn add_refund(conn: &Connection, cents: i64, category: &str, occurred_at: OffsetDateTime) {
+    let cid = cat_id(conn, category);
+    expenses::insert(
+        conn,
+        &NewExpense {
+            amount_cents: cents,
+            currency: "USD".into(),
+            category_id: Some(cid),
+            description: Some(format!("refund {category}")),
+            occurred_at,
+            source: ExpenseSource::Telegram,
+            raw_message: None,
+            llm_confidence: None,
+            logged_by_chat_id: None,
+            is_refund: true,
+            refund_for_expense_id: None,
         },
     )
     .unwrap();
@@ -448,4 +471,128 @@ fn top_expenses_ordered_by_amount_descending() {
     let snap = dashboard(&conn, DateRange::ThisMonth, now).unwrap();
     let amounts: Vec<i64> = snap.top_expenses.iter().map(|e| e.amount_cents).collect();
     assert_eq!(amounts, vec![15_000, 8_000, 2_000, 500]);
+}
+
+#[test]
+fn category_total_subtracts_refund() {
+    let conn = fresh_db();
+    let now = datetime!(2026-04-15 12:00:00 UTC);
+    add_expense(
+        &conn,
+        10_000, // $100 spent
+        "Groceries",
+        datetime!(2026-04-05 12:00:00 UTC),
+        None,
+    );
+    add_refund(
+        &conn,
+        2_500, // $25 refund
+        "Groceries",
+        datetime!(2026-04-10 12:00:00 UTC),
+    );
+    let snap = dashboard(&conn, DateRange::ThisMonth, now).unwrap();
+    let groceries = snap
+        .category_totals
+        .iter()
+        .find(|c| c.name == "Groceries")
+        .expect("Groceries appears with positive net");
+    assert_eq!(
+        groceries.total_cents,
+        10_000 - 2_500,
+        "category total should reflect the refund"
+    );
+}
+
+#[test]
+fn top_expenses_excludes_refunds() {
+    // Refunds aren't "top expenses" — they're credits.
+    let conn = fresh_db();
+    let now = datetime!(2026-04-15 12:00:00 UTC);
+    add_expense(
+        &conn,
+        5_000,
+        "Groceries",
+        datetime!(2026-04-05 12:00:00 UTC),
+        None,
+    );
+    add_refund(
+        &conn,
+        99_999, // huge refund — would dominate if included
+        "Groceries",
+        datetime!(2026-04-10 12:00:00 UTC),
+    );
+    let snap = dashboard(&conn, DateRange::ThisMonth, now).unwrap();
+    assert_eq!(snap.top_expenses.len(), 1);
+    assert_eq!(
+        snap.top_expenses[0].amount_cents, 5_000,
+        "only the non-refund expense should appear"
+    );
+    assert!(!snap.top_expenses[0].is_refund);
+}
+
+#[test]
+fn over_budget_check_uses_signed_sum() {
+    // Spent $200, refunded $50, target = $200. Net spend = $150 → not over.
+    let conn = fresh_db();
+    set_target(&conn, "Groceries", 20_000);
+    let now = datetime!(2026-04-15 12:00:00 UTC);
+    add_expense(
+        &conn,
+        20_000,
+        "Groceries",
+        datetime!(2026-04-05 12:00:00 UTC),
+        None,
+    );
+    add_refund(
+        &conn,
+        5_000,
+        "Groceries",
+        datetime!(2026-04-10 12:00:00 UTC),
+    );
+    let snap = dashboard(&conn, DateRange::ThisMonth, now).unwrap();
+    let over = snap.over_budget.iter().any(|c| c.name == "Groceries");
+    assert!(
+        !over,
+        "Groceries should NOT be over-budget once the refund is applied"
+    );
+}
+
+#[test]
+fn member_spend_subtracts_refunds() {
+    let conn = fresh_db();
+    let chat = seed_chat(&conn, 111, "Wyatt", true);
+    let now = datetime!(2026-04-15 12:00:00 UTC);
+    add_expense(
+        &conn,
+        10_000,
+        "Groceries",
+        datetime!(2026-04-05 12:00:00 UTC),
+        Some(chat),
+    );
+    // Refund attributed to same member.
+    let cid = cat_id(&conn, "Groceries");
+    expenses::insert(
+        &conn,
+        &NewExpense {
+            amount_cents: 2_000,
+            currency: "USD".into(),
+            category_id: Some(cid),
+            description: None,
+            occurred_at: datetime!(2026-04-10 12:00:00 UTC),
+            source: ExpenseSource::Telegram,
+            raw_message: None,
+            llm_confidence: None,
+            logged_by_chat_id: Some(chat),
+            is_refund: true,
+            refund_for_expense_id: None,
+        },
+    )
+    .unwrap();
+    let snap = dashboard(&conn, DateRange::ThisMonth, now).unwrap();
+    let wyatt = snap
+        .member_spend
+        .iter()
+        .find(|m| m.chat_id == chat)
+        .expect("Wyatt has net spend");
+    assert_eq!(wyatt.total_cents, 10_000 - 2_000);
 }

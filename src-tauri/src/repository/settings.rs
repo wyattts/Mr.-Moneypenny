@@ -54,6 +54,8 @@ pub mod keys {
     pub const RUN_IN_BACKGROUND: &str = "run_in_background"; // "1" | "0"; default 1
     pub const AUTOSTART: &str = "autostart"; // "1" | "0"; OS-specific default
     pub const CHECK_UPDATES_ON_LAUNCH: &str = "check_updates_on_launch"; // "1" | "0"; default 1
+    pub const WEEKLY_SUMMARY_ENABLED: &str = "weekly_summary_enabled"; // "1" | "0"; default 1
+    pub const BUDGET_ALERTS_ENABLED: &str = "budget_alerts_enabled"; // "1" | "0"; default 1
 }
 
 #[cfg(test)]

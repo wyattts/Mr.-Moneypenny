@@ -4,6 +4,36 @@ All notable changes to Mr. Moneypenny are documented here. The format roughly fo
 
 ## [Unreleased]
 
+## [0.2.6] - 2026-04-30
+
+First v0.2.6-track patch on the road to v1.0.0 — *bot reliability + recurring infrastructure*. Three new bot capabilities are wired through one shared scheduler primitive, and refunds finally have first-class support throughout the app.
+
+### Added
+
+- **Refund support, modeled as first-class rows.** New LLM tool `add_refund` lets the bot log refunds — money returned (Amazon return, cancelled subscription, chargeback). On disk the row sits in the same `expenses` table with `is_refund = 1` and an optional `refund_for_expense_id` FK. Aggregations subtract refunds via `SUM(CASE WHEN is_refund THEN -amount ELSE amount END)`. Net spend, dashboard category totals, KPI cards, MoM math, over-budget detection, member spend, daily trend, and the LLM `query_expenses` total all become refund-aware. Top-expenses panel filters refunds out (a refund isn't a top *spend*).
+- **Recurring expense rules.** Tell the bot "add Netflix $15.49 monthly on the 7th" and a `recurring_rules` row is created. New LLM tools: `add_recurring_rule`, `list_recurring_rules`, `delete_recurring_rule`, `pause_recurring_rule`. Frequency = monthly / weekly / yearly; anchor_day clamps gracefully (anchor=31 → Feb 28/29, anchor=Mon → next Monday). Modes: `confirm` (default — bot DMs "yes/no/skip" before logging) and `auto` (silent insert, for true auto-pay items the user has validated).
+- **Bot-confirmed recurrence.** When a `confirm`-mode rule fires, the bot DMs the household owner: *"Recurring: Netflix $15.49 today — reply yes/no/skip"*. The router intercepts the user's next reply *before* the LLM ever sees it (the LLM should never silently log money on the user's behalf), parses yes/no/skip aliases, and either inserts the expense or skips. Pending confirmations time out after 36 hours; second rules for the same chat wait their turn rather than stacking.
+- **Weekly summary push (default ON).** Once a week the bot DMs the owner a 7-day recap: total spend, expense count, top 3 categories. New `Settings → Bot notifications` toggle.
+- **Budget threshold alerts (default ON).** Hourly sweep evaluates active variable categories against their monthly target. Bot DMs at 80% and 100% — once per threshold per calendar month, tracked in `budget_alert_state` so a single big expense doesn't re-fire the same alert next hour. Investing categories are excluded (savings goals, not spending caps). Toggle in `Settings → Bot notifications`.
+
+### Internal
+
+- **New `scheduler` module + tokio task.** Wakes every 60s, dispatches due jobs from `scheduled_jobs` by kind, advances `next_due_at`. Stale-job protection: jobs more than 7 days overdue (e.g., the user's machine was off for two weeks) are skipped, not silently fired. Handlers return `Reschedule` / `Done` / `Retry` outcomes; the scheduler interprets each. Three handlers shipped: `recurring_expense`, `weekly_summary`, `budget_alert_sweep`. The same primitive will carry sync heartbeats and other v0.3+ background work.
+- **Singleton job pattern.** `weekly_summary` and `budget_alert_sweep` each ensure exactly one row exists at startup via `scheduler::ensure_singleton`. Idempotent across relaunches; re-enables disabled rows.
+- **Migration 0006**: `expenses` table recreated to lift the `amount_cents >= 0` CHECK (now `> 0`), add `is_refund` flag and `refund_for_expense_id` FK with `ON DELETE SET NULL`. Forward-only.
+- **Migrations 0007–0009**: `scheduled_jobs`, `recurring_rules` + `pending_recurring_confirmations`, and `budget_alert_state` tables.
+- **`RouterDeps` is now `Clone`** so the scheduler task can share the same Telegram client + LLM provider + DB handle the poller already uses.
+- **MutexGuard discipline tightened in the router's confirmation flow** — the spawned async task requires no SQLite lock guard to be live across an `.await`, which would otherwise break Send-safety on the spawned future.
+
+### Tests
+
+- Refund signed-sum across all 5 aggregation sites; refund migration round-trip; FK cascade behavior on parent delete; CHECK rejects zero/negative.
+- Scheduler queue helpers (enqueue / list_due / disable / singleton / stale detection); tick semantics for stale-skip and Retry; orphan-job disable.
+- Recurring rule LLM tool round-trips (add / list / delete / pause); auto-mode inserts + reschedules; confirm-mode DMs + records pending + defers second rule; paused rule advances without DMing or inserting; missing-rule disables orphan job; clamp behavior at month edges and leap years.
+- Bot-confirm flow: yes inserts + clears pending, no/skip clears without inserting, unknown reply re-prompts without dropping pending, expired pending falls through to the LLM, `/cancel` clears pending without going through the confirmation parser.
+- Weekly summary: no-owner just slips schedule, with-owner DMs a recap.
+- Budget alerts: 80% fires once and stays silent for the rest of the month, disabled setting short-circuits without DM.
+
 ## [0.2.5] - 2026-04-30
 
 ### Fixed

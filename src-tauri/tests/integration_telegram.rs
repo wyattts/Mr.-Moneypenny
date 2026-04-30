@@ -426,6 +426,209 @@ async fn cancel_clears_conversation_history() {
     assert!(sent.last().unwrap().contains("Cancelled"));
 }
 
+// ---- recurring rule confirmation intercept ----
+
+fn insert_pending_for_test(
+    conn: &Mutex<Connection>,
+    chat_id: i64,
+    rule_id: i64,
+    now: OffsetDateTime,
+) {
+    use moneypenny_lib::repository::recurring_rules;
+    use time::Duration;
+    let c = conn.lock().unwrap();
+    recurring_rules::insert_pending(&c, chat_id, rule_id, now, now + Duration::hours(36)).unwrap();
+}
+
+fn insert_test_recurring_rule(conn: &Mutex<Connection>, label: &str) -> i64 {
+    use moneypenny_lib::domain::recurring::{Frequency, NewRecurringRule, RecurringMode};
+    use moneypenny_lib::repository::{categories, recurring_rules};
+    let c = conn.lock().unwrap();
+    let cat = categories::get_by_name(&c, "Entertainment")
+        .unwrap()
+        .unwrap();
+    recurring_rules::insert(
+        &c,
+        &NewRecurringRule {
+            label: label.into(),
+            amount_cents: 1_549,
+            currency: "USD".into(),
+            category_id: cat.id,
+            frequency: Frequency::Monthly,
+            anchor_day: 15,
+            mode: RecurringMode::Confirm,
+        },
+    )
+    .unwrap()
+}
+
+#[tokio::test]
+async fn pending_yes_inserts_expense_and_clears_pending() {
+    let conn = fresh();
+    let now = datetime!(2026-04-15 12:00:00 UTC);
+    let llm = Arc::new(StubLlm::default()); // intentionally empty: must NOT be called
+    let tg = Arc::new(StubTelegram::default());
+    let (deps, conn_arc) = make_deps(conn, llm.clone(), tg.clone());
+    pair_owner(&conn_arc, 111, "Wyatt", now);
+    let rule_id = insert_test_recurring_rule(&conn_arc, "Netflix");
+    insert_pending_for_test(&conn_arc, 111, rule_id, now);
+
+    handle_update(&deps, &message_update(1, 111, "yes"), now)
+        .await
+        .unwrap();
+
+    let sent = tg.sent_to(111);
+    assert!(sent.last().unwrap().contains("Logged"));
+
+    // Expense was inserted.
+    let count: i64 = {
+        let c = conn_arc.lock().unwrap();
+        c.query_row(
+            "SELECT COUNT(*) FROM expenses WHERE description = 'Netflix'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    assert_eq!(count, 1);
+
+    // Pending cleared.
+    let pending_count: i64 = {
+        let c = conn_arc.lock().unwrap();
+        c.query_row(
+            "SELECT COUNT(*) FROM pending_recurring_confirmations WHERE chat_id = 111",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    assert_eq!(pending_count, 0);
+
+    // LLM was NOT called for a pending-resolution message.
+    assert!(
+        llm.requests.lock().unwrap().is_empty(),
+        "yes/no must short-circuit before LLM dispatch"
+    );
+}
+
+#[tokio::test]
+async fn pending_skip_clears_without_inserting() {
+    let conn = fresh();
+    let now = datetime!(2026-04-15 12:00:00 UTC);
+    let llm = Arc::new(StubLlm::default());
+    let tg = Arc::new(StubTelegram::default());
+    let (deps, conn_arc) = make_deps(conn, llm.clone(), tg.clone());
+    pair_owner(&conn_arc, 111, "Wyatt", now);
+    let rule_id = insert_test_recurring_rule(&conn_arc, "Netflix");
+    insert_pending_for_test(&conn_arc, 111, rule_id, now);
+
+    handle_update(&deps, &message_update(1, 111, "skip"), now)
+        .await
+        .unwrap();
+
+    let sent = tg.sent_to(111);
+    assert!(sent.last().unwrap().contains("Skipped"));
+
+    let count: i64 = {
+        let c = conn_arc.lock().unwrap();
+        c.query_row("SELECT COUNT(*) FROM expenses", [], |r| r.get(0))
+            .unwrap()
+    };
+    assert_eq!(count, 0, "skip must not insert an expense");
+}
+
+#[tokio::test]
+async fn pending_unknown_reply_re_prompts_without_dropping_pending() {
+    let conn = fresh();
+    let now = datetime!(2026-04-15 12:00:00 UTC);
+    let llm = Arc::new(StubLlm::default());
+    let tg = Arc::new(StubTelegram::default());
+    let (deps, conn_arc) = make_deps(conn, llm.clone(), tg.clone());
+    pair_owner(&conn_arc, 111, "Wyatt", now);
+    let rule_id = insert_test_recurring_rule(&conn_arc, "Netflix");
+    insert_pending_for_test(&conn_arc, 111, rule_id, now);
+
+    handle_update(&deps, &message_update(1, 111, "what?"), now)
+        .await
+        .unwrap();
+
+    let sent = tg.sent_to(111);
+    assert!(sent.last().unwrap().contains("yes"));
+
+    // Pending NOT cleared.
+    let pending_count: i64 = {
+        let c = conn_arc.lock().unwrap();
+        c.query_row(
+            "SELECT COUNT(*) FROM pending_recurring_confirmations WHERE chat_id = 111",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    assert_eq!(pending_count, 1);
+}
+
+#[tokio::test]
+async fn expired_pending_falls_through_to_llm() {
+    let conn = fresh();
+    let asked_at = datetime!(2026-04-10 12:00:00 UTC);
+    let now = datetime!(2026-04-15 12:00:00 UTC); // 5 days later, well past 36h TTL
+    let llm = Arc::new(StubLlm::default());
+    let tg = Arc::new(StubTelegram::default());
+    let (deps, conn_arc) = make_deps(conn, llm.clone(), tg.clone());
+    pair_owner(&conn_arc, 111, "Wyatt", now);
+    let rule_id = insert_test_recurring_rule(&conn_arc, "Netflix");
+    insert_pending_for_test(&conn_arc, 111, rule_id, asked_at);
+
+    // The LLM will be hit by free-text — give it a canned response.
+    llm.enqueue(text_response("hi"));
+    handle_update(&deps, &message_update(1, 111, "yes"), now)
+        .await
+        .unwrap();
+
+    // LLM was called (we fell through).
+    assert_eq!(llm.requests.lock().unwrap().len(), 1);
+
+    // Expired pending was cleaned up.
+    let pending_count: i64 = {
+        let c = conn_arc.lock().unwrap();
+        c.query_row(
+            "SELECT COUNT(*) FROM pending_recurring_confirmations WHERE chat_id = 111",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    assert_eq!(pending_count, 0);
+}
+
+#[tokio::test]
+async fn cancel_clears_pending_confirmation() {
+    let conn = fresh();
+    let now = datetime!(2026-04-15 12:00:00 UTC);
+    let llm = Arc::new(StubLlm::default());
+    let tg = Arc::new(StubTelegram::default());
+    let (deps, conn_arc) = make_deps(conn, llm.clone(), tg.clone());
+    pair_owner(&conn_arc, 111, "Wyatt", now);
+    let rule_id = insert_test_recurring_rule(&conn_arc, "Netflix");
+    insert_pending_for_test(&conn_arc, 111, rule_id, now);
+
+    handle_update(&deps, &message_update(1, 111, "/cancel"), now)
+        .await
+        .unwrap();
+
+    let pending_count: i64 = {
+        let c = conn_arc.lock().unwrap();
+        c.query_row(
+            "SELECT COUNT(*) FROM pending_recurring_confirmations WHERE chat_id = 111",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    assert_eq!(pending_count, 0);
+}
+
 #[tokio::test]
 async fn empty_text_message_ignored() {
     let conn = fresh();

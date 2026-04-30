@@ -290,3 +290,12 @@ export const getCheckUpdatesOnLaunch = (): Promise<boolean> =>
   invoke("get_check_updates_on_launch");
 export const setCheckUpdatesOnLaunch = (enabled: boolean): Promise<void> =>
   invoke("set_check_updates_on_launch", { enabled });
+
+export const getWeeklySummaryEnabled = (): Promise<boolean> =>
+  invoke("get_weekly_summary_enabled");
+export const setWeeklySummaryEnabled = (enabled: boolean): Promise<void> =>
+  invoke("set_weekly_summary_enabled", { enabled });
+export const getBudgetAlertsEnabled = (): Promise<boolean> =>
+  invoke("get_budget_alerts_enabled");
+export const setBudgetAlertsEnabled = (enabled: boolean): Promise<void> =>
+  invoke("set_budget_alerts_enabled", { enabled });

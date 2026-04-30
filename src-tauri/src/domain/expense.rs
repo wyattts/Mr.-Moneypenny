@@ -63,6 +63,13 @@ pub struct Expense {
     pub raw_message: Option<String>,
     pub llm_confidence: Option<f64>,
     pub logged_by_chat_id: Option<i64>,
+    /// True if this row reverses a prior expense (a refund). Aggregations
+    /// treat the amount as negative.
+    pub is_refund: bool,
+    /// Optional FK to the original expense this refund reverses. NULL when
+    /// the refund stands alone (LLM couldn't identify the parent, or the
+    /// parent was deleted).
+    pub refund_for_expense_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -77,4 +84,6 @@ pub struct NewExpense {
     pub raw_message: Option<String>,
     pub llm_confidence: Option<f64>,
     pub logged_by_chat_id: Option<i64>,
+    pub is_refund: bool,
+    pub refund_for_expense_id: Option<i64>,
 }

@@ -499,3 +499,340 @@ fn add_expense_then_query_round_trips() {
     assert_eq!(exps[0]["amount_cents"], 500);
     assert_eq!(exps[0]["description"], "morning latte");
 }
+
+// ---- add_refund ----
+
+#[test]
+fn add_refund_happy_path() {
+    let conn = fresh_db();
+    let ctx = ctx_solo();
+    let v = parse_ok(execute(
+        &conn,
+        &ctx,
+        "tu_1",
+        "add_refund",
+        &json!({ "amount": 20.0, "category": "Groceries", "description": "returned the milk" }),
+    ));
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["amount_cents"], 2_000);
+    assert_eq!(v["category"], "Groceries");
+    assert!(
+        v.get("refund_id").is_some(),
+        "response includes refund_id: {v}"
+    );
+    // refund_for_expense_id null when not supplied.
+    assert!(
+        v["refund_for_expense_id"].is_null(),
+        "no parent FK when not supplied"
+    );
+}
+
+#[test]
+fn add_refund_with_parent_links_correctly() {
+    let conn = fresh_db();
+    let ctx = ctx_solo();
+    let parent = parse_ok(execute(
+        &conn,
+        &ctx,
+        "tu_p",
+        "add_expense",
+        &json!({ "amount": 50.0, "category": "Groceries" }),
+    ));
+    let parent_id = parent["expense_id"].as_i64().unwrap();
+    let v = parse_ok(execute(
+        &conn,
+        &ctx,
+        "tu_r",
+        "add_refund",
+        &json!({
+            "amount": 12.5,
+            "category": "Groceries",
+            "refund_for_expense_id": parent_id,
+        }),
+    ));
+    assert_eq!(v["amount_cents"], 1_250);
+    assert_eq!(v["refund_for_expense_id"].as_i64(), Some(parent_id));
+}
+
+#[test]
+fn add_refund_with_nonexistent_parent_rejected() {
+    let conn = fresh_db();
+    let ctx = ctx_solo();
+    let out = execute(
+        &conn,
+        &ctx,
+        "tu_1",
+        "add_refund",
+        &json!({
+            "amount": 10.0,
+            "category": "Groceries",
+            "refund_for_expense_id": 999_999,
+        }),
+    );
+    assert_err_contains(out, "does not exist");
+}
+
+#[test]
+fn add_refund_pointing_at_another_refund_rejected() {
+    // Refund-of-a-refund is almost certainly LLM error; reject.
+    let conn = fresh_db();
+    let ctx = ctx_solo();
+    let purchase = parse_ok(execute(
+        &conn,
+        &ctx,
+        "tu_p",
+        "add_expense",
+        &json!({ "amount": 50.0, "category": "Groceries" }),
+    ));
+    let purchase_id = purchase["expense_id"].as_i64().unwrap();
+    let refund = parse_ok(execute(
+        &conn,
+        &ctx,
+        "tu_r1",
+        "add_refund",
+        &json!({
+            "amount": 10.0,
+            "category": "Groceries",
+            "refund_for_expense_id": purchase_id,
+        }),
+    ));
+    let refund_id = refund["refund_id"].as_i64().unwrap();
+    let out = execute(
+        &conn,
+        &ctx,
+        "tu_r2",
+        "add_refund",
+        &json!({
+            "amount": 5.0,
+            "category": "Groceries",
+            "refund_for_expense_id": refund_id,
+        }),
+    );
+    assert_err_contains(out, "is itself a refund");
+}
+
+#[test]
+fn add_refund_zero_amount_rejected() {
+    let conn = fresh_db();
+    let ctx = ctx_solo();
+    let out = execute(
+        &conn,
+        &ctx,
+        "tu_1",
+        "add_refund",
+        &json!({ "amount": 0, "category": "Groceries" }),
+    );
+    assert_err_contains(out, "rounds to zero");
+}
+
+// ---- recurring rules ----
+
+#[test]
+fn add_recurring_rule_creates_rule_and_schedules_job() {
+    let conn = fresh_db();
+    let ctx = ctx_solo();
+    let v = parse_ok(execute(
+        &conn,
+        &ctx,
+        "tu_1",
+        "add_recurring_rule",
+        &json!({
+            "label": "Netflix",
+            "amount": 15.49,
+            "category": "Entertainment",
+            "frequency": "monthly",
+            "anchor_day": 7,
+        }),
+    ));
+    assert_eq!(v["ok"], true);
+    let rule_id = v["rule_id"].as_i64().unwrap();
+    assert_eq!(v["mode"], "confirm");
+    assert_eq!(v["amount_cents"], 1_549);
+
+    // Scheduled job must exist with this rule_id in its payload.
+    let job_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM scheduled_jobs WHERE kind = 'recurring_expense' \
+             AND json_extract(payload, '$.rule_id') = ?1",
+            [rule_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(job_count, 1);
+}
+
+#[test]
+fn add_recurring_rule_invalid_anchor_for_weekly_rejected() {
+    let conn = fresh_db();
+    let ctx = ctx_solo();
+    let out = execute(
+        &conn,
+        &ctx,
+        "tu_1",
+        "add_recurring_rule",
+        &json!({
+            "label": "Trash",
+            "amount": 20.0,
+            "category": "Household",
+            "frequency": "weekly",
+            "anchor_day": 12,
+        }),
+    );
+    assert_err_contains(out, "out of range");
+}
+
+#[test]
+fn add_recurring_rule_unknown_mode_rejected() {
+    let conn = fresh_db();
+    let ctx = ctx_solo();
+    let out = execute(
+        &conn,
+        &ctx,
+        "tu_1",
+        "add_recurring_rule",
+        &json!({
+            "label": "Bad",
+            "amount": 5.0,
+            "category": "Misc",
+            "frequency": "monthly",
+            "anchor_day": 1,
+            "mode": "yolo",
+        }),
+    );
+    assert_err_contains(out, "unknown mode");
+}
+
+#[test]
+fn list_recurring_rules_returns_added_rule() {
+    let conn = fresh_db();
+    let ctx = ctx_solo();
+    parse_ok(execute(
+        &conn,
+        &ctx,
+        "tu_1",
+        "add_recurring_rule",
+        &json!({
+            "label": "Spotify",
+            "amount": 9.99,
+            "category": "Entertainment",
+            "frequency": "monthly",
+            "anchor_day": 12,
+            "mode": "auto",
+        }),
+    ));
+    let v = parse_ok(execute(
+        &conn,
+        &ctx,
+        "tu_2",
+        "list_recurring_rules",
+        &json!({}),
+    ));
+    let rules = v["rules"].as_array().unwrap();
+    assert_eq!(rules.len(), 1);
+    assert_eq!(rules[0]["label"], "Spotify");
+    assert_eq!(rules[0]["mode"], "auto");
+    assert_eq!(rules[0]["enabled"], true);
+}
+
+#[test]
+fn delete_recurring_rule_cascades_to_scheduled_jobs() {
+    let conn = fresh_db();
+    let ctx = ctx_solo();
+    let added = parse_ok(execute(
+        &conn,
+        &ctx,
+        "tu_1",
+        "add_recurring_rule",
+        &json!({
+            "label": "Gym",
+            "amount": 30.0,
+            "category": "Personal Care",
+            "frequency": "monthly",
+            "anchor_day": 1,
+        }),
+    ));
+    let rule_id = added["rule_id"].as_i64().unwrap();
+    parse_ok(execute(
+        &conn,
+        &ctx,
+        "tu_2",
+        "delete_recurring_rule",
+        &json!({ "rule_id": rule_id }),
+    ));
+    let job_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM scheduled_jobs WHERE kind = 'recurring_expense' \
+             AND json_extract(payload, '$.rule_id') = ?1",
+            [rule_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        job_count, 0,
+        "delete_recurring_rule must drop the scheduler queue rows too"
+    );
+}
+
+#[test]
+fn pause_recurring_rule_flips_enabled_flag() {
+    let conn = fresh_db();
+    let ctx = ctx_solo();
+    let added = parse_ok(execute(
+        &conn,
+        &ctx,
+        "tu_1",
+        "add_recurring_rule",
+        &json!({
+            "label": "Gym",
+            "amount": 30.0,
+            "category": "Personal Care",
+            "frequency": "monthly",
+            "anchor_day": 1,
+        }),
+    ));
+    let rule_id = added["rule_id"].as_i64().unwrap();
+    parse_ok(execute(
+        &conn,
+        &ctx,
+        "tu_2",
+        "pause_recurring_rule",
+        &json!({ "rule_id": rule_id, "enabled": false }),
+    ));
+    let enabled: i64 = conn
+        .query_row(
+            "SELECT enabled FROM recurring_rules WHERE id = ?1",
+            [rule_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(enabled, 0);
+}
+
+#[test]
+fn query_expenses_total_subtracts_refunds() {
+    let conn = fresh_db();
+    let ctx = ctx_solo();
+    parse_ok(execute(
+        &conn,
+        &ctx,
+        "tu_e",
+        "add_expense",
+        &json!({ "amount": 100.0, "category": "Groceries" }),
+    ));
+    parse_ok(execute(
+        &conn,
+        &ctx,
+        "tu_r",
+        "add_refund",
+        &json!({ "amount": 25.0, "category": "Groceries" }),
+    ));
+    let q = parse_ok(execute(
+        &conn,
+        &ctx,
+        "tu_q",
+        "query_expenses",
+        &json!({ "category": "Groceries" }),
+    ));
+    assert_eq!(q["count"], 2, "both rows visible to query");
+    assert_eq!(q["total_cents"], 7_500, "net total subtracts the refund");
+}

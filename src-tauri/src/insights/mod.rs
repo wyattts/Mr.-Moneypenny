@@ -17,7 +17,7 @@ use time::{Date, Duration, Month, OffsetDateTime, Time};
 use crate::domain::{
     compute_snapshot, current_month_bounds, CategoryKind, Expense, PeriodSnapshot,
 };
-use crate::repository::expenses;
+use crate::repository::expenses::{self, SIGNED_AMOUNT_SQL};
 
 pub use range::DateRange;
 
@@ -254,16 +254,17 @@ fn query_category_totals(
     start: OffsetDateTime,
     end: OffsetDateTime,
 ) -> Result<Vec<CategoryTotal>> {
-    let mut stmt = conn.prepare_cached(
+    let sql = format!(
         "SELECT c.id, c.name, c.kind, c.monthly_target_cents,
-                COALESCE(SUM(e.amount_cents), 0) AS total
+                COALESCE(SUM({SIGNED_AMOUNT_SQL}), 0) AS total
          FROM categories c
          LEFT JOIN expenses e ON e.category_id = c.id
              AND e.occurred_at >= ?1 AND e.occurred_at < ?2
          GROUP BY c.id, c.name, c.kind, c.monthly_target_cents
          HAVING total > 0
-         ORDER BY total DESC",
-    )?;
+         ORDER BY total DESC"
+    );
+    let mut stmt = conn.prepare_cached(&sql)?;
     let rows = stmt
         .query_map(params![start, end], |r| {
             Ok(CategoryTotal {
@@ -302,9 +303,14 @@ fn compute_daily_trend(
     for e in &exps {
         let local = e.occurred_at.to_offset(offset).date();
         let bucket = buckets.entry(local).or_insert((0, 0));
+        let signed = if e.is_refund {
+            -e.amount_cents
+        } else {
+            e.amount_cents
+        };
         match e.category_id.and_then(|id| kinds.get(&id).copied()) {
-            Some(CategoryKind::Fixed) => bucket.0 += e.amount_cents,
-            Some(CategoryKind::Variable) => bucket.1 += e.amount_cents,
+            Some(CategoryKind::Fixed) => bucket.0 += signed,
+            Some(CategoryKind::Variable) => bucket.1 += signed,
             // Investing contributions don't show on the daily fixed-vs-
             // variable line chart — they're outflows but not "spend" in
             // the budget-pacing sense. They appear in the per-category
@@ -373,15 +379,16 @@ fn query_member_spend(
     start: OffsetDateTime,
     end: OffsetDateTime,
 ) -> Result<Vec<MemberSpend>> {
-    let mut stmt = conn.prepare_cached(
-        "SELECT t.chat_id, t.display_name, COALESCE(SUM(e.amount_cents), 0) AS total
+    let sql = format!(
+        "SELECT t.chat_id, t.display_name, COALESCE(SUM({SIGNED_AMOUNT_SQL}), 0) AS total
          FROM telegram_authorized_chats t
          LEFT JOIN expenses e ON e.logged_by_chat_id = t.chat_id
              AND e.occurred_at >= ?1 AND e.occurred_at < ?2
          GROUP BY t.chat_id, t.display_name
          HAVING total > 0
-         ORDER BY total DESC",
-    )?;
+         ORDER BY total DESC"
+    );
+    let mut stmt = conn.prepare_cached(&sql)?;
     let rows = stmt
         .query_map(params![start, end], |r| {
             Ok(MemberSpend {
@@ -400,11 +407,15 @@ fn query_top_expenses(
     end: OffsetDateTime,
     limit: u32,
 ) -> Result<Vec<Expense>> {
+    // Refunds are excluded — "top expenses" means biggest outflows, not
+    // biggest credits. Refunds still appear in lists/queries that surface
+    // them explicitly.
     let mut stmt = conn.prepare_cached(
         "SELECT id, amount_cents, currency, category_id, description, occurred_at, created_at,
-                source, raw_message, llm_confidence, logged_by_chat_id
+                source, raw_message, llm_confidence, logged_by_chat_id,
+                is_refund, refund_for_expense_id
          FROM expenses
-         WHERE occurred_at >= ?1 AND occurred_at < ?2
+         WHERE occurred_at >= ?1 AND occurred_at < ?2 AND is_refund = 0
          ORDER BY amount_cents DESC, id DESC
          LIMIT ?3",
     )?;
@@ -422,6 +433,8 @@ fn query_top_expenses(
                 raw_message: r.get(8)?,
                 llm_confidence: r.get(9)?,
                 logged_by_chat_id: r.get(10)?,
+                is_refund: r.get::<_, i64>(11)? != 0,
+                refund_for_expense_id: r.get(12)?,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -433,17 +446,18 @@ fn query_over_budget(
     start: OffsetDateTime,
     end: OffsetDateTime,
 ) -> Result<Vec<OverBudgetCategory>> {
-    let mut stmt = conn.prepare_cached(
+    let sql = format!(
         "SELECT c.id, c.name, c.monthly_target_cents,
-                COALESCE(SUM(e.amount_cents), 0) AS spent
+                COALESCE(SUM({SIGNED_AMOUNT_SQL}), 0) AS spent
          FROM categories c
          LEFT JOIN expenses e ON e.category_id = c.id
              AND e.occurred_at >= ?1 AND e.occurred_at < ?2
          WHERE c.monthly_target_cents IS NOT NULL AND c.is_active = 1
          GROUP BY c.id, c.name, c.monthly_target_cents
          HAVING spent > c.monthly_target_cents
-         ORDER BY (spent - c.monthly_target_cents) DESC",
-    )?;
+         ORDER BY (spent - c.monthly_target_cents) DESC"
+    );
+    let mut stmt = conn.prepare_cached(&sql)?;
     let rows = stmt
         .query_map(params![start, end], |r| {
             let id: i64 = r.get(0)?;
@@ -476,6 +490,7 @@ fn query_upcoming_fixed(conn: &Connection, now: OffsetDateTime) -> Result<Vec<Up
                SELECT DISTINCT category_id FROM expenses
                WHERE category_id IS NOT NULL
                  AND occurred_at >= ?2 AND occurred_at < ?3
+                 AND is_refund = 0
            )
          ORDER BY c.recurrence_day_of_month ASC, c.name ASC",
     )?;

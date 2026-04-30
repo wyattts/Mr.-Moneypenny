@@ -23,7 +23,7 @@ fn migrations_are_idempotent() {
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 5, "after migrations, user_version should be 5");
+    assert_eq!(version, 9, "after migrations, user_version should be 9");
 }
 
 #[test]
@@ -89,6 +89,8 @@ fn insert_and_retrieve_expense_round_trips() {
             raw_message: Some("$5 coffee".into()),
             llm_confidence: Some(0.95),
             logged_by_chat_id: None,
+            is_refund: false,
+            refund_for_expense_id: None,
         },
     )
     .unwrap();
@@ -128,6 +130,8 @@ fn list_in_range_excludes_outside_dates() {
                 raw_message: None,
                 llm_confidence: None,
                 logged_by_chat_id: None,
+                is_refund: false,
+                refund_for_expense_id: None,
             },
         )
         .unwrap();
@@ -213,6 +217,8 @@ fn deleting_category_cascades_to_budgets_and_nulls_expenses() {
             raw_message: None,
             llm_confidence: None,
             logged_by_chat_id: None,
+            is_refund: false,
+            refund_for_expense_id: None,
         },
     )
     .unwrap();
@@ -244,4 +250,122 @@ fn deleting_category_cascades_to_budgets_and_nulls_expenses() {
         )
         .unwrap();
     assert_eq!(still_there, 0);
+}
+
+// ---- refunds (migration 0006) ----
+
+fn insert_test_expense(
+    conn: &rusqlite::Connection,
+    cents: i64,
+    category: &str,
+    is_refund: bool,
+    refund_for: Option<i64>,
+) -> i64 {
+    let cid = categories::get_by_name(conn, category)
+        .unwrap()
+        .expect("category exists")
+        .id;
+    expenses::insert(
+        conn,
+        &NewExpense {
+            amount_cents: cents,
+            currency: "USD".into(),
+            category_id: Some(cid),
+            description: None,
+            occurred_at: datetime!(2026-04-15 12:00:00 UTC),
+            source: ExpenseSource::Manual,
+            raw_message: None,
+            llm_confidence: None,
+            logged_by_chat_id: None,
+            is_refund,
+            refund_for_expense_id: refund_for,
+        },
+    )
+    .unwrap()
+}
+
+#[test]
+fn refund_round_trips_with_flag_and_parent_fk() {
+    let conn = fresh_db();
+    let parent = insert_test_expense(&conn, 5_000, "Groceries", false, None);
+    let refund = insert_test_expense(&conn, 1_500, "Groceries", true, Some(parent));
+
+    let row = expenses::get(&conn, refund).unwrap().unwrap();
+    assert!(row.is_refund);
+    assert_eq!(row.refund_for_expense_id, Some(parent));
+    assert_eq!(row.amount_cents, 1_500, "stored amount stays positive");
+}
+
+#[test]
+fn signed_sum_subtracts_refund_from_category_total() {
+    let conn = fresh_db();
+    insert_test_expense(&conn, 5_000, "Groceries", false, None); // -$50 spent
+    insert_test_expense(&conn, 1_500, "Groceries", true, None); // -$15 refund
+
+    let net = expenses::sum_in_range_by_kind(
+        &conn,
+        datetime!(2026-04-01 00:00:00 UTC),
+        datetime!(2026-05-01 00:00:00 UTC),
+        CategoryKind::Variable,
+    )
+    .unwrap();
+    assert_eq!(net, 5_000 - 1_500, "net spend should subtract the refund");
+}
+
+#[test]
+fn signed_sum_in_range_handles_uncategorized_refund() {
+    let conn = fresh_db();
+    insert_test_expense(&conn, 5_000, "Groceries", false, None);
+    // A refund stays positive on disk but counts negative toward totals.
+    insert_test_expense(&conn, 7_500, "Groceries", true, None);
+
+    let net = expenses::sum_in_range(
+        &conn,
+        datetime!(2026-04-01 00:00:00 UTC),
+        datetime!(2026-05-01 00:00:00 UTC),
+    )
+    .unwrap();
+    assert_eq!(
+        net,
+        5_000 - 7_500,
+        "net can go negative when refunds exceed spend"
+    );
+}
+
+#[test]
+fn deleting_parent_expense_nulls_refund_link_not_the_refund() {
+    let conn = fresh_db();
+    let parent = insert_test_expense(&conn, 5_000, "Groceries", false, None);
+    let refund = insert_test_expense(&conn, 1_500, "Groceries", true, Some(parent));
+
+    assert!(expenses::delete(&conn, parent).unwrap());
+
+    let still = expenses::get(&conn, refund).unwrap().unwrap();
+    assert!(still.is_refund, "refund row survives parent deletion");
+    assert_eq!(
+        still.refund_for_expense_id, None,
+        "refund_for FK should be NULLed by ON DELETE SET NULL"
+    );
+}
+
+#[test]
+fn check_constraint_rejects_zero_or_negative_amount() {
+    let conn = fresh_db();
+    let cid = categories::get_by_name(&conn, "Groceries")
+        .unwrap()
+        .unwrap()
+        .id;
+    let err = conn.execute(
+        "INSERT INTO expenses (amount_cents, currency, category_id, occurred_at, source) \
+         VALUES (0, 'USD', ?1, '2026-04-15T12:00:00Z', 'manual')",
+        params![cid],
+    );
+    assert!(err.is_err(), "amount_cents = 0 must be rejected");
+
+    let err = conn.execute(
+        "INSERT INTO expenses (amount_cents, currency, category_id, occurred_at, source) \
+         VALUES (-100, 'USD', ?1, '2026-04-15T12:00:00Z', 'manual')",
+        params![cid],
+    );
+    assert!(err.is_err(), "negative amount_cents must be rejected");
 }

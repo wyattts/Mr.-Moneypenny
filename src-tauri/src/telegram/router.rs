@@ -12,12 +12,12 @@ use anyhow::{anyhow, Result};
 use rusqlite::Connection;
 use time::OffsetDateTime;
 
-use crate::domain::CategoryKind;
+use crate::domain::{CategoryKind, ExpenseSource, NewExpense};
 use crate::llm::dispatcher::{self, CallContext};
 use crate::llm::system_prompt::{build_system_prompt, SystemPromptInput};
 use crate::llm::tools::all_tools;
 use crate::llm::{ChatRequest, ContentBlock, LLMProvider, Message, Role, StopReason};
-use crate::repository::{categories, expenses};
+use crate::repository::{categories, expenses, recurring_rules};
 
 use super::auth::{self, AuthorizedChat};
 use super::client::{TelegramApi, Update};
@@ -29,6 +29,7 @@ use super::state::BotState;
 const MAX_AGENT_ITERATIONS: usize = 5;
 const MAX_TOKENS_PER_TURN: u32 = 1024;
 
+#[derive(Clone)]
 pub struct RouterDeps {
     pub conn: Arc<Mutex<Connection>>,
     pub llm: Arc<dyn LLMProvider>,
@@ -73,11 +74,27 @@ pub async fn handle_update(deps: &RouterDeps, update: &Update, now: OffsetDateTi
     };
 
     // ------------------------------------------------------------------
+    // Pending recurring-rule confirmation: if the bot DM'd this chat a
+    // "yes/no/skip" prompt and is waiting on the answer, intercept the
+    // user's reply *before* it reaches the LLM. This is deliberate:
+    // the LLM should never silently log money on the user's behalf.
+    // ------------------------------------------------------------------
+    if try_resolve_pending_confirmation(deps, chat_id, &text, now).await? {
+        return Ok(());
+    }
+
+    // ------------------------------------------------------------------
     // Authenticated slash commands.
     // ------------------------------------------------------------------
     match text.as_str() {
         "/cancel" => {
             deps.state.conversations.lock().unwrap().clear(chat_id);
+            // Also clear any pending recurring-rule confirmation so the
+            // user doesn't have a stale prompt hanging over the next chat.
+            {
+                let conn = deps.conn.lock().unwrap();
+                let _ = recurring_rules::delete_pending(&conn, chat_id);
+            }
             return reply(deps, chat_id, "Cancelled. Anything else?".to_string()).await;
         }
         "/undo" => return handle_undo(deps, chat_id, &auth_chat, now).await,
@@ -296,6 +313,117 @@ async fn handle_free_text(
         final_text
     };
     reply(deps, chat_id, final_text).await
+}
+
+// ---------------------------------------------------------------------
+// Recurring-rule confirmation intercept.
+// ---------------------------------------------------------------------
+
+/// If `chat_id` has an outstanding recurring-rule confirmation, parse
+/// `text` as the user's answer and act on it. Returns `Ok(true)` when
+/// the message was consumed (caller should stop processing it), or
+/// `Ok(false)` when it should fall through to the normal command/LLM
+/// dispatch path.
+async fn try_resolve_pending_confirmation(
+    deps: &RouterDeps,
+    chat_id: i64,
+    text: &str,
+    now: time::OffsetDateTime,
+) -> Result<bool> {
+    // Slash commands always fall through — `/cancel` should be able to
+    // dismiss a pending confirmation without being misread as a reply.
+    if text.starts_with('/') {
+        return Ok(false);
+    }
+    let pending = {
+        let conn = deps.conn.lock().unwrap();
+        recurring_rules::get_pending(&conn, chat_id)?
+    };
+    let Some(pending) = pending else {
+        return Ok(false);
+    };
+
+    // Expired? Drop it silently and let the message go through normally.
+    if pending.expires_at <= now {
+        let conn = deps.conn.lock().unwrap();
+        let _ = recurring_rules::delete_pending(&conn, chat_id);
+        return Ok(false);
+    }
+
+    let normalized = text.trim().to_lowercase();
+    let action = match normalized.as_str() {
+        "yes" | "y" | "confirm" | "ok" | "okay" | "sure" | "👍" => Some(true),
+        "no" | "n" | "skip" | "s" | "decline" | "👎" => Some(false),
+        _ => None,
+    };
+
+    let Some(should_log) = action else {
+        // Unknown reply — re-prompt. Don't drop the pending so the user
+        // can correct.
+        reply(
+            deps,
+            chat_id,
+            "Reply *yes* to log the recurring expense, or *no* / *skip* to skip it.".to_string(),
+        )
+        .await?;
+        return Ok(true);
+    };
+
+    // Load the rule (it may have been deleted between ask and answer —
+    // treat as a polite "never mind").
+    let rule = {
+        let conn = deps.conn.lock().unwrap();
+        recurring_rules::get(&conn, pending.rule_id)?
+    };
+    let Some(rule) = rule else {
+        {
+            let conn = deps.conn.lock().unwrap();
+            let _ = recurring_rules::delete_pending(&conn, chat_id);
+        }
+        reply(
+            deps,
+            chat_id,
+            "That recurring rule was deleted. Nothing to log.".to_string(),
+        )
+        .await?;
+        return Ok(true);
+    };
+
+    // Compute the response text *and* drop the connection guard before
+    // the await — Send-safety on the spawned task requires no
+    // MutexGuard to be live across .await.
+    let response_text = {
+        let conn = deps.conn.lock().unwrap();
+        let text = if should_log {
+            let amount = super::formatter::format_money(rule.amount_cents, &rule.currency);
+            expenses::insert(
+                &conn,
+                &NewExpense {
+                    amount_cents: rule.amount_cents,
+                    currency: rule.currency.clone(),
+                    category_id: Some(rule.category_id),
+                    description: Some(rule.label.clone()),
+                    occurred_at: now,
+                    source: ExpenseSource::Telegram,
+                    raw_message: Some(format!("recurring rule #{} (confirmed)", rule.id)),
+                    llm_confidence: None,
+                    logged_by_chat_id: Some(chat_id),
+                    is_refund: false,
+                    refund_for_expense_id: None,
+                },
+            )?;
+            let _ = recurring_rules::delete_pending(&conn, chat_id);
+            format!("Logged {amount} for {label}.", label = rule.label)
+        } else {
+            let _ = recurring_rules::delete_pending(&conn, chat_id);
+            format!("Skipped {} this time.", rule.label)
+        };
+        drop(conn);
+        text
+    };
+
+    reply(deps, chat_id, response_text).await?;
+    Ok(true)
 }
 
 // ---------------------------------------------------------------------

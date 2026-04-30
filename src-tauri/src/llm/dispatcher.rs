@@ -18,13 +18,17 @@ use time::format_description::well_known::Rfc3339;
 use time::macros::format_description;
 use time::{Date, OffsetDateTime, Time};
 
+use crate::domain::recurring::{Frequency, NewRecurringRule, RecurringMode};
 use crate::domain::{Category, CategoryKind, Expense, ExpenseSource, NewExpense};
 use crate::insights::{dashboard, range::DateRange};
-use crate::repository::{categories, expenses};
+use crate::repository::{categories, expenses, recurring_rules};
+use crate::scheduler;
 
 use super::tools::{
-    AddExpenseInput, DeleteExpenseInput, ListCategoriesInput, ListHouseholdMembersInput,
-    QueryExpensesInput, SetBudgetInput, SummarizePeriodInput, ToolName,
+    AddExpenseInput, AddRecurringRuleInput, AddRefundInput, DeleteExpenseInput,
+    DeleteRecurringRuleInput, ListCategoriesInput, ListHouseholdMembersInput,
+    ListRecurringRulesInput, PauseRecurringRuleInput, QueryExpensesInput, SetBudgetInput,
+    SummarizePeriodInput, ToolName,
 };
 
 /// Per-call context that the LLM doesn't supply but the dispatcher needs:
@@ -71,12 +75,17 @@ pub fn execute(
 
     let result: Result<Value> = match name {
         ToolName::AddExpense => exec_add_expense(conn, ctx, input),
+        ToolName::AddRefund => exec_add_refund(conn, ctx, input),
         ToolName::DeleteExpense => exec_delete_expense(conn, input),
         ToolName::QueryExpenses => exec_query_expenses(conn, ctx, input),
         ToolName::SummarizePeriod => exec_summarize_period(conn, ctx, input),
         ToolName::ListCategories => exec_list_categories(conn, input),
         ToolName::SetBudget => exec_set_budget(conn, ctx, input),
         ToolName::ListHouseholdMembers => exec_list_household_members(conn, input),
+        ToolName::AddRecurringRule => exec_add_recurring_rule(conn, ctx, input),
+        ToolName::ListRecurringRules => exec_list_recurring_rules(conn, input),
+        ToolName::DeleteRecurringRule => exec_delete_recurring_rule(conn, input),
+        ToolName::PauseRecurringRule => exec_pause_recurring_rule(conn, input),
     };
 
     match result {
@@ -129,6 +138,8 @@ fn exec_add_expense(conn: &Connection, ctx: &CallContext, input: &Value) -> Resu
             raw_message: None,
             llm_confidence: None,
             logged_by_chat_id: ctx.authorized_chat_id,
+            is_refund: false,
+            refund_for_expense_id: None,
         },
     )?;
 
@@ -140,6 +151,84 @@ fn exec_add_expense(conn: &Connection, ctx: &CallContext, input: &Value) -> Resu
         "category": cat.name,
         "category_kind": cat.kind.as_str(),
         "occurred_at": occurred_at.format(&Rfc3339).unwrap_or_default(),
+        "logged_by": ctx.authorized_chat_name.clone(),
+    }))
+}
+
+fn exec_add_refund(conn: &Connection, ctx: &CallContext, input: &Value) -> Result<Value> {
+    let parsed: AddRefundInput =
+        serde_json::from_value(input.clone()).context("add_refund: invalid arguments")?;
+
+    if !(parsed.amount.is_finite() && parsed.amount >= 0.0) {
+        return Err(anyhow!(
+            "add_refund: amount must be a non-negative finite number"
+        ));
+    }
+    let amount_cents = (parsed.amount * 100.0).round() as i64;
+    if amount_cents <= 0 {
+        return Err(anyhow!(
+            "add_refund: amount rounds to zero cents — too small"
+        ));
+    }
+
+    let cat = resolve_category(conn, &parsed.category)?;
+
+    // If a parent expense ID is supplied, verify it exists and is itself
+    // not a refund. A refund-of-a-refund is almost certainly an LLM error,
+    // so we reject loudly rather than silently link.
+    if let Some(parent_id) = parsed.refund_for_expense_id {
+        match expenses::get(conn, parent_id)? {
+            None => {
+                return Err(anyhow!(
+                    "add_refund: refund_for_expense_id {parent_id} does not exist"
+                ));
+            }
+            Some(parent) if parent.is_refund => {
+                return Err(anyhow!(
+                    "add_refund: refund_for_expense_id {parent_id} is itself a refund — \
+                     the LLM should pass the original purchase's ID instead"
+                ));
+            }
+            Some(_) => {}
+        }
+    }
+
+    let occurred_at = match parsed.occurred_at {
+        None => ctx.now,
+        Some(s) => parse_datetime_or_date(&s, ctx.now.offset())?,
+    };
+
+    let currency = parsed
+        .currency
+        .filter(|c| !c.trim().is_empty())
+        .unwrap_or_else(|| ctx.default_currency.clone());
+
+    let id = expenses::insert(
+        conn,
+        &NewExpense {
+            amount_cents,
+            currency: currency.clone(),
+            category_id: Some(cat.id),
+            description: parsed.description,
+            occurred_at,
+            source: ExpenseSource::Telegram,
+            raw_message: None,
+            llm_confidence: None,
+            logged_by_chat_id: ctx.authorized_chat_id,
+            is_refund: true,
+            refund_for_expense_id: parsed.refund_for_expense_id,
+        },
+    )?;
+
+    Ok(json!({
+        "ok": true,
+        "refund_id": id,
+        "amount_cents": amount_cents,
+        "currency": currency,
+        "category": cat.name,
+        "category_kind": cat.kind.as_str(),
+        "occurred_at": occurred_at.format(&Rfc3339).unwrap_or_default(),
+        "refund_for_expense_id": parsed.refund_for_expense_id,
         "logged_by": ctx.authorized_chat_name.clone(),
     }))
 }
@@ -165,7 +254,7 @@ fn exec_query_expenses(conn: &Connection, ctx: &CallContext, input: &Value) -> R
     let offset = ctx.now.offset();
 
     let mut sql =
-        "SELECT e.id, e.amount_cents, e.currency, e.category_id, c.name, e.description, e.occurred_at, e.created_at, e.source, e.raw_message, e.llm_confidence, e.logged_by_chat_id \
+        "SELECT e.id, e.amount_cents, e.currency, e.category_id, c.name, e.description, e.occurred_at, e.created_at, e.source, e.raw_message, e.llm_confidence, e.logged_by_chat_id, e.is_refund, e.refund_for_expense_id \
          FROM expenses e LEFT JOIN categories c ON c.id = e.category_id WHERE 1=1"
             .to_string();
 
@@ -220,11 +309,23 @@ fn exec_query_expenses(conn: &Connection, ctx: &CallContext, input: &Value) -> R
                 _raw_message: r.get::<_, Option<String>>(9)?,
                 _llm_confidence: r.get::<_, Option<f64>>(10)?,
                 logged_by_chat_id: r.get(11)?,
+                is_refund: r.get::<_, i64>(12)? != 0,
+                refund_for_expense_id: r.get(13)?,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
 
-    let total_cents: i64 = rows.iter().map(|r| r.amount_cents).sum();
+    // Net total: refunds subtract.
+    let total_cents: i64 = rows
+        .iter()
+        .map(|r| {
+            if r.is_refund {
+                -r.amount_cents
+            } else {
+                r.amount_cents
+            }
+        })
+        .sum();
     Ok(json!({
         "ok": true,
         "count": rows.len(),
@@ -252,6 +353,8 @@ struct QueryRow {
     #[serde(skip)]
     _llm_confidence: Option<f64>,
     logged_by_chat_id: Option<i64>,
+    is_refund: bool,
+    refund_for_expense_id: Option<i64>,
 }
 
 fn exec_summarize_period(conn: &Connection, ctx: &CallContext, input: &Value) -> Result<Value> {
@@ -345,6 +448,179 @@ fn exec_list_household_members(conn: &Connection, input: &Value) -> Result<Value
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(json!({ "ok": true, "members": rows }))
+}
+
+// ---------------------------------------------------------------------
+// Recurring rules.
+// ---------------------------------------------------------------------
+
+fn exec_add_recurring_rule(conn: &Connection, ctx: &CallContext, input: &Value) -> Result<Value> {
+    let parsed: AddRecurringRuleInput =
+        serde_json::from_value(input.clone()).context("add_recurring_rule: invalid arguments")?;
+
+    if !(parsed.amount.is_finite() && parsed.amount >= 0.0) {
+        return Err(anyhow!(
+            "add_recurring_rule: amount must be a non-negative finite number"
+        ));
+    }
+    let amount_cents = (parsed.amount * 100.0).round() as i64;
+    if amount_cents <= 0 {
+        return Err(anyhow!(
+            "add_recurring_rule: amount rounds to zero cents — too small"
+        ));
+    }
+
+    let label = parsed.label.trim();
+    if label.is_empty() {
+        return Err(anyhow!("add_recurring_rule: label cannot be empty"));
+    }
+
+    let cat = resolve_category(conn, &parsed.category)?;
+
+    let frequency: Frequency = parsed
+        .frequency
+        .parse()
+        .map_err(|e: anyhow::Error| anyhow!("add_recurring_rule: {e}"))?;
+
+    // Validate anchor against the chosen frequency.
+    let anchor_max = match frequency {
+        Frequency::Monthly => 31,
+        Frequency::Weekly => 7,
+        Frequency::Yearly => 366,
+    };
+    if parsed.anchor_day < 1 || parsed.anchor_day > anchor_max {
+        return Err(anyhow!(
+            "add_recurring_rule: anchor_day {} out of range for {} (1..={})",
+            parsed.anchor_day,
+            frequency.as_str(),
+            anchor_max
+        ));
+    }
+
+    let mode = match parsed.mode.as_deref() {
+        None | Some("confirm") => RecurringMode::Confirm,
+        Some("auto") => RecurringMode::Auto,
+        Some(other) => {
+            return Err(anyhow!(
+                "add_recurring_rule: unknown mode '{other}'; use 'confirm' or 'auto'"
+            ));
+        }
+    };
+
+    let currency = parsed
+        .currency
+        .filter(|c| !c.trim().is_empty())
+        .unwrap_or_else(|| ctx.default_currency.clone());
+
+    let rule_id = recurring_rules::insert(
+        conn,
+        &NewRecurringRule {
+            label: label.to_string(),
+            amount_cents,
+            currency: currency.clone(),
+            category_id: cat.id,
+            frequency,
+            anchor_day: parsed.anchor_day,
+            mode,
+        },
+    )?;
+
+    // Schedule the rule. The first firing is on the next due date strictly
+    // after `now` — the user just told us about it, so we don't fire it
+    // retroactively for today.
+    let next_due_at = crate::domain::recurring::next_due(frequency, parsed.anchor_day, ctx.now);
+    let payload = json!({ "rule_id": rule_id }).to_string();
+    scheduler::enqueue(
+        conn,
+        scheduler::JobKind::RecurringExpense,
+        &payload,
+        next_due_at,
+    )?;
+
+    Ok(json!({
+        "ok": true,
+        "rule_id": rule_id,
+        "label": label,
+        "amount_cents": amount_cents,
+        "currency": currency,
+        "category": cat.name,
+        "frequency": frequency.as_str(),
+        "anchor_day": parsed.anchor_day,
+        "mode": mode.as_str(),
+        "next_due_at": next_due_at.format(&Rfc3339).unwrap_or_default(),
+    }))
+}
+
+fn exec_list_recurring_rules(conn: &Connection, input: &Value) -> Result<Value> {
+    let parsed: ListRecurringRulesInput =
+        serde_json::from_value(input.clone()).context("list_recurring_rules: invalid arguments")?;
+    let rules = recurring_rules::list(conn, parsed.include_disabled)?;
+    let names: std::collections::HashMap<i64, String> = {
+        let mut m = std::collections::HashMap::new();
+        let mut stmt = conn.prepare_cached("SELECT id, name FROM categories")?;
+        let rows = stmt.query_map([], |r| {
+            let id: i64 = r.get(0)?;
+            let name: String = r.get(1)?;
+            Ok((id, name))
+        })?;
+        for r in rows {
+            let (id, name) = r?;
+            m.insert(id, name);
+        }
+        m
+    };
+    let slim: Vec<_> = rules
+        .iter()
+        .map(|r| {
+            json!({
+                "rule_id": r.id,
+                "label": r.label,
+                "amount_cents": r.amount_cents,
+                "currency": r.currency,
+                "category": names.get(&r.category_id).cloned().unwrap_or_default(),
+                "frequency": r.frequency.as_str(),
+                "anchor_day": r.anchor_day,
+                "mode": r.mode.as_str(),
+                "enabled": r.enabled,
+            })
+        })
+        .collect();
+    Ok(json!({ "ok": true, "rules": slim }))
+}
+
+fn exec_delete_recurring_rule(conn: &Connection, input: &Value) -> Result<Value> {
+    let parsed: DeleteRecurringRuleInput = serde_json::from_value(input.clone())
+        .context("delete_recurring_rule: invalid arguments")?;
+    // Drop the scheduler queue rows first — `rule_id` lives inside the
+    // `scheduled_jobs.payload` JSON, so SQLite's FK cascade can't reach
+    // it. Doing this before the rule delete keeps the queue from briefly
+    // holding orphans even if the second statement somehow failed.
+    scheduler::delete_jobs_for_recurring_rule(conn, parsed.rule_id)?;
+    let removed = recurring_rules::delete(conn, parsed.rule_id)?;
+    if !removed {
+        return Err(anyhow!(
+            "delete_recurring_rule: no rule with id {}",
+            parsed.rule_id
+        ));
+    }
+    Ok(json!({ "ok": true, "deleted_rule_id": parsed.rule_id }))
+}
+
+fn exec_pause_recurring_rule(conn: &Connection, input: &Value) -> Result<Value> {
+    let parsed: PauseRecurringRuleInput =
+        serde_json::from_value(input.clone()).context("pause_recurring_rule: invalid arguments")?;
+    let updated = recurring_rules::set_enabled(conn, parsed.rule_id, parsed.enabled)?;
+    if !updated {
+        return Err(anyhow!(
+            "pause_recurring_rule: no rule with id {}",
+            parsed.rule_id
+        ));
+    }
+    Ok(json!({
+        "ok": true,
+        "rule_id": parsed.rule_id,
+        "enabled": parsed.enabled,
+    }))
 }
 
 // ---------------------------------------------------------------------

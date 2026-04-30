@@ -6,6 +6,7 @@ pub mod domain;
 pub mod insights;
 pub mod llm;
 pub mod repository;
+pub mod scheduler;
 pub mod secrets;
 pub mod telegram;
 
@@ -105,6 +106,9 @@ mod app {
                     if let Err(e) = state.ensure_poller_running() {
                         tracing::warn!(target: "app::run", error=%e, "poller did not start at launch");
                     }
+                    if let Err(e) = state.ensure_scheduler_running() {
+                        tracing::warn!(target: "app::run", error=%e, "scheduler did not start at launch");
+                    }
                 }
                 Ok(())
             })
@@ -158,6 +162,10 @@ mod app {
                 install_update,
                 get_check_updates_on_launch,
                 set_check_updates_on_launch,
+                get_weekly_summary_enabled,
+                set_weekly_summary_enabled,
+                get_budget_alerts_enabled,
+                set_budget_alerts_enabled,
             ])
             .run(tauri::generate_context!())
             .expect("error while running tauri application");

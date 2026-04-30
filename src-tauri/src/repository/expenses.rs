@@ -7,7 +7,14 @@ use time::OffsetDateTime;
 use crate::domain::{CategoryKind, Expense, ExpenseSource, NewExpense};
 
 const SELECT_COLS: &str = "id, amount_cents, currency, category_id, description, \
-     occurred_at, created_at, source, raw_message, llm_confidence, logged_by_chat_id";
+     occurred_at, created_at, source, raw_message, llm_confidence, logged_by_chat_id, \
+     is_refund, refund_for_expense_id";
+
+/// Signed contribution of an expense row to aggregate totals: positive for
+/// regular expenses, negative for refunds. Use this expression in any SUM()
+/// over `expenses`.
+pub const SIGNED_AMOUNT_SQL: &str =
+    "CASE WHEN is_refund = 1 THEN -amount_cents ELSE amount_cents END";
 
 fn map_row(row: &Row<'_>) -> rusqlite::Result<Expense> {
     Ok(Expense {
@@ -22,6 +29,8 @@ fn map_row(row: &Row<'_>) -> rusqlite::Result<Expense> {
         raw_message: row.get(8)?,
         llm_confidence: row.get(9)?,
         logged_by_chat_id: row.get(10)?,
+        is_refund: row.get::<_, i64>(11)? != 0,
+        refund_for_expense_id: row.get(12)?,
     })
 }
 
@@ -29,8 +38,9 @@ pub fn insert(conn: &Connection, e: &NewExpense) -> Result<i64> {
     conn.execute(
         "INSERT INTO expenses
             (amount_cents, currency, category_id, description, occurred_at,
-             source, raw_message, llm_confidence, logged_by_chat_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+             source, raw_message, llm_confidence, logged_by_chat_id,
+             is_refund, refund_for_expense_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         params![
             e.amount_cents,
             e.currency,
@@ -41,6 +51,8 @@ pub fn insert(conn: &Connection, e: &NewExpense) -> Result<i64> {
             e.raw_message,
             e.llm_confidence,
             e.logged_by_chat_id,
+            if e.is_refund { 1i64 } else { 0i64 },
+            e.refund_for_expense_id,
         ],
     )?;
     Ok(conn.last_insert_rowid())
@@ -92,32 +104,35 @@ pub fn recent(conn: &Connection, limit: u32) -> Result<Vec<Expense>> {
     Ok(rows)
 }
 
-/// Sum of expense amounts in [start, end) whose category has the given kind.
-/// Expenses without a category or with a deleted category contribute 0 to
-/// either kind — pacing logic only counts categorized spend.
+/// Net spend (signed: refunds subtract) in [start, end) whose category has
+/// the given kind. Expenses without a category or with a deleted category
+/// contribute 0 to either kind — pacing logic only counts categorized spend.
 pub fn sum_in_range_by_kind(
     conn: &Connection,
     start: OffsetDateTime,
     end: OffsetDateTime,
     kind: CategoryKind,
 ) -> Result<i64> {
-    let mut stmt = conn.prepare_cached(
-        "SELECT COALESCE(SUM(e.amount_cents), 0)
+    let sql = format!(
+        "SELECT COALESCE(SUM({SIGNED_AMOUNT_SQL}), 0)
          FROM expenses e
          JOIN categories c ON c.id = e.category_id
-         WHERE e.occurred_at >= ?1 AND e.occurred_at < ?2 AND c.kind = ?3",
-    )?;
+         WHERE e.occurred_at >= ?1 AND e.occurred_at < ?2 AND c.kind = ?3"
+    );
+    let mut stmt = conn.prepare_cached(&sql)?;
     let total: i64 = stmt.query_row(params![start, end, kind], |r| r.get(0))?;
     Ok(total)
 }
 
-/// Total spend (all categorized + uncategorized) in [start, end).
+/// Net spend (signed: refunds subtract) across all categorized + uncategorized
+/// rows in [start, end).
 pub fn sum_in_range(conn: &Connection, start: OffsetDateTime, end: OffsetDateTime) -> Result<i64> {
-    let mut stmt = conn.prepare_cached(
-        "SELECT COALESCE(SUM(amount_cents), 0)
+    let sql = format!(
+        "SELECT COALESCE(SUM({SIGNED_AMOUNT_SQL}), 0)
          FROM expenses
-         WHERE occurred_at >= ?1 AND occurred_at < ?2",
-    )?;
+         WHERE occurred_at >= ?1 AND occurred_at < ?2"
+    );
+    let mut stmt = conn.prepare_cached(&sql)?;
     let total: i64 = stmt.query_row(params![start, end], |r| r.get(0))?;
     Ok(total)
 }

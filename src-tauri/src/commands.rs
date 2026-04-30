@@ -729,6 +729,52 @@ pub async fn set_check_updates_on_launch(
     .map_err(err)
 }
 
+#[tauri::command]
+pub async fn get_weekly_summary_enabled(state: State<'_, AppState>) -> Result<bool, String> {
+    let conn = state.db.lock().unwrap();
+    Ok(settings::get(&conn, settings::keys::WEEKLY_SUMMARY_ENABLED)
+        .map_err(err)?
+        .as_deref()
+        != Some("0"))
+}
+
+#[tauri::command]
+pub async fn set_weekly_summary_enabled(
+    enabled: bool,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let conn = state.db.lock().unwrap();
+    settings::set(
+        &conn,
+        settings::keys::WEEKLY_SUMMARY_ENABLED,
+        if enabled { "1" } else { "0" },
+    )
+    .map_err(err)
+}
+
+#[tauri::command]
+pub async fn get_budget_alerts_enabled(state: State<'_, AppState>) -> Result<bool, String> {
+    let conn = state.db.lock().unwrap();
+    Ok(settings::get(&conn, settings::keys::BUDGET_ALERTS_ENABLED)
+        .map_err(err)?
+        .as_deref()
+        != Some("0"))
+}
+
+#[tauri::command]
+pub async fn set_budget_alerts_enabled(
+    enabled: bool,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let conn = state.db.lock().unwrap();
+    settings::set(
+        &conn,
+        settings::keys::BUDGET_ALERTS_ENABLED,
+        if enabled { "1" } else { "0" },
+    )
+    .map_err(err)
+}
+
 // ---------------------------------------------------------------------
 // Misc.
 // ---------------------------------------------------------------------

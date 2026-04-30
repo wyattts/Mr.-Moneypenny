@@ -5,17 +5,21 @@ import {
   clearAuthorizedChats,
   generatePairingCode,
   getAutostart,
+  getBudgetAlertsEnabled,
   getCheckUpdatesOnLaunch,
   getRunInBackground,
   getSetupState,
+  getWeeklySummaryEnabled,
   installUpdate,
   listAuthorizedChats,
   saveAnthropicKey,
   saveCurrencyLocale,
   saveTelegramToken,
   setAutostart,
+  setBudgetAlertsEnabled,
   setCheckUpdatesOnLaunch,
   setRunInBackground,
+  setWeeklySummaryEnabled,
   testAnthropic,
 } from "@/lib/tauri";
 import type { AuthorizedChat, SetupState, TelegramBotInfo } from "@/lib/tauri";
@@ -143,6 +147,13 @@ export function Settings() {
             onSaved={(msg) => setInfo(msg)}
             onError={setError}
           />
+        </Section>
+
+        <Section
+          title="Bot notifications"
+          description="When the Telegram bot will reach out on its own."
+        >
+          <NotificationControls onError={setError} />
         </Section>
 
         <Section
@@ -669,6 +680,62 @@ function UpdateControls({
           </PrimaryButton>
         ) : null}
       </div>
+    </>
+  );
+}
+
+function NotificationControls({ onError }: { onError: (msg: string) => void }) {
+  const [weekly, setWeekly] = useState(true);
+  const [alerts, setAlerts] = useState(true);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const [w, a] = await Promise.all([
+          getWeeklySummaryEnabled(),
+          getBudgetAlertsEnabled(),
+        ]);
+        setWeekly(w);
+        setAlerts(a);
+      } catch (e) {
+        onError(String(e));
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function toggleWeekly(enabled: boolean) {
+    try {
+      await setWeeklySummaryEnabled(enabled);
+      setWeekly(enabled);
+    } catch (e) {
+      onError(String(e));
+    }
+  }
+
+  async function toggleAlerts(enabled: boolean) {
+    try {
+      await setBudgetAlertsEnabled(enabled);
+      setAlerts(enabled);
+    } catch (e) {
+      onError(String(e));
+    }
+  }
+
+  return (
+    <>
+      <ToggleRow
+        label="Weekly summary"
+        description="Every 7 days the bot DMs you a recap of the last week's spend (total, top categories)."
+        checked={weekly}
+        onChange={toggleWeekly}
+      />
+      <ToggleRow
+        label="Budget threshold alerts"
+        description="Bot DMs you when a variable category crosses 80% or 100% of its monthly target. Once per threshold per month."
+        checked={alerts}
+        onChange={toggleAlerts}
+      />
     </>
   );
 }

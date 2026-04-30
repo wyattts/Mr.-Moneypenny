@@ -5,4 +5,5 @@
 pub mod budgets;
 pub mod categories;
 pub mod expenses;
+pub mod recurring_rules;
 pub mod settings;

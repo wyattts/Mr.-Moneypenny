@@ -51,6 +51,9 @@ struct Inner {
     /// shutdown happens via the `shutdown` flag.
     started: bool,
     shutdown: Arc<AtomicBool>,
+    /// Companion flag for the scheduler task. Same lifecycle pattern.
+    scheduler_started: bool,
+    scheduler_shutdown: Arc<AtomicBool>,
 }
 
 impl AppState {
@@ -61,6 +64,8 @@ impl AppState {
             inner: Mutex::new(Inner {
                 started: false,
                 shutdown: Arc::new(AtomicBool::new(false)),
+                scheduler_started: false,
+                scheduler_shutdown: Arc::new(AtomicBool::new(false)),
             }),
         }
     }
@@ -112,6 +117,71 @@ impl AppState {
     pub fn shutdown_poller(&self) {
         let inner = self.inner.lock().unwrap();
         inner.shutdown.store(true, Ordering::Relaxed);
+    }
+
+    /// Spawn the scheduler task. Idempotent. Independent of the TG poller —
+    /// the scheduler can run without a bot token (its handlers will just
+    /// no-op when there's nothing to send), so we start it as soon as the
+    /// app comes up.
+    #[cfg(feature = "desktop")]
+    pub fn ensure_scheduler_running(&self) -> Result<()> {
+        let mut inner = self.inner.lock().unwrap();
+        if inner.scheduler_started {
+            return Ok(());
+        }
+        // Try to build the same RouterDeps the poller uses so handlers
+        // share the LLM + Telegram client. If the user hasn't completed
+        // setup yet, we skip until ensure_poller_running succeeds, since
+        // both rely on the same secrets.
+        let token = match secrets::retrieve(secrets::keys::TELEGRAM_BOT_TOKEN)? {
+            Some(t) => t,
+            None => return Ok(()), // setup incomplete; poller path will retry later
+        };
+        let client = TelegramClient::new(token).context("building telegram client")?;
+        let llm = build_llm_provider(&self.db.lock().unwrap())?;
+        let default_currency = settings::get_or_default(
+            &self.db.lock().unwrap(),
+            settings::keys::DEFAULT_CURRENCY,
+            "USD",
+        )?;
+
+        let deps = crate::telegram::router::RouterDeps {
+            conn: Arc::clone(&self.db),
+            llm,
+            client: Arc::new(client),
+            state: Arc::clone(&self.bot),
+            default_currency,
+        };
+
+        // Ensure the singleton jobs exist (weekly summary + budget alert
+        // sweep). Idempotent — re-launching doesn't duplicate.
+        {
+            let conn = self.db.lock().unwrap();
+            let now = time::OffsetDateTime::now_utc();
+            // Fire the first weekly summary one week from now (so the
+            // user doesn't get a "$0 in 0 expenses" DM immediately
+            // after pairing).
+            let _ = crate::scheduler::ensure_singleton(
+                &conn,
+                crate::scheduler::JobKind::WeeklySummary,
+                now + time::Duration::days(7),
+            );
+            // Budget alert sweep starts firing within the next hour so
+            // it picks up new spend promptly.
+            let _ = crate::scheduler::ensure_singleton(
+                &conn,
+                crate::scheduler::JobKind::BudgetAlertSweep,
+                now + time::Duration::minutes(5),
+            );
+        }
+
+        let shutdown = Arc::clone(&inner.scheduler_shutdown);
+        shutdown.store(false, Ordering::Relaxed);
+        tauri::async_runtime::spawn(async move {
+            crate::scheduler::run(deps, shutdown).await;
+        });
+        inner.scheduler_started = true;
+        Ok(())
     }
 
     /// Tear down the running poller (if any) and spawn a fresh one with
