@@ -133,4 +133,10 @@ jobs:
           # sections; suppress its stripping so the AppImage build
           # succeeds on modern binutils.
           NO_STRIP: true
-        run: npm run tauri build -- --target ${{ matrix.target }}
+        # CI verifies the build compiles and bundles correctly. It does
+        # NOT need to produce signed updater artifacts — those are the
+        # exclusive job of release.yml, which has the
+        # TAURI_SIGNING_PRIVATE_KEY secret. Override
+        # `bundle.createUpdaterArtifacts` to false here so the bundler
+        # doesn't refuse to run on the missing private key.
+        run: npm run tauri build -- --target ${{ matrix.target }} --config '{"bundle":{"createUpdaterArtifacts":false}}'
