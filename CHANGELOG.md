@@ -4,6 +4,16 @@ All notable changes to Mr. Moneypenny are documented here. The format roughly fo
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-04-30
+
+### Added
+
+- **Electric** and **Water** as fixed-cost seed categories (inactive by default — tick on under Categories → Fixed if either applies). Migration `0005_seed_electric_water.sql` adds them to existing installs via INSERT OR IGNORE.
+
+### Why this release exists
+
+First end-to-end dogfood of the v0.2.0 in-app updater. AppImage / DMG / MSI / EXE users on v0.2.0 should see the update banner on next launch.
+
 ## [0.2.0] - 2026-04-30
 
 ### Added

@@ -26,6 +26,11 @@ const MIGRATIONS: &[(u32, &str, &str)] = &[
         "0004_investing_kind",
         include_str!("migrations/0004_investing_kind.sql"),
     ),
+    (
+        5,
+        "0005_seed_electric_water",
+        include_str!("migrations/0005_seed_electric_water.sql"),
+    ),
 ];
 
 /// Open a SQLite connection at the given path, creating the file if
@@ -160,12 +165,12 @@ mod tests {
         )
         .unwrap();
 
-        // Now apply migrations 0003+0004.
+        // Now apply migrations 0003+0004+0005.
         migrate(&conn).unwrap();
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 4);
+        assert_eq!(v, 5);
 
         let active = collect_active_seed_names(&conn);
         let mut expected: Vec<String> = EXPECTED_DEFAULT_ACTIVE
