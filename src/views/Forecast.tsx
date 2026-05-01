@@ -1,8 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import {
-  Area,
   CartesianGrid,
-  ComposedChart,
   Line,
   LineChart,
   ResponsiveContainer,
@@ -12,12 +10,8 @@ import {
 } from "recharts";
 
 import {
-  computeCategoryTrend,
-  computeGoalProbability,
-  computeRunway,
   listCategories,
   listInvestmentCategories,
-  monteCarloInvestment,
   projectInvestment,
   runScenario,
   solveGoalSeek,
@@ -26,22 +20,11 @@ import type {
   CategoryView,
   InvestmentProjection,
   InvestmentSummary,
-  PathBands,
-  RunwayResult,
   ScenarioResult,
-  TrendResult,
 } from "@/lib/tauri";
 import { ErrorBanner } from "@/wizard/components/Layout";
 import { formatMoney } from "@/lib/format";
 import { ViewHeader } from "./ViewHeader";
-
-// Annualized volatility tied to the user's chosen return preset.
-// See `src-tauri/src/insights/monte_carlo.rs` for the rationale.
-function volatilityForReturn(returnPct: number): number {
-  if (returnPct <= 5) return 5;
-  if (returnPct <= 8) return 10;
-  return 15;
-}
 
 export function Forecast() {
   const [error, setError] = useState<string | null>(null);
@@ -49,14 +32,12 @@ export function Forecast() {
     <div>
       <ViewHeader
         title="Forecast"
-        subtitle="Look-forward tools — investment projection, survivability, goal-seek, scenario sliders, and a category trend analyzer."
+        subtitle="Look-forward tools — investment projection, goal-seek, and a what-if for your variable categories. Deterministic for now; Monte Carlo paths land in v0.3.2."
       />
       <div className="space-y-6 px-8 py-6">
         {error && <ErrorBanner>{error}</ErrorBanner>}
         <InvestmentCalculator onError={setError} />
-        <SurvivabilityTool onError={setError} />
         <GoalSeekTool onError={setError} />
-        <TrendAnalyzer onError={setError} />
         <ScenarioTool onError={setError} />
       </div>
     </div>
@@ -82,9 +63,7 @@ function InvestmentCalculator({ onError }: { onError: (m: string) => void }) {
   const [inflationPct, setInflationPct] = useState(2.5);
   const [horizonYears, setHorizonYears] = useState(30);
   const [showContributions, setShowContributions] = useState(false);
-  const [showBands, setShowBands] = useState(false);
   const [projection, setProjection] = useState<InvestmentProjection | null>(null);
-  const [bands, setBands] = useState<PathBands | null>(null);
 
   useEffect(() => {
     void (async () => {
@@ -155,31 +134,15 @@ function InvestmentCalculator({ onError }: { onError: (m: string) => void }) {
       const startingDollarsNum = parseFloat(startingDollars) || 0;
       const startingCents = Math.round(startingDollarsNum * 100);
       const monthlyDollars = parseFloat(contributionDollars) || 0;
-      const monthlyCents = Math.round(monthlyDollars * 100);
-      const [proj, mc] = await Promise.all([
-        projectInvestment({
-          starting_balance_cents: startingCents,
-          monthly_contribution_cents: monthlyCents,
-          annual_return_pct: returnPct,
-          annual_inflation_pct: inflationPct,
-          horizon_years: horizonYears,
-          trajectory_points: 30,
-        }),
-        showBands
-          ? monteCarloInvestment({
-              starting_balance_cents: startingCents,
-              monthly_contribution_cents: monthlyCents,
-              annual_return_pct: returnPct,
-              annual_volatility_pct: volatilityForReturn(returnPct),
-              horizon_years: horizonYears,
-              n_paths: 1000,
-              time_points: 30,
-              seed: null,
-            })
-          : Promise.resolve(null as PathBands | null),
-      ]);
-      setProjection(proj);
-      setBands(mc);
+      const r = await projectInvestment({
+        starting_balance_cents: startingCents,
+        monthly_contribution_cents: Math.round(monthlyDollars * 100),
+        annual_return_pct: returnPct,
+        annual_inflation_pct: inflationPct,
+        horizon_years: horizonYears,
+        trajectory_points: 30,
+      });
+      setProjection(r);
     } catch (e) {
       onError(String(e));
     }
@@ -197,7 +160,6 @@ function InvestmentCalculator({ onError }: { onError: (m: string) => void }) {
     returnPct,
     inflationPct,
     horizonYears,
-    showBands,
     accounts,
   ]);
 
@@ -205,24 +167,13 @@ function InvestmentCalculator({ onError }: { onError: (m: string) => void }) {
     if (!projection) return [];
     const startingCents = Math.round((parseFloat(startingDollars) || 0) * 100);
     const monthlyCents = Math.round((parseFloat(contributionDollars) || 0) * 100);
-    // Map Monte Carlo bands by month for fast lookup.
-    const byMonth = new Map<number, PathBands["points"][number]>();
-    if (bands) for (const pt of bands.points) byMonth.set(pt.month, pt);
-    return projection.trajectory.map((p) => {
-      const mc = byMonth.get(p.month);
-      return {
-        year: +(p.month / 12).toFixed(2),
-        Nominal: p.nominal_cents / 100,
-        Real: p.real_cents / 100,
-        Contributions: (startingCents + monthlyCents * p.month) / 100,
-        // Stack key for the band area: `band_lo` is the bottom edge,
-        // `band_span` is added on top so Recharts renders a filled
-        // ribbon between p10 and p90.
-        band_lo: mc ? mc.p10 / 100 : null,
-        band_span: mc ? (mc.p90 - mc.p10) / 100 : null,
-      };
-    });
-  }, [projection, startingDollars, contributionDollars, bands]);
+    return projection.trajectory.map((p) => ({
+      year: +(p.month / 12).toFixed(2),
+      Nominal: p.nominal_cents / 100,
+      Real: p.real_cents / 100,
+      Contributions: (startingCents + monthlyCents * p.month) / 100,
+    }));
+  }, [projection, startingDollars, contributionDollars]);
 
   if (accounts.length === 0) {
     return (
@@ -352,7 +303,7 @@ function InvestmentCalculator({ onError }: { onError: (m: string) => void }) {
               </div>
               <div className="mt-4">
                 <ResponsiveContainer width="100%" height={280}>
-                  <ComposedChart data={chartData}>
+                  <LineChart data={chartData}>
                     <CartesianGrid stroke="#2a3138" strokeDasharray="3 3" />
                     <XAxis
                       dataKey="year"
@@ -373,35 +324,11 @@ function InvestmentCalculator({ onError }: { onError: (m: string) => void }) {
                         borderRadius: 6,
                         color: "#e5e7eb",
                       }}
-                      formatter={(v: number, name: string) => {
-                        if (name === "band_lo" || name === "band_span") return null as unknown as string;
-                        return formatMoney(Math.round(v * 100));
-                      }}
+                      formatter={(v: number) =>
+                        formatMoney(Math.round(v * 100))
+                      }
                       labelFormatter={(l) => `Year ${l}`}
                     />
-                    {showBands && (
-                      <>
-                        <Area
-                          type="monotone"
-                          dataKey="band_lo"
-                          stackId="band"
-                          stroke="none"
-                          fill="transparent"
-                          isAnimationActive={false}
-                          legendType="none"
-                        />
-                        <Area
-                          type="monotone"
-                          dataKey="band_span"
-                          stackId="band"
-                          stroke="none"
-                          fill="#34d399"
-                          fillOpacity={0.18}
-                          isAnimationActive={false}
-                          legendType="none"
-                        />
-                      </>
-                    )}
                     <Line
                       type="monotone"
                       dataKey="Nominal"
@@ -429,7 +356,7 @@ function InvestmentCalculator({ onError }: { onError: (m: string) => void }) {
                         dot={false}
                       />
                     )}
-                  </ComposedChart>
+                  </LineChart>
                 </ResponsiveContainer>
                 <div className="mt-2 flex flex-wrap items-center gap-4 text-xs text-graphite-400">
                   <span className="flex items-center gap-1.5">
@@ -441,39 +368,18 @@ function InvestmentCalculator({ onError }: { onError: (m: string) => void }) {
                       (today&apos;s $)
                     </span>
                   )}
-                  {showBands && bands && bands.points.length > 0 && (
+                  <label className="ml-auto flex cursor-pointer items-center gap-1.5 select-none">
+                    <input
+                      type="checkbox"
+                      checked={showContributions}
+                      onChange={(e) => setShowContributions(e.target.checked)}
+                      className="h-3 w-3 accent-forest-500"
+                    />
                     <span className="flex items-center gap-1.5">
-                      <span className="inline-block h-2 w-4 rounded-sm bg-forest-400/30" />{" "}
-                      80% band ({formatMoney(bands.points[bands.points.length - 1]!.p10)}{" "}
-                      – {formatMoney(bands.points[bands.points.length - 1]!.p90)})
+                      <span className="inline-block h-0.5 w-4 bg-graphite-300" />{" "}
+                      Show contributions
                     </span>
-                  )}
-                  <div className="ml-auto flex flex-wrap gap-3">
-                    <label className="flex cursor-pointer items-center gap-1.5 select-none">
-                      <input
-                        type="checkbox"
-                        checked={showContributions}
-                        onChange={(e) => setShowContributions(e.target.checked)}
-                        className="h-3 w-3 accent-forest-500"
-                      />
-                      <span className="flex items-center gap-1.5">
-                        <span className="inline-block h-0.5 w-4 bg-graphite-300" />{" "}
-                        Show contributions
-                      </span>
-                    </label>
-                    <label className="flex cursor-pointer items-center gap-1.5 select-none">
-                      <input
-                        type="checkbox"
-                        checked={showBands}
-                        onChange={(e) => setShowBands(e.target.checked)}
-                        className="h-3 w-3 accent-forest-500"
-                      />
-                      <span className="flex items-center gap-1.5">
-                        <span className="inline-block h-2 w-4 rounded-sm bg-forest-400/30" />{" "}
-                        Probability bands
-                      </span>
-                    </label>
-                  </div>
+                  </label>
                 </div>
               </div>
             </>
@@ -497,15 +403,14 @@ function GoalSeekTool({ onError }: { onError: (m: string) => void }) {
     monthly: number;
     onTrack: boolean;
   } | null>(null);
-  const [probability, setProbability] = useState<number | null>(null);
 
   async function compute() {
     try {
-      const targetCents = Math.round((parseFloat(target) || 0) * 100);
-      const startingCents = Math.round((parseFloat(startingBalance) || 0) * 100);
       const r = await solveGoalSeek({
-        target_cents: targetCents,
-        starting_balance_cents: startingCents,
+        target_cents: Math.round((parseFloat(target) || 0) * 100),
+        starting_balance_cents: Math.round(
+          (parseFloat(startingBalance) || 0) * 100,
+        ),
         annual_return_pct: returnPct,
         horizon_years: horizon,
       });
@@ -513,23 +418,6 @@ function GoalSeekTool({ onError }: { onError: (m: string) => void }) {
         monthly: r.required_monthly_cents,
         onTrack: r.already_on_track,
       });
-      // Probability of actually hitting the target if you contribute
-      // exactly the goal-seek answer, given the asset class's typical
-      // volatility (tied to the chosen return rate).
-      if (!r.already_on_track && r.required_monthly_cents > 0) {
-        const p = await computeGoalProbability({
-          starting_balance_cents: startingCents,
-          monthly_contribution_cents: r.required_monthly_cents,
-          annual_return_pct: returnPct,
-          annual_volatility_pct: volatilityForReturn(returnPct),
-          horizon_years: horizon,
-          target_cents: targetCents,
-          n_paths: 1000,
-        });
-        setProbability(p);
-      } else {
-        setProbability(null);
-      }
     } catch (e) {
       onError(String(e));
     }
@@ -599,305 +487,12 @@ function GoalSeekTool({ onError }: { onError: (m: string) => void }) {
                     to hit {formatMoney(Math.round((parseFloat(target) || 0) * 100))} in{" "}
                     {horizon} years at {returnPct.toFixed(2)}%
                   </div>
-                  {probability !== null && (
-                    <div
-                      className={`mt-3 rounded-md px-2 py-1 text-xs ${
-                        probability >= 0.7
-                          ? "bg-forest-700/30 text-forest-100"
-                          : probability >= 0.4
-                            ? "bg-yellow-700/30 text-yellow-100"
-                            : "bg-red-700/30 text-red-100"
-                      }`}
-                    >
-                      ≈ {(probability * 100).toFixed(2)}% chance of hitting the
-                      target — accounting for{" "}
-                      {volatilityForReturn(returnPct).toFixed(2)}% annual
-                      volatility.
-                    </div>
-                  )}
                 </>
               )}
             </>
           )}
         </div>
       </div>
-    </Section>
-  );
-}
-
-// ---------------------------------------------------------------------
-// Survivability / runway
-// ---------------------------------------------------------------------
-
-function SurvivabilityTool({ onError }: { onError: (m: string) => void }) {
-  const [data, setData] = useState<RunwayResult | null>(null);
-  useEffect(() => {
-    void (async () => {
-      try {
-        setData(await computeRunway());
-      } catch (e) {
-        onError(String(e));
-      }
-    })();
-  }, [onError]);
-
-  if (!data) return null;
-
-  const burn = data.total_burn_per_month_cents;
-  const months = data.months_at_recent_burn;
-  const stressMonths = data.months_at_p25_variable;
-  const fixedFrac = burn > 0 ? data.fixed_per_month_cents / burn : 0;
-
-  return (
-    <Section title="Survivability">
-      <p className="mb-3 text-sm text-graphite-400">
-        If your income stops today, how long does your liquid balance last at
-        your recent burn rate? Combines your investing-account starting
-        balances + the past 12 months of investing contributions; subtracts
-        recent fixed + variable spend.
-      </p>
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1fr_2fr]">
-        <div className="rounded-md border border-graphite-700 bg-graphite-800 p-4">
-          <div className="text-xs uppercase tracking-wide text-graphite-400">
-            Runway at recent burn
-          </div>
-          <div
-            className={`mt-1 text-3xl font-semibold tabular-nums ${
-              months >= 12
-                ? "text-forest-100"
-                : months >= 3
-                  ? "text-yellow-100"
-                  : "text-red-200"
-            }`}
-          >
-            {Number.isFinite(months)
-              ? `${months.toFixed(2)} mo`
-              : "—"}
-          </div>
-          <div className="mt-2 text-xs text-graphite-500">
-            {formatMoney(data.drawable_balance_cents)} drawable ÷{" "}
-            {formatMoney(burn)}/mo
-          </div>
-          {stressMonths != null && (
-            <div className="mt-3 border-t border-graphite-700 pt-2">
-              <div className="text-xs uppercase tracking-wide text-graphite-400">
-                If you cut variable to your historical P25
-              </div>
-              <div className="mt-1 text-lg tabular-nums text-graphite-100">
-                {Number.isFinite(stressMonths)
-                  ? `${stressMonths.toFixed(2)} mo`
-                  : "—"}{" "}
-                <span className="ml-1 text-xs text-graphite-500">
-                  (variable trimmed to{" "}
-                  {formatMoney(data.variable_p25_cents ?? 0)}/mo)
-                </span>
-              </div>
-            </div>
-          )}
-        </div>
-        <div className="space-y-2">
-          <div className="rounded-md border border-graphite-700 bg-graphite-800 p-4">
-            <div className="mb-2 text-xs uppercase tracking-wide text-graphite-400">
-              Monthly burn breakdown
-            </div>
-            <div className="flex h-3 overflow-hidden rounded-full bg-graphite-900">
-              <div
-                className="bg-graphite-300"
-                style={{ width: `${(fixedFrac * 100).toFixed(1)}%` }}
-              />
-              <div
-                className="bg-forest-500"
-                style={{
-                  width: `${((1 - fixedFrac) * 100).toFixed(1)}%`,
-                }}
-              />
-            </div>
-            <div className="mt-2 flex justify-between text-xs text-graphite-300">
-              <span>
-                Fixed (inevitable):{" "}
-                <span className="tabular-nums text-graphite-100">
-                  {formatMoney(data.fixed_per_month_cents)}/mo
-                </span>
-              </span>
-              <span>
-                Variable (trim-able):{" "}
-                <span className="tabular-nums text-graphite-100">
-                  {formatMoney(data.variable_per_month_cents)}/mo
-                </span>
-              </span>
-            </div>
-          </div>
-          <p className="rounded-md border border-graphite-700 bg-graphite-950 p-3 text-xs text-graphite-500">
-            <strong className="text-graphite-300">Assumes:</strong> all
-            investing balances are liquid (no 401(k) early-withdrawal penalty
-            modeled), your last 3-month average burn continues, and no income.
-            Use this as a rough orientation — the real number depends on your
-            accounts&apos; tax treatment.
-          </p>
-        </div>
-      </div>
-    </Section>
-  );
-}
-
-// ---------------------------------------------------------------------
-// Trend Analyzer (opt-in, single category)
-// ---------------------------------------------------------------------
-
-function TrendAnalyzer({ onError }: { onError: (m: string) => void }) {
-  const [categories, setCategoriesState] = useState<CategoryView[]>([]);
-  const [categoryId, setCategoryId] = useState<number | null>(null);
-  const [monthsBack, setMonthsBack] = useState(24);
-  const [trend, setTrend] = useState<TrendResult | null>(null);
-
-  useEffect(() => {
-    void (async () => {
-      try {
-        const cats = await listCategories(false);
-        setCategoriesState(cats.filter((c) => c.is_active));
-      } catch (e) {
-        onError(String(e));
-      }
-    })();
-  }, [onError]);
-
-  async function analyze() {
-    if (categoryId === null) return;
-    try {
-      const r = await computeCategoryTrend(categoryId, monthsBack);
-      setTrend(r);
-    } catch (e) {
-      onError(String(e));
-    }
-  }
-
-  const chartData = useMemo(() => {
-    if (!trend) return [];
-    return trend.monthly_totals_cents.map((c, i) => ({
-      monthIndex: i + 1,
-      Spend: c / 100,
-      Trend: (trend.slope_cents_per_month * i + trend.intercept_cents) / 100,
-    }));
-  }, [trend]);
-
-  const slopePerYear = trend ? trend.slope_cents_per_month * 12 : 0;
-
-  return (
-    <Section title="Trend analyzer">
-      <p className="mb-3 text-sm text-graphite-400">
-        Pick a category to fit a trend line over its monthly history. Catches
-        lifestyle creep without cluttering every category panel.
-      </p>
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-[1fr_auto_auto]">
-        <label className="block">
-          <span className="text-xs uppercase tracking-wide text-graphite-400">
-            Category
-          </span>
-          <select
-            value={categoryId ?? ""}
-            onChange={(e) =>
-              setCategoryId(e.target.value === "" ? null : Number(e.target.value))
-            }
-            className="mt-1 w-full rounded-md border border-graphite-700 bg-graphite-800 px-3 py-2 text-sm text-graphite-100"
-          >
-            <option value="">— pick one —</option>
-            {categories.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.name} ({c.kind})
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="block">
-          <span className="text-xs uppercase tracking-wide text-graphite-400">
-            Months back
-          </span>
-          <select
-            value={monthsBack}
-            onChange={(e) => setMonthsBack(Number(e.target.value))}
-            className="mt-1 rounded-md border border-graphite-700 bg-graphite-800 px-3 py-2 text-sm text-graphite-100"
-          >
-            <option value={12}>12</option>
-            <option value={24}>24</option>
-            <option value={36}>36</option>
-          </select>
-        </label>
-        <div className="flex items-end">
-          <button
-            onClick={() => void analyze()}
-            disabled={categoryId === null}
-            className="rounded-md bg-forest-600 px-3 py-2 text-sm font-medium text-graphite-50 hover:bg-forest-500 disabled:opacity-50"
-          >
-            Analyze
-          </button>
-        </div>
-      </div>
-      {trend && (
-        <div className="mt-4 space-y-3">
-          <div
-            className={`rounded-md border px-3 py-2 text-sm ${
-              trend.direction === "rising"
-                ? "border-yellow-600/40 bg-yellow-700/15 text-yellow-100"
-                : trend.direction === "falling"
-                  ? "border-forest-600/40 bg-forest-700/15 text-forest-100"
-                  : "border-graphite-700 bg-graphite-800 text-graphite-200"
-            }`}
-          >
-            {trend.headline}
-            {trend.direction !== "flat" && (
-              <span className="ml-2 text-xs text-graphite-400">
-                ({slopePerYear > 0 ? "+" : ""}
-                {formatMoney(Math.round(slopePerYear))}
-                /mo per year)
-              </span>
-            )}
-          </div>
-          {chartData.length > 0 && (
-            <ResponsiveContainer width="100%" height={220}>
-              <LineChart data={chartData}>
-                <CartesianGrid stroke="#2a3138" strokeDasharray="3 3" />
-                <XAxis
-                  dataKey="monthIndex"
-                  stroke="#94a3b8"
-                  tickFormatter={(v) => `m${v}`}
-                />
-                <YAxis
-                  stroke="#94a3b8"
-                  tickFormatter={(v) =>
-                    v >= 1000 ? `$${(v / 1000).toFixed(0)}k` : `$${v.toFixed(0)}`
-                  }
-                />
-                <Tooltip
-                  cursor={false}
-                  contentStyle={{
-                    backgroundColor: "#1a1f24",
-                    border: "1px solid #2a3138",
-                    borderRadius: 6,
-                    color: "#e5e7eb",
-                  }}
-                  formatter={(v: number) => formatMoney(Math.round(v * 100))}
-                  labelFormatter={(l) => `Month ${l}`}
-                />
-                <Line
-                  type="monotone"
-                  dataKey="Spend"
-                  stroke="#34d399"
-                  strokeWidth={2}
-                  dot={false}
-                />
-                <Line
-                  type="monotone"
-                  dataKey="Trend"
-                  stroke="#facc15"
-                  strokeWidth={2}
-                  strokeDasharray="4 3"
-                  dot={false}
-                />
-              </LineChart>
-            </ResponsiveContainer>
-          )}
-        </div>
-      )}
     </Section>
   );
 }

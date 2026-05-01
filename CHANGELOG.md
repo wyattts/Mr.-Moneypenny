@@ -4,29 +4,6 @@ All notable changes to Mr. Moneypenny are documented here. The format roughly fo
 
 ## [Unreleased]
 
-## [0.3.3] - 2026-05-01
-
-Forecast wave 2 — probabilistic projections + three new "answers a real question" tools that turn the deterministic v0.3.0 forecast view into something you'd actually open at decision time.
-
-### Added
-
-- **Monte Carlo investment paths.** The Investment Calculator chart gains a "Probability bands" checkbox (default off). Flipping it on overlays an 80% probability ribbon (P10–P90) on top of the deterministic projection, computed from 1,000 simulated paths where each month draws a return from a Normal distribution around your chosen rate. Volatility is tied to the return preset (Conservative=5%/yr, Balanced=10%/yr, Stock-heavy=15%/yr), matching historical asset-class numbers. Tooltips show the median + 80% range at every year.
-- **Survivability section.** New panel: "If your income stops today, you have N.N months of runway." Combines investing-account starting balances + last-12-month investing contributions as drawable, divides by your recent 3-month average burn (fixed + variable, refunds netted). Also surfaces a stress-test mode: "If you cut variable to your historical P25, runway extends to M.M months." Honest disclosure included — assumes balances are liquid (no 401(k) early-withdrawal penalty modeled).
-- **Trend Analyzer.** Pick a category from a dropdown, click Analyze. Surfaces a 24-month linear regression with slope expressed as `$X/mo per year`, R² as a fit-quality badge, plain-English headline (e.g., "Spending is rising at $42/mo per year — strong trend (R²=0.71)"), and a chart with the data + fitted line. Explicitly opt-in: not auto-rendered for every category, so the Categories tab stays clean.
-- **Goal probability.** Goal-seek now annotates its required-monthly answer with a probability readout: "≈ 62.30% chance of hitting the target — accounting for 10.00% annual volatility." Color-coded green/yellow/red by probability tier. Same Monte Carlo engine as the investment chart.
-
-### Internal
-
-- New `src-tauri/src/insights/monte_carlo.rs`: 1,000-path simulator with Box-Muller Normal sampling, optional fixed RNG seed for reproducibility, percentile extraction at user-chosen time grid. 8 unit tests including a σ=0 cross-check against the closed-form FV.
-- New `src-tauri/src/insights/runway.rs`: 3-month burn average from `expenses` joined to `categories`, drawable balance from investing-kind starting balances + 12-month contributions, P25 stress-test mode. 5 integration tests.
-- New `src-tauri/src/insights/trend.rs`: closed-form least-squares with R², direction classifier, headline builder. 5 unit tests across the math.
-- 4 new IPC commands: `monte_carlo_investment`, `compute_goal_probability`, `compute_runway`, `compute_category_trend`. 18 new tests; 275 total passing.
-- No new dependencies (used existing `rand`).
-
-### Privacy / honesty
-
-Every probabilistic readout makes its assumptions explicit in the UI. The runway panel surfaces a "What this assumes" disclosure (no early-withdrawal penalty, no income, recent burn continues). The probability bands and goal probability show the volatility figure used, so users can see what's driving the spread.
-
 ## [0.3.2] - 2026-05-01
 
 CSV importer. Bulk-load bank and credit-card export CSVs into the local expense ledger without paying API tokens for every row. Built around a `merchant_rules` table that the import wizard populates one click at a time on its review screen — first import of a new bank takes a few minutes, every subsequent import from the same bank is instant and free.
