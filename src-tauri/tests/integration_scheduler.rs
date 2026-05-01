@@ -81,6 +81,12 @@ impl LLMProvider for NoopLlm {
     async fn chat(&self, _request: ChatRequest) -> Result<ChatResponse> {
         anyhow::bail!("NoopLlm: no canned response — handlers must not call the LLM in this test")
     }
+    fn provider_name(&self) -> &str {
+        "noop"
+    }
+    fn model(&self) -> &str {
+        "noop"
+    }
 }
 
 fn fresh_deps() -> (RouterDeps, Arc<Mutex<Connection>>, Arc<NoopTelegram>) {

@@ -5,5 +5,6 @@
 pub mod budgets;
 pub mod categories;
 pub mod expenses;
+pub mod llm_usage;
 pub mod recurring_rules;
 pub mod settings;

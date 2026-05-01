@@ -51,6 +51,11 @@ const MIGRATIONS: &[(u32, &str, &str)] = &[
         "0009_budget_alert_state",
         include_str!("migrations/0009_budget_alert_state.sql"),
     ),
+    (
+        10,
+        "0010_llm_usage",
+        include_str!("migrations/0010_llm_usage.sql"),
+    ),
 ];
 
 /// Open a SQLite connection at the given path, creating the file if
@@ -185,12 +190,12 @@ mod tests {
         )
         .unwrap();
 
-        // Now apply migrations 0003+0004+0005+0006+0007+0008+0009.
+        // Now apply migrations 0003+0004+0005+0006+0007+0008+0009+0010.
         migrate(&conn).unwrap();
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 9);
+        assert_eq!(v, 10);
 
         let active = collect_active_seed_names(&conn);
         let mut expected: Vec<String> = EXPECTED_DEFAULT_ACTIVE

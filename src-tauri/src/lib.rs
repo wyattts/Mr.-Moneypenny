@@ -166,6 +166,7 @@ mod app {
                 set_weekly_summary_enabled,
                 get_budget_alerts_enabled,
                 set_budget_alerts_enabled,
+                get_llm_usage_summary,
             ])
             .run(tauri::generate_context!())
             .expect("error while running tauri application");

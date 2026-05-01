@@ -4,6 +4,27 @@ All notable changes to Mr. Moneypenny are documented here. The format roughly fo
 
 ## [Unreleased]
 
+## [0.2.9] - 2026-05-01
+
+API cost tracker plus two friction kills on the bot side.
+
+### Added
+
+- **Settings → API usage** panel surfaces what you've spent on Anthropic API calls. Three big numbers (today / this month / lifetime) plus a per-model breakdown with call count, input/output tokens, and cost. Ollama models show with a "local" tag and zero cost.
+- New `llm_usage` table logs one row per successful chat() response. Cost is computed at insert time from a hardcoded price table (`src-tauri/src/llm/pricing.rs`) — historical totals stay frozen even if Anthropic adjusts pricing later.
+- Pricing table covers Claude Haiku / Sonnet / Opus 4.5+ snapshots; cache-read and cache-creation tokens use the standard 0.1× and 1.25× input-rate multipliers. Unknown models log a row with `cost_micros = 0` so call counts still work.
+
+### Changed
+
+- **Bot no longer asks "are you sure?" before deletes.** When you say "delete that last one" or "remove the rent recurring", it just does it. The undo cost is one message; the confirmation cost was a turn round-trip plus extra tokens — net friction win.
+- **Bot picks a borderline category instead of asking.** "$20 pan" lands in Household automatically rather than prompting "household or misc?" Only asks if a message is genuinely uninterpretable as an expense or no category fits even loosely. Specific categories preferred over Misc; Misc is now treated as a last resort.
+
+### Internal
+
+- `LLMProvider` trait grew `provider_name()` and `model()` accessors so the router can attribute usage rows correctly.
+- Migration 0010 adds the `llm_usage` table + `idx_llm_usage_occurred` index.
+- 13 new unit tests across `llm/pricing` and `repository/llm_usage` cover model lookup, cost computation including cache token components, format precision buckets, today/month/lifetime windowing, and per-model aggregation. 196 total tests passing.
+
 ## [0.2.8] - 2026-05-01
 
 Copy fix. v0.2.7 replaced the OS keyring with an encrypted-on-disk store, but four UI strings still claimed "stored in your OS keychain." Updated to reflect reality: secrets are encrypted on disk under a machine-bound key.

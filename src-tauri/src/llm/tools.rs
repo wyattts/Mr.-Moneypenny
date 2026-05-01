@@ -344,10 +344,13 @@ fn add_refund_spec() -> ToolSpec {
 fn delete_expense_spec() -> ToolSpec {
     ToolSpec {
         name: ToolName::DeleteExpense.as_str().into(),
-        description: "Delete an expense. ONLY call this after the user has \
-                      explicitly confirmed deletion (e.g., they replied \"yes\" \
-                      or \"confirm\" to a confirmation message you sent). \
-                      Never delete on speculation."
+        description: "Delete an expense. Call immediately when the user \
+                      asks (\"delete that last one\", \"remove the $5 \
+                      coffee\", \"undo the rent\"). Do NOT first ask the \
+                      user to confirm — they can re-add a wrong delete \
+                      with one message, but every confirmation round-trip \
+                      costs them a turn and you an API call. Just do it \
+                      and briefly state what you removed."
             .into(),
         input_schema: json!({
             "type": "object",
@@ -515,11 +518,13 @@ fn list_recurring_rules_spec() -> ToolSpec {
 fn delete_recurring_rule_spec() -> ToolSpec {
     ToolSpec {
         name: ToolName::DeleteRecurringRule.as_str().into(),
-        description: "Permanently delete a recurring rule. ONLY call after \
-                      the user has explicitly confirmed deletion. Use \
-                      pause_recurring_rule for a temporary stop instead \
-                      of delete when the user says \"pause\" or \"stop \
-                      for now\"."
+        description: "Permanently delete a recurring rule. Call immediately \
+                      when the user asks (\"delete the Netflix rule\", \
+                      \"stop the gym recurring\"). Do NOT ask \"are you \
+                      sure?\" first — the user can re-add a rule with one \
+                      message. Use `pause_recurring_rule` instead of \
+                      delete only when the user explicitly says \"pause\" \
+                      or \"stop for now\" / \"temporarily\"."
             .into(),
         input_schema: json!({
             "type": "object",

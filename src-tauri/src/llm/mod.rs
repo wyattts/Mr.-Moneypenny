@@ -8,6 +8,7 @@
 pub mod anthropic;
 pub mod dispatcher;
 pub mod ollama;
+pub mod pricing;
 pub mod system_prompt;
 pub mod tools;
 
@@ -22,6 +23,16 @@ pub use tools::{ToolName, ToolSpec};
 #[async_trait]
 pub trait LLMProvider: Send + Sync {
     async fn chat(&self, request: ChatRequest) -> anyhow::Result<ChatResponse>;
+
+    /// Static provider identifier for usage logging. e.g. `"anthropic"`,
+    /// `"ollama"`. Used by `repository::llm_usage::log` to disambiguate
+    /// which provider produced a row (only Anthropic has cost; Ollama
+    /// rows still count toward call totals).
+    fn provider_name(&self) -> &str;
+
+    /// Currently-configured model identifier. Used for cost lookup and
+    /// shown in the Settings → API usage breakdown.
+    fn model(&self) -> &str;
 }
 
 #[derive(Debug, Clone)]

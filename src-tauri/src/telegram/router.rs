@@ -17,7 +17,7 @@ use crate::llm::dispatcher::{self, CallContext};
 use crate::llm::system_prompt::{build_system_prompt, SystemPromptInput};
 use crate::llm::tools::all_tools;
 use crate::llm::{ChatRequest, ContentBlock, LLMProvider, Message, Role, StopReason};
-use crate::repository::{categories, expenses, recurring_rules};
+use crate::repository::{categories, expenses, llm_usage, recurring_rules};
 
 use super::auth::{self, AuthorizedChat};
 use super::client::{TelegramApi, Update};
@@ -251,6 +251,21 @@ async fn handle_free_text(
                 break format!("Sorry — the LLM is unhappy: {e}");
             }
         };
+
+        // Persist usage row for the cost tracker. Best-effort: a DB blip
+        // here must not fail the user's chat turn.
+        {
+            let conn = deps.conn.lock().unwrap();
+            if let Err(e) = llm_usage::log(
+                &conn,
+                deps.llm.provider_name(),
+                deps.llm.model(),
+                &response.usage,
+                now,
+            ) {
+                tracing::warn!(target: "telegram::router", error=%e, "logging llm usage failed");
+            }
+        }
 
         // Persist the assistant turn into history before doing anything else
         // so a subsequent error still leaves the user message + the

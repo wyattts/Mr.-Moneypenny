@@ -15,7 +15,7 @@ use crate::llm::anthropic::{AnthropicProvider, DEFAULT_MODEL as DEFAULT_ANTHROPI
 use crate::llm::ollama::OllamaProvider;
 use crate::llm::system_prompt::SystemPrompt;
 use crate::llm::{ChatRequest, LLMProvider, Message};
-use crate::repository::{categories, expenses, settings};
+use crate::repository::{categories, expenses, llm_usage, settings};
 use crate::secrets;
 use crate::telegram::auth::{self, AuthorizedChat};
 use crate::telegram::client::{TelegramApi, TelegramClient};
@@ -773,6 +773,15 @@ pub async fn set_budget_alerts_enabled(
         if enabled { "1" } else { "0" },
     )
     .map_err(err)
+}
+
+#[tauri::command]
+pub async fn get_llm_usage_summary(
+    state: State<'_, AppState>,
+) -> Result<llm_usage::UsageSummary, String> {
+    let conn = state.db.lock().unwrap();
+    let now = OffsetDateTime::now_utc();
+    llm_usage::summary(&conn, now).map_err(err)
 }
 
 // ---------------------------------------------------------------------

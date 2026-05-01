@@ -109,6 +109,12 @@ impl LLMProvider for StubLlm {
         }
         Ok(q.remove(0))
     }
+    fn provider_name(&self) -> &str {
+        "stub"
+    }
+    fn model(&self) -> &str {
+        "stub-model"
+    }
 }
 
 fn text_response(text: &str) -> ChatResponse {

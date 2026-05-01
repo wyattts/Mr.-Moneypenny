@@ -81,6 +81,14 @@ impl LLMProvider for AnthropicProvider {
         })?;
         Ok(parsed.into_chat_response())
     }
+
+    fn provider_name(&self) -> &str {
+        "anthropic"
+    }
+
+    fn model(&self) -> &str {
+        &self.model
+    }
 }
 
 // ---------------------------------------------------------------------

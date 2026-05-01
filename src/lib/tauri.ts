@@ -299,3 +299,25 @@ export const getBudgetAlertsEnabled = (): Promise<boolean> =>
   invoke("get_budget_alerts_enabled");
 export const setBudgetAlertsEnabled = (enabled: boolean): Promise<void> =>
   invoke("set_budget_alerts_enabled", { enabled });
+
+export interface ModelSummary {
+  model: string;
+  provider: string;
+  calls: number;
+  input_tokens: number;
+  output_tokens: number;
+  cost_micros: number;
+}
+
+export interface UsageSummary {
+  today_micros: number;
+  this_month_micros: number;
+  lifetime_micros: number;
+  today_calls: number;
+  this_month_calls: number;
+  lifetime_calls: number;
+  by_model: ModelSummary[];
+}
+
+export const getLlmUsageSummary = (): Promise<UsageSummary> =>
+  invoke("get_llm_usage_summary");

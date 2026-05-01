@@ -68,6 +68,14 @@ impl LLMProvider for OllamaProvider {
             .with_context(|| format!("parsing ollama response: {}", truncate(&body_text, 512)))?;
         Ok(parsed.into_chat_response())
     }
+
+    fn provider_name(&self) -> &str {
+        "ollama"
+    }
+
+    fn model(&self) -> &str {
+        &self.model
+    }
 }
 
 // ---------------------------------------------------------------------

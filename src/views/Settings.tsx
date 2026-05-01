@@ -7,6 +7,7 @@ import {
   getAutostart,
   getBudgetAlertsEnabled,
   getCheckUpdatesOnLaunch,
+  getLlmUsageSummary,
   getRunInBackground,
   getSetupState,
   getWeeklySummaryEnabled,
@@ -22,7 +23,12 @@ import {
   setWeeklySummaryEnabled,
   testAnthropic,
 } from "@/lib/tauri";
-import type { AuthorizedChat, SetupState, TelegramBotInfo } from "@/lib/tauri";
+import type {
+  AuthorizedChat,
+  SetupState,
+  TelegramBotInfo,
+  UsageSummary,
+} from "@/lib/tauri";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { CURRENCIES } from "@/lib/currencies";
 import { ViewHeader } from "./ViewHeader";
@@ -154,6 +160,13 @@ export function Settings() {
           description="When the Telegram bot will reach out on its own."
         >
           <NotificationControls onError={setError} />
+        </Section>
+
+        <Section
+          title="API usage"
+          description="What you've spent on Anthropic API calls. Ollama runs locally and is free."
+        >
+          <UsageStats onError={setError} />
         </Section>
 
         <Section
@@ -737,5 +750,141 @@ function NotificationControls({ onError }: { onError: (msg: string) => void }) {
         onChange={toggleAlerts}
       />
     </>
+  );
+}
+
+function formatUsd(micros: number): string {
+  const dollars = micros / 1_000_000;
+  const abs = Math.abs(dollars);
+  if (abs >= 1) return `$${dollars.toFixed(2)}`;
+  if (abs >= 0.01) return `$${dollars.toFixed(3)}`;
+  return `$${dollars.toFixed(4)}`;
+}
+
+function formatTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return n.toString();
+}
+
+function UsageStats({ onError }: { onError: (msg: string) => void }) {
+  const [summary, setSummary] = useState<UsageSummary | null>(null);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        setSummary(await getLlmUsageSummary());
+      } catch (e) {
+        onError(String(e));
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  if (!summary) {
+    return <div className="text-sm text-graphite-400">Loading…</div>;
+  }
+  if (summary.lifetime_calls === 0) {
+    return (
+      <div className="text-sm text-graphite-400">
+        No API calls logged yet. Once the bot answers a message, the cost
+        shows up here.
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-3 gap-3">
+        <UsageCard
+          label="Today"
+          cost={summary.today_micros}
+          calls={summary.today_calls}
+        />
+        <UsageCard
+          label="This month"
+          cost={summary.this_month_micros}
+          calls={summary.this_month_calls}
+        />
+        <UsageCard
+          label="Lifetime"
+          cost={summary.lifetime_micros}
+          calls={summary.lifetime_calls}
+        />
+      </div>
+      {summary.by_model.length > 0 && (
+        <div>
+          <div className="mb-2 text-xs uppercase tracking-wide text-graphite-400">
+            By model
+          </div>
+          <div className="overflow-hidden rounded-md border border-graphite-700">
+            <table className="w-full text-sm">
+              <thead className="bg-graphite-800 text-xs uppercase text-graphite-400">
+                <tr>
+                  <th className="px-3 py-2 text-left">Model</th>
+                  <th className="px-3 py-2 text-right">Calls</th>
+                  <th className="px-3 py-2 text-right">In</th>
+                  <th className="px-3 py-2 text-right">Out</th>
+                  <th className="px-3 py-2 text-right">Cost</th>
+                </tr>
+              </thead>
+              <tbody>
+                {summary.by_model.map((m) => (
+                  <tr key={`${m.provider}:${m.model}`} className="border-t border-graphite-700">
+                    <td className="px-3 py-2 font-mono text-xs text-graphite-200">
+                      {m.model}
+                      {m.provider === "ollama" && (
+                        <span className="ml-2 rounded bg-graphite-700 px-1.5 py-0.5 text-[10px] uppercase text-graphite-300">
+                          local
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-3 py-2 text-right tabular-nums text-graphite-300">
+                      {m.calls}
+                    </td>
+                    <td className="px-3 py-2 text-right tabular-nums text-graphite-300">
+                      {formatTokens(m.input_tokens)}
+                    </td>
+                    <td className="px-3 py-2 text-right tabular-nums text-graphite-300">
+                      {formatTokens(m.output_tokens)}
+                    </td>
+                    <td className="px-3 py-2 text-right tabular-nums text-graphite-200">
+                      {m.cost_micros > 0 ? formatUsd(m.cost_micros) : "—"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+      <p className="text-xs text-graphite-500">
+        Costs computed at log time from a hardcoded price table; if Anthropic
+        adjusts pricing, historical totals stay frozen at the price you
+        actually paid.
+      </p>
+    </div>
+  );
+}
+
+function UsageCard({
+  label,
+  cost,
+  calls,
+}: {
+  label: string;
+  cost: number;
+  calls: number;
+}) {
+  return (
+    <div className="rounded-md border border-graphite-700 bg-graphite-800 p-3">
+      <div className="text-xs uppercase tracking-wide text-graphite-400">{label}</div>
+      <div className="mt-1 text-xl font-semibold tabular-nums text-graphite-100">
+        {formatUsd(cost)}
+      </div>
+      <div className="mt-0.5 text-xs text-graphite-400">
+        {calls} {calls === 1 ? "call" : "calls"}
+      </div>
+    </div>
   );
 }
