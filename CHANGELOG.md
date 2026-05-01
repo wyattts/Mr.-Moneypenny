@@ -4,6 +4,15 @@ All notable changes to Mr. Moneypenny are documented here. The format roughly fo
 
 ## [Unreleased]
 
+## [0.2.8] - 2026-05-01
+
+Copy fix. v0.2.7 replaced the OS keyring with an encrypted-on-disk store, but four UI strings still claimed "stored in your OS keychain." Updated to reflect reality: secrets are encrypted on disk under a machine-bound key.
+
+### Changed
+
+- Settings → Anthropic / Telegram panels: "Key/Token is saved (in OS keychain)" → "(encrypted on disk)".
+- Setup wizard subtitles for Anthropic key entry and Telegram token entry: explain machine-bound encryption rather than the old keyring story.
+
 ## [0.2.7] - 2026-05-01
 
 Reliability hotfix. The OS keyring backend that v0.2.6 and earlier relied on for the Anthropic API key and Telegram bot token has too many silent-failure modes on Linux — most notably, GNOME Keyring storing secrets in a session-only collection that gets wiped on reboot. v0.2.7 replaces the keyring entirely with an encrypted-on-disk store that just works across reboots, package switches, and desktop environments.

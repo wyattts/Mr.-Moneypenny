@@ -160,9 +160,10 @@ export function TelegramStep() {
           </ol>
           <div className="mt-3 rounded-md border border-graphite-700 bg-graphite-800 px-3 py-2 text-xs text-graphite-400">
             <strong className="text-graphite-200">Privacy:</strong> the bot is
-            yours. The token goes straight to your OS keychain — never to disk
-            in plaintext, never to the project. Even though anyone could find
-            your bot&apos;s username, Mr. Moneypenny only responds to chats
+            yours. The token is stored encrypted under a machine-bound key on
+            this computer — never in plaintext, never sent off your machine,
+            never to the project. Even though anyone could find your
+            bot&apos;s username, Mr. Moneypenny only responds to chats
             you&apos;ve explicitly paired in the next step.
           </div>
           {stage === "token" ? (

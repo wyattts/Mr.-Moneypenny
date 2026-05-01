@@ -2,8 +2,8 @@
 //!
 //! Used for non-secret app config (currency, locale, LLM provider
 //! choice, Ollama endpoint/model, setup-complete flag, etc.). Secrets
-//! (bot token, API key) live in the OS keychain via the `secrets`
-//! module, NOT here.
+//! (bot token, API key) live in the encrypted disk store via the
+//! `secrets` module, NOT here.
 
 use anyhow::Result;
 use rusqlite::{params, Connection};

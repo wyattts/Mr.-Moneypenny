@@ -37,7 +37,7 @@ export function AnthropicConfigStep() {
       stepIndex={3}
       totalSteps={8}
       title="Anthropic API key"
-      subtitle="Get a key at console.anthropic.com → Settings → API Keys, then paste it here. It's stored in your OS keychain — never on disk in plaintext."
+      subtitle="Get a key at console.anthropic.com → Settings → API Keys, then paste it here. Stored encrypted under a machine-bound key — never in plaintext, never sent off your computer."
       footer={
         <>
           <GhostButton onClick={() => setStep("choose_llm")}>Back</GhostButton>

@@ -319,7 +319,7 @@ function RotateAnthropicKey({
     return (
       <div className="flex items-center gap-2">
         <span className="text-sm text-graphite-300">
-          {keyIsSet ? "Key is saved (in OS keychain)." : "No key saved."}
+          {keyIsSet ? "Key is saved (encrypted on disk)." : "No key saved."}
         </span>
         <SecondaryButton onClick={() => setEditing(true)}>
           {keyIsSet ? "Rotate key" : "Add key"}
@@ -467,7 +467,7 @@ function RotateTelegramToken({
     return (
       <div className="flex items-center gap-2">
         <span className="text-sm text-graphite-300">
-          {tokenIsSet ? "Token is saved (in OS keychain)." : "No token saved."}
+          {tokenIsSet ? "Token is saved (encrypted on disk)." : "No token saved."}
         </span>
         <SecondaryButton onClick={() => setStage("editing")}>
           {tokenIsSet ? "Rotate token" : "Add token"}
