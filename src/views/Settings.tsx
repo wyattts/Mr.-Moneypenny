@@ -13,6 +13,7 @@ import {
   getWeeklySummaryEnabled,
   installUpdate,
   listAuthorizedChats,
+  listInvestmentCategories,
   saveAnthropicKey,
   saveCurrencyLocale,
   saveTelegramToken,
@@ -20,11 +21,13 @@ import {
   setBudgetAlertsEnabled,
   setCheckUpdatesOnLaunch,
   setRunInBackground,
+  setStartingBalance,
   setWeeklySummaryEnabled,
   testAnthropic,
 } from "@/lib/tauri";
 import type {
   AuthorizedChat,
+  InvestmentSummary,
   SetupState,
   TelegramBotInfo,
   UsageSummary,
@@ -167,6 +170,13 @@ export function Settings() {
           description="What you've spent on Anthropic API calls. Ollama runs locally and is free."
         >
           <UsageStats onError={setError} />
+        </Section>
+
+        <Section
+          title="Investment balances"
+          description="Tell Mr. Moneypenny what's currently in each investing-kind account. The forecast tools use this to project forward — without it, projections only count the contributions you've logged here, which severely underestimates accounts you opened before installing the app."
+        >
+          <InvestmentBalances onError={setError} onSaved={setInfo} />
         </Section>
 
         <Section
@@ -885,6 +895,137 @@ function UsageCard({
       <div className="mt-0.5 text-xs text-graphite-400">
         {calls} {calls === 1 ? "call" : "calls"}
       </div>
+    </div>
+  );
+}
+
+function InvestmentBalances({
+  onError,
+  onSaved,
+}: {
+  onError: (m: string) => void;
+  onSaved: (m: string) => void;
+}) {
+  const [accounts, setAccounts] = useState<InvestmentSummary[] | null>(null);
+
+  async function load() {
+    try {
+      setAccounts(await listInvestmentCategories());
+    } catch (e) {
+      onError(String(e));
+    }
+  }
+
+  useEffect(() => {
+    void load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function save(
+    categoryId: number,
+    name: string,
+    balanceDollars: string,
+    asOf: string,
+  ) {
+    try {
+      const cents = balanceDollars.trim()
+        ? Math.round(parseFloat(balanceDollars) * 100)
+        : null;
+      const dateOrNull = asOf.trim() ? asOf.trim() : null;
+      await setStartingBalance({
+        category_id: categoryId,
+        starting_balance_cents: cents,
+        balance_as_of: dateOrNull,
+      });
+      onSaved(`Saved ${name}.`);
+      void load();
+    } catch (e) {
+      onError(String(e));
+    }
+  }
+
+  if (!accounts) {
+    return <div className="text-sm text-graphite-400">Loading…</div>;
+  }
+  if (accounts.length === 0) {
+    return (
+      <div className="text-sm text-graphite-400">
+        No active investing-kind categories. Activate <em>Savings</em>,{" "}
+        <em>401k</em>, <em>Roth IRA</em>, or <em>Investing</em> in the Categories
+        tab — or create your own with kind = investing — and they&apos;ll show
+        up here.
+      </div>
+    );
+  }
+  return (
+    <div className="space-y-2">
+      {accounts.map((a) => (
+        <BalanceRow key={a.category_id} account={a} onSave={save} />
+      ))}
+    </div>
+  );
+}
+
+function BalanceRow({
+  account,
+  onSave,
+}: {
+  account: InvestmentSummary;
+  onSave: (
+    categoryId: number,
+    name: string,
+    balanceDollars: string,
+    asOf: string,
+  ) => Promise<void>;
+}) {
+  const [balance, setBalance] = useState(
+    account.starting_balance_cents != null
+      ? (account.starting_balance_cents / 100).toFixed(2)
+      : "",
+  );
+  const [asOf, setAsOf] = useState(account.balance_as_of ?? "");
+  return (
+    <div className="grid grid-cols-1 items-end gap-2 rounded-md border border-graphite-700 bg-graphite-800 px-3 py-2 md:grid-cols-[1fr_auto_auto_auto]">
+      <div>
+        <div className="text-sm text-graphite-100">{account.name}</div>
+        <div className="text-xs text-graphite-500">
+          {account.avg_monthly_contribution_cents
+            ? `12-mo avg contribution: $${(account.avg_monthly_contribution_cents / 100).toFixed(0)}/mo`
+            : "No contributions logged yet"}
+        </div>
+      </div>
+      <label className="block">
+        <span className="text-[10px] uppercase tracking-wide text-graphite-500">
+          Balance
+        </span>
+        <div className="flex items-center rounded-md border border-graphite-700 bg-graphite-900 px-2">
+          <span className="pr-1 text-graphite-400">$</span>
+          <input
+            type="text"
+            inputMode="decimal"
+            value={balance}
+            onChange={(e) => setBalance(e.target.value)}
+            placeholder="0.00"
+            className="w-28 bg-transparent py-1 text-sm text-graphite-100 outline-none"
+          />
+        </div>
+      </label>
+      <label className="block">
+        <span className="text-[10px] uppercase tracking-wide text-graphite-500">
+          As of
+        </span>
+        <input
+          type="date"
+          value={asOf}
+          onChange={(e) => setAsOf(e.target.value)}
+          className="rounded-md border border-graphite-700 bg-graphite-900 px-2 py-1 text-sm text-graphite-100"
+        />
+      </label>
+      <PrimaryButton
+        onClick={() => void onSave(account.category_id, account.name, balance, asOf)}
+      >
+        Save
+      </PrimaryButton>
     </div>
   );
 }

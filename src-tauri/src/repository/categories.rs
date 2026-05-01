@@ -95,6 +95,44 @@ pub fn set_monthly_target(
     Ok(n > 0)
 }
 
+/// Set the user-entered current balance for an investing-kind category.
+/// `as_of` is a free-form ISO date string (YYYY-MM-DD); we accept None
+/// for "now" but most callers will fill it in.
+pub fn set_starting_balance(
+    conn: &Connection,
+    id: i64,
+    starting_balance_cents: Option<i64>,
+    balance_as_of: Option<&str>,
+) -> Result<bool> {
+    let n = conn.execute(
+        "UPDATE categories
+         SET starting_balance_cents = ?1, balance_as_of = ?2
+         WHERE id = ?3",
+        params![starting_balance_cents, balance_as_of, id],
+    )?;
+    Ok(n > 0)
+}
+
+#[derive(Debug, Clone)]
+pub struct StartingBalance {
+    pub starting_balance_cents: Option<i64>,
+    pub balance_as_of: Option<String>,
+}
+
+pub fn get_starting_balance(conn: &Connection, id: i64) -> Result<StartingBalance> {
+    let row: (Option<i64>, Option<String>) = conn
+        .query_row(
+            "SELECT starting_balance_cents, balance_as_of FROM categories WHERE id = ?1",
+            params![id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap_or((None, None));
+    Ok(StartingBalance {
+        starting_balance_cents: row.0,
+        balance_as_of: row.1,
+    })
+}
+
 /// Hard delete. Disallows seed-category deletion; callers should
 /// `set_active(false)` for those instead.
 pub fn delete(conn: &Connection, id: i64) -> Result<bool> {

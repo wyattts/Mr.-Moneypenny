@@ -7,6 +7,7 @@ import { stepFromSavedNumber, useWizard } from "@/lib/store";
 import { Wizard } from "@/wizard/Wizard";
 import { MainApp } from "@/views/MainApp";
 import { Insights } from "@/views/Insights";
+import { Forecast } from "@/views/Forecast";
 import { Ledger } from "@/views/Ledger";
 import { Categories } from "@/views/Categories";
 import { Household } from "@/views/Household";
@@ -68,6 +69,7 @@ export default function App() {
       <Route element={<MainApp />}>
         <Route index element={<Navigate to="/insights" replace />} />
         <Route path="/insights" element={<Insights />} />
+        <Route path="/forecast" element={<Forecast />} />
         <Route path="/ledger" element={<Ledger />} />
         <Route path="/categories" element={<Categories />} />
         <Route path="/household" element={<Household />} />

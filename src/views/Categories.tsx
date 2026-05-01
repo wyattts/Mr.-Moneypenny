@@ -3,12 +3,13 @@ import { useEffect, useMemo, useState } from "react";
 import {
   createCategory,
   deleteCategory,
+  getCategoryStats,
   getSetupState,
   listCategories,
   setCategoryActive,
   setCategoryTarget,
 } from "@/lib/tauri";
-import type { CategoryView } from "@/lib/tauri";
+import type { CategoryStatsResponse, CategoryView } from "@/lib/tauri";
 import { ViewHeader } from "./ViewHeader";
 import { ErrorBanner } from "@/wizard/components/Layout";
 import { GhostButton, PrimaryButton, SecondaryButton } from "@/wizard/components/Buttons";
@@ -284,54 +285,190 @@ function CategoryGroup({
       ) : null}
       <ul className="divide-y divide-graphite-700 rounded-md border border-graphite-700">
         {cats.map((c) => (
-          <li key={c.id} className="flex items-center gap-3 px-3 py-2">
-            <input
-              type="checkbox"
-              checked={c.is_active}
-              onChange={(e) => onToggleActive(c, e.target.checked)}
-              className="h-4 w-4 rounded border-graphite-500 bg-graphite-800 text-forest-500"
-            />
-            <span
-              className={`flex-1 text-sm ${
-                c.is_active ? "text-graphite-50" : "text-graphite-500"
-              }`}
-            >
-              {c.name}
-              {c.is_seed ? (
-                <span className="ml-2 rounded bg-graphite-700 px-1.5 py-0.5 text-xs text-graphite-300">
-                  seed
-                </span>
-              ) : null}
-            </span>
-            <div className="flex items-center gap-1">
-              <span className="text-xs text-graphite-400">$</span>
-              <input
-                type="number"
-                step="0.01"
-                placeholder="0"
-                defaultValue={
-                  c.monthly_target_cents != null
-                    ? (c.monthly_target_cents / 100).toFixed(2)
-                    : ""
-                }
-                onBlur={(e) => onTargetChange(c, e.target.value)}
-                disabled={!c.is_active}
-                className="w-24 rounded-md border border-graphite-600 bg-graphite-800 px-2 py-1 text-right font-mono text-sm text-graphite-50 disabled:opacity-50"
-              />
-            </div>
-            {!c.is_seed ? (
-              <button
-                type="button"
-                onClick={() => onRemove(c)}
-                className="rounded px-2 py-1 text-xs text-red-300 hover:bg-red-500/10"
-              >
-                Delete
-              </button>
-            ) : null}
-          </li>
+          <CategoryRow
+            key={c.id}
+            c={c}
+            onToggleActive={onToggleActive}
+            onTargetChange={onTargetChange}
+            onRemove={onRemove}
+          />
         ))}
       </ul>
     </section>
+  );
+}
+
+function CategoryRow({
+  c,
+  onToggleActive,
+  onTargetChange,
+  onRemove,
+}: {
+  c: CategoryView;
+  onToggleActive: (c: CategoryView, active: boolean) => void;
+  onTargetChange: (c: CategoryView, target: string) => void;
+  onRemove: (c: CategoryView) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [stats, setStats] = useState<CategoryStatsResponse | null>(null);
+  const [statsErr, setStatsErr] = useState<string | null>(null);
+
+  async function loadStats() {
+    try {
+      setStatsErr(null);
+      const s = await getCategoryStats(c.id, 12);
+      setStats(s);
+    } catch (e) {
+      setStatsErr(String(e));
+    }
+  }
+
+  function toggle() {
+    if (!expanded && stats === null) void loadStats();
+    setExpanded((v) => !v);
+  }
+
+  return (
+    <li>
+      <div className="flex items-center gap-3 px-3 py-2">
+        <input
+          type="checkbox"
+          checked={c.is_active}
+          onChange={(e) => onToggleActive(c, e.target.checked)}
+          className="h-4 w-4 rounded border-graphite-500 bg-graphite-800 text-forest-500"
+        />
+        <span
+          className={`flex-1 text-sm ${
+            c.is_active ? "text-graphite-50" : "text-graphite-500"
+          }`}
+        >
+          {c.name}
+          {c.is_seed ? (
+            <span className="ml-2 rounded bg-graphite-700 px-1.5 py-0.5 text-xs text-graphite-300">
+              seed
+            </span>
+          ) : null}
+        </span>
+        <div className="flex items-center gap-1">
+          <span className="text-xs text-graphite-400">$</span>
+          <input
+            type="number"
+            step="0.01"
+            placeholder="0"
+            defaultValue={
+              c.monthly_target_cents != null
+                ? (c.monthly_target_cents / 100).toFixed(2)
+                : ""
+            }
+            onBlur={(e) => onTargetChange(c, e.target.value)}
+            disabled={!c.is_active}
+            className="w-24 rounded-md border border-graphite-600 bg-graphite-800 px-2 py-1 text-right font-mono text-sm text-graphite-50 disabled:opacity-50"
+          />
+        </div>
+        <button
+          type="button"
+          onClick={toggle}
+          aria-label={expanded ? "Hide stats" : "Show stats"}
+          className="rounded px-2 py-1 text-xs text-graphite-400 hover:bg-graphite-700 hover:text-graphite-100"
+        >
+          {expanded ? "▴ stats" : "▾ stats"}
+        </button>
+        {!c.is_seed ? (
+          <button
+            type="button"
+            onClick={() => onRemove(c)}
+            className="rounded px-2 py-1 text-xs text-red-300 hover:bg-red-500/10"
+          >
+            Delete
+          </button>
+        ) : null}
+      </div>
+      {expanded ? (
+        <div className="border-t border-graphite-700 bg-graphite-950 px-4 py-3">
+          {statsErr ? (
+            <div className="text-xs text-red-300">{statsErr}</div>
+          ) : !stats ? (
+            <div className="text-xs text-graphite-500">Loading…</div>
+          ) : !stats.stats ? (
+            <div className="text-xs text-graphite-500">
+              Not enough history yet ({stats.monthly_totals_cents.length}{" "}
+              {stats.monthly_totals_cents.length === 1 ? "month" : "months"} of
+              data, need 3+).
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-xs md:grid-cols-4">
+              <Stat
+                label="Months"
+                value={`N=${stats.stats.n}`}
+              />
+              <Stat
+                label="Mean"
+                value={formatMoney(stats.stats.mean_cents)}
+              />
+              <Stat
+                label="Median"
+                value={formatMoney(stats.stats.median_cents)}
+              />
+              <Stat
+                label="Std-dev"
+                value={formatMoney(stats.stats.stddev_cents)}
+              />
+              <Stat
+                label="P10"
+                value={formatMoney(stats.stats.p10_cents)}
+              />
+              <Stat
+                label="P90"
+                value={formatMoney(stats.stats.p90_cents)}
+              />
+              <Stat
+                label="Min"
+                value={formatMoney(stats.stats.min_cents)}
+              />
+              <Stat
+                label="Max"
+                value={formatMoney(stats.stats.max_cents)}
+              />
+            </div>
+          )}
+          {stats?.histogram && stats.stats && (
+            <div className="mt-3">
+              <div className="text-[11px] uppercase tracking-wide text-graphite-500">
+                Distribution (12 mo)
+              </div>
+              <div className="mt-1 flex h-12 items-end gap-0.5">
+                {stats.histogram.counts.map((cnt, i) => {
+                  const max = Math.max(1, ...stats.histogram!.counts);
+                  return (
+                    <div
+                      key={i}
+                      className="flex-1 rounded-t-sm bg-forest-500/60"
+                      style={{ height: `${(cnt / max) * 100}%` }}
+                      title={`${cnt} ${cnt === 1 ? "month" : "months"}`}
+                    />
+                  );
+                })}
+              </div>
+              <div className="mt-1 flex justify-between text-[10px] text-graphite-500">
+                <span>{formatMoney(stats.histogram.min_cents)}</span>
+                <span>{formatMoney(stats.histogram.max_cents)}</span>
+              </div>
+            </div>
+          )}
+        </div>
+      ) : null}
+    </li>
+  );
+}
+
+function Stat({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <div className="text-[10px] uppercase tracking-wide text-graphite-500">
+        {label}
+      </div>
+      <div className="font-mono text-sm text-graphite-100">{value}</div>
+    </div>
   );
 }
 

@@ -9,6 +9,7 @@ import { UpdateBanner } from "@/components/UpdateBanner";
 
 const NAV: { to: string; label: string; icon: string }[] = [
   { to: "/insights", label: "Insights", icon: "▤" },
+  { to: "/forecast", label: "Forecast", icon: "↗" },
   { to: "/ledger", label: "Ledger", icon: "≡" },
   { to: "/categories", label: "Categories", icon: "⊞" },
   { to: "/household", label: "Household", icon: "♕" },

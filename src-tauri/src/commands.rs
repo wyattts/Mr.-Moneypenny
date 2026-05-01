@@ -10,7 +10,16 @@ use time::{Date, Duration, OffsetDateTime, Time};
 
 use crate::app_state::AppState;
 use crate::domain::{CategoryKind, ExpenseSource, NewCategory};
-use crate::insights::{dashboard, range::DateRange, DashboardSnapshot};
+use crate::insights::{
+    dashboard,
+    forecast::{
+        self as forecast_mod, GoalSeekInput, GoalSeekResult, InvestmentProjection,
+        ProjectInvestmentInput, ScenarioCut, ScenarioResult,
+    },
+    range::DateRange,
+    stats::{self as stats_mod, DescriptiveStats, Histogram},
+    DashboardSnapshot,
+};
 use crate::llm::anthropic::{AnthropicProvider, DEFAULT_MODEL as DEFAULT_ANTHROPIC_MODEL};
 use crate::llm::ollama::OllamaProvider;
 use crate::llm::system_prompt::SystemPrompt;
@@ -782,6 +791,167 @@ pub async fn get_llm_usage_summary(
     let conn = state.db.lock().unwrap();
     let now = OffsetDateTime::now_utc();
     llm_usage::summary(&conn, now).map_err(err)
+}
+
+// ---------------------------------------------------------------------
+// Forecast tools (v0.3.0).
+// ---------------------------------------------------------------------
+
+#[derive(Debug, Serialize)]
+pub struct CategoryStatsResponse {
+    pub category_id: i64,
+    pub months_back: u32,
+    pub stats: Option<DescriptiveStats>,
+    pub histogram: Option<Histogram>,
+    pub monthly_totals_cents: Vec<i64>,
+}
+
+#[tauri::command]
+pub async fn get_category_stats(
+    category_id: i64,
+    months_back: u32,
+    state: State<'_, AppState>,
+) -> Result<CategoryStatsResponse, String> {
+    let conn = state.db.lock().unwrap();
+    let now = OffsetDateTime::now_utc();
+    let n = months_back.clamp(1, 120);
+    let totals = expenses::monthly_totals_for_category(&conn, category_id, now, n).map_err(err)?;
+    let stats = stats_mod::describe(&totals);
+    let histogram = stats_mod::histogram(&totals, 10);
+    Ok(CategoryStatsResponse {
+        category_id,
+        months_back: n,
+        stats,
+        histogram,
+        monthly_totals_cents: totals,
+    })
+}
+
+#[tauri::command]
+pub async fn project_investment(
+    input: ProjectInvestmentInput,
+) -> Result<InvestmentProjection, String> {
+    Ok(forecast_mod::project_investment(&input))
+}
+
+#[tauri::command]
+pub async fn solve_goal_seek(input: GoalSeekInput) -> Result<GoalSeekResult, String> {
+    Ok(forecast_mod::solve_goal_seek(&input))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ScenarioInput {
+    pub cuts: Vec<ScenarioCut>,
+}
+
+#[tauri::command]
+pub async fn run_scenario(
+    input: ScenarioInput,
+    state: State<'_, AppState>,
+) -> Result<ScenarioResult, String> {
+    let conn = state.db.lock().unwrap();
+    // Pull active variable categories with monthly_target_cents set.
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, COALESCE(monthly_target_cents, 0)
+             FROM categories
+             WHERE kind = 'variable' AND is_active = 1
+               AND monthly_target_cents IS NOT NULL
+               AND monthly_target_cents > 0",
+        )
+        .map_err(err)?;
+    let rows = stmt
+        .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))
+        .map_err(err)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(err)?;
+    Ok(forecast_mod::scenario_delta(&rows, &input.cuts))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SetStartingBalanceInput {
+    pub category_id: i64,
+    /// In cents. None clears the existing value.
+    pub starting_balance_cents: Option<i64>,
+    /// ISO date YYYY-MM-DD.
+    pub balance_as_of: Option<String>,
+}
+
+#[tauri::command]
+pub async fn set_starting_balance(
+    input: SetStartingBalanceInput,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let conn = state.db.lock().unwrap();
+    categories::set_starting_balance(
+        &conn,
+        input.category_id,
+        input.starting_balance_cents,
+        input.balance_as_of.as_deref(),
+    )
+    .map_err(err)?;
+    Ok(())
+}
+
+#[derive(Debug, Serialize)]
+pub struct InvestmentSummary {
+    pub category_id: i64,
+    pub name: String,
+    pub starting_balance_cents: Option<i64>,
+    pub balance_as_of: Option<String>,
+    /// Average monthly contribution computed over the last 12 months
+    /// of logged history. None when there are zero contributions.
+    pub avg_monthly_contribution_cents: Option<i64>,
+    /// Total contributed over the last 12 months.
+    pub last_12mo_contribution_cents: i64,
+}
+
+#[tauri::command]
+pub async fn list_investment_categories(
+    state: State<'_, AppState>,
+) -> Result<Vec<InvestmentSummary>, String> {
+    let conn = state.db.lock().unwrap();
+    let now = OffsetDateTime::now_utc();
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, name, starting_balance_cents, balance_as_of
+             FROM categories
+             WHERE kind = 'investing' AND is_active = 1
+             ORDER BY name ASC",
+        )
+        .map_err(err)?;
+    let cats = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, Option<i64>>(2)?,
+                r.get::<_, Option<String>>(3)?,
+            ))
+        })
+        .map_err(err)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(err)?;
+    drop(stmt);
+    let mut out = Vec::with_capacity(cats.len());
+    for (id, name, balance, as_of) in cats {
+        let totals = expenses::monthly_totals_for_category(&conn, id, now, 12).map_err(err)?;
+        let total_12mo: i64 = totals.iter().sum();
+        let avg = if totals.is_empty() {
+            None
+        } else {
+            Some(total_12mo / totals.len() as i64)
+        };
+        out.push(InvestmentSummary {
+            category_id: id,
+            name,
+            starting_balance_cents: balance,
+            balance_as_of: as_of,
+            avg_monthly_contribution_cents: avg,
+            last_12mo_contribution_cents: total_12mo,
+        });
+    }
+    Ok(out)
 }
 
 // ---------------------------------------------------------------------

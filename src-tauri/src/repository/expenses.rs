@@ -137,6 +137,64 @@ pub fn sum_in_range(conn: &Connection, start: OffsetDateTime, end: OffsetDateTim
     Ok(total)
 }
 
+/// Net spend (signed: refunds subtract) per calendar month for a single
+/// category, going `months_back` months back from `now`. Returned vector
+/// is `months_back` long, oldest first; months with no spend appear as 0.
+///
+/// Used by the v0.3.0 forecast tools to derive descriptive stats and
+/// historical contribution rates.
+pub fn monthly_totals_for_category(
+    conn: &Connection,
+    category_id: i64,
+    now: OffsetDateTime,
+    months_back: u32,
+) -> Result<Vec<i64>> {
+    use time::{Date, Duration, Month, Time};
+    let offset = now.offset();
+    // The first day of the *current* month, in the user's offset.
+    let mut anchor =
+        Date::from_calendar_date(now.year(), now.month(), 1).expect("day 1 always valid");
+    // Step back (months_back - 1) months so the loop covers exactly
+    // `months_back` calendar months ending at the current one.
+    for _ in 0..months_back.saturating_sub(1) {
+        anchor = previous_month_start(anchor);
+    }
+
+    let mut totals = Vec::with_capacity(months_back as usize);
+    for _ in 0..months_back {
+        let next = if anchor.month() == Month::December {
+            Date::from_calendar_date(anchor.year() + 1, Month::January, 1)
+        } else {
+            Date::from_calendar_date(anchor.year(), anchor.month().next(), 1)
+        }
+        .expect("first of next month is valid");
+        let start = anchor.with_time(Time::MIDNIGHT).assume_offset(offset);
+        let end = next.with_time(Time::MIDNIGHT).assume_offset(offset);
+        let sql = format!(
+            "SELECT COALESCE(SUM({SIGNED_AMOUNT_SQL}), 0)
+             FROM expenses
+             WHERE category_id = ?1
+               AND occurred_at >= ?2 AND occurred_at < ?3"
+        );
+        let mut stmt = conn.prepare_cached(&sql)?;
+        let total: i64 = stmt.query_row(params![category_id, start, end], |r| r.get(0))?;
+        totals.push(total);
+        anchor = next;
+        let _ = Duration::days(0); // suppress unused-import lint for Duration
+    }
+    Ok(totals)
+}
+
+fn previous_month_start(d: time::Date) -> time::Date {
+    use time::{Date, Month};
+    let (year, month) = if d.month() == Month::January {
+        (d.year() - 1, Month::December)
+    } else {
+        (d.year(), d.month().previous())
+    };
+    Date::from_calendar_date(year, month, 1).expect("day 1 always valid")
+}
+
 /// Source filter helper for backfills / debugging.
 pub fn list_by_source(conn: &Connection, source: ExpenseSource) -> Result<Vec<Expense>> {
     let mut stmt = conn.prepare_cached(&format!(

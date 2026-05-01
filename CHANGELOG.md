@@ -4,6 +4,31 @@ All notable changes to Mr. Moneypenny are documented here. The format roughly fo
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-05-01
+
+The power-user update — wave 1. New "Forecast" view in the sidebar with three tools (investment calculator, goal-seek, scenario sliders), plus per-category descriptive stats and a histogram on every Categories row. All deterministic for now; Monte Carlo / bootstrap variants land in v0.3.1.
+
+### Added
+
+- **New Forecast view** (sidebar nav) bundles three look-forward tools.
+- **Investment calculator**: pick an investing-kind account (or aggregate across all), enter monthly contribution + annual return + horizon + inflation, see a trajectory chart with both nominal and real (inflation-adjusted) curves, plus final value, contributions vs growth breakdown. Auto-prefills monthly contribution from the user's actual 12-month contribution average to that account. Three preset return rates (Conservative 4% / Balanced 7% / Stock-heavy 10%). Standard "not financial advice" disclaimer.
+- **Goal-seek**: enter target $ + horizon + return rate + starting balance → returns the required monthly contribution. Detects "already on track" when the starting balance compounds past the target on its own.
+- **Scenario sliders**: each active variable category with a monthly target gets a -100% to +50% slider. Live-recomputes the adjusted variable budget and annualized savings as you drag.
+- **Per-category descriptive stats**: every Categories row gets a "▾ stats" toggle. Expanded view shows N, mean, median, P10/P90, std-dev, min, max — plus a 12-month equal-width histogram bar chart visualizing the spending distribution. Refuses to compute below N=3 with a clear "not enough history yet" message.
+- **Settings → Investment balances**: dedicated panel for entering current balance + as-of date for each investing-kind category. Without these, the investment calculator can't accurately project for accounts opened before installing the app — so this is where the "current $20k Roth IRA" gets entered.
+
+### Internal
+
+- New `src-tauri/src/insights/stats.rs`: descriptive stats (mean / median / percentile / stddev / min / max) with `MIN_N=3` guard, plus equal-width histogram bucketing. 9 unit tests.
+- New `src-tauri/src/insights/forecast.rs`: closed-form future-value formula (`FV = P(1+r)^n + C·((1+r)^n − 1)/r`) with end-of-month deposits, real-vs-nominal inflation deflation, algebraic goal-seek inverse, and scenario-delta arithmetic. 9 unit tests including an Excel-FV cross-check ($500/mo @ 7% × 30y matches $609,985.71 within $5).
+- `src-tauri/src/repository/expenses.rs` gets `monthly_totals_for_category(category_id, now, months_back)` so the stats module has clean signed-sum monthly inputs.
+- Migration 0011 adds `starting_balance_cents` + `balance_as_of` columns to `categories` (both nullable, meaningful only for `kind = 'investing'`).
+- 6 new IPC commands: `get_category_stats`, `project_investment`, `solve_goal_seek`, `run_scenario`, `set_starting_balance`, `list_investment_categories`. 218 total tests passing.
+
+### Sequencing note
+
+Original roadmap had v0.3.0 also including CSV import + tax report generator. The keyring rework (v0.2.7), copy fix (v0.2.8), and cost tracker / friction fixes (v0.2.9) consumed the slots originally meant for those, so this v0.3.0 ships the forecast tools standalone. CSV import + tax report move to v0.3.1 / v0.3.2 alongside the planned Monte Carlo variants.
+
 ## [0.2.9] - 2026-05-01
 
 API cost tracker plus two friction kills on the bot side.

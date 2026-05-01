@@ -321,3 +321,116 @@ export interface UsageSummary {
 
 export const getLlmUsageSummary = (): Promise<UsageSummary> =>
   invoke("get_llm_usage_summary");
+
+// --- Forecast / stats (v0.3.0) ---
+
+export interface DescriptiveStats {
+  n: number;
+  min_cents: number;
+  max_cents: number;
+  mean_cents: number;
+  median_cents: number;
+  p10_cents: number;
+  p90_cents: number;
+  stddev_cents: number;
+}
+
+export interface Histogram {
+  bucket_count: number;
+  min_cents: number;
+  max_cents: number;
+  bucket_width_cents: number;
+  counts: number[];
+}
+
+export interface CategoryStatsResponse {
+  category_id: number;
+  months_back: number;
+  stats: DescriptiveStats | null;
+  histogram: Histogram | null;
+  monthly_totals_cents: number[];
+}
+
+export const getCategoryStats = (
+  categoryId: number,
+  monthsBack: number,
+): Promise<CategoryStatsResponse> =>
+  invoke("get_category_stats", { categoryId, monthsBack });
+
+export interface ProjectionPoint {
+  month: number;
+  nominal_cents: number;
+  real_cents: number;
+}
+
+export interface InvestmentProjection {
+  trajectory: ProjectionPoint[];
+  final_nominal_cents: number;
+  final_real_cents: number;
+  total_contributed_cents: number;
+  total_growth_cents: number;
+}
+
+export interface ProjectInvestmentInput {
+  starting_balance_cents: number;
+  monthly_contribution_cents: number;
+  annual_return_pct: number;
+  annual_inflation_pct: number;
+  horizon_years: number;
+  trajectory_points: number;
+}
+
+export const projectInvestment = (
+  input: ProjectInvestmentInput,
+): Promise<InvestmentProjection> => invoke("project_investment", { input });
+
+export interface GoalSeekInput {
+  target_cents: number;
+  starting_balance_cents: number;
+  annual_return_pct: number;
+  horizon_years: number;
+}
+
+export interface GoalSeekResult {
+  required_monthly_cents: number;
+  already_on_track: boolean;
+}
+
+export const solveGoalSeek = (input: GoalSeekInput): Promise<GoalSeekResult> =>
+  invoke("solve_goal_seek", { input });
+
+export interface ScenarioCut {
+  category_id: number;
+  pct_change: number;
+}
+
+export interface ScenarioResult {
+  original_variable_budget_cents: number;
+  adjusted_variable_budget_cents: number;
+  savings_per_year_cents: number;
+}
+
+export const runScenario = (cuts: ScenarioCut[]): Promise<ScenarioResult> =>
+  invoke("run_scenario", { input: { cuts } });
+
+export interface InvestmentSummary {
+  category_id: number;
+  name: string;
+  starting_balance_cents: number | null;
+  balance_as_of: string | null;
+  avg_monthly_contribution_cents: number | null;
+  last_12mo_contribution_cents: number;
+}
+
+export const listInvestmentCategories = (): Promise<InvestmentSummary[]> =>
+  invoke("list_investment_categories");
+
+export interface SetStartingBalanceInput {
+  category_id: number;
+  starting_balance_cents: number | null;
+  balance_as_of: string | null;
+}
+
+export const setStartingBalance = (
+  input: SetStartingBalanceInput,
+): Promise<void> => invoke("set_starting_balance", { input });
