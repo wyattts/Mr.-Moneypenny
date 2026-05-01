@@ -68,10 +68,7 @@ pub fn list(conn: &Connection) -> Result<Vec<CsvImportProfile>> {
 
 /// Find a profile by header signature (used for auto-detection at
 /// import time). Most recently used wins on ties.
-pub fn find_by_signature(
-    conn: &Connection,
-    signature: &str,
-) -> Result<Option<CsvImportProfile>> {
+pub fn find_by_signature(conn: &Connection, signature: &str) -> Result<Option<CsvImportProfile>> {
     let row = conn
         .query_row(
             "SELECT id, name, header_signature, mapping_json, created_at, last_used_at
@@ -103,11 +100,7 @@ pub fn delete(conn: &Connection, id: i64) -> Result<()> {
 fn row_to_profile(row: &rusqlite::Row<'_>) -> rusqlite::Result<CsvImportProfile> {
     let mapping_json: String = row.get(3)?;
     let mapping: ColumnMapping = serde_json::from_str(&mapping_json).map_err(|e| {
-        rusqlite::Error::FromSqlConversionFailure(
-            3,
-            rusqlite::types::Type::Text,
-            Box::new(e),
-        )
+        rusqlite::Error::FromSqlConversionFailure(3, rusqlite::types::Type::Text, Box::new(e))
     })?;
     Ok(CsvImportProfile {
         id: row.get(0)?,
@@ -175,7 +168,14 @@ mod tests {
     fn create_then_list_round_trips() {
         let conn = fresh_conn();
         let now = OffsetDateTime::now_utc();
-        let id = create(&conn, "Chase Checking", Some("abc123"), &sample_mapping(), now).unwrap();
+        let id = create(
+            &conn,
+            "Chase Checking",
+            Some("abc123"),
+            &sample_mapping(),
+            now,
+        )
+        .unwrap();
         let list = list(&conn).unwrap();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].id, id);

@@ -66,12 +66,11 @@ pub fn delete(conn: &Connection, id: i64) -> Result<()> {
 /// supporting `*` (zero+ chars), `?` (one char), and literal text.
 /// Most patterns the import wizard auto-generates look like
 /// `STARBUCKS*` or `*SAFEWAY*`.
-pub fn find_match<'a>(
-    rules: &'a [MerchantRule],
-    merchant: &str,
-) -> Option<&'a MerchantRule> {
+pub fn find_match<'a>(rules: &'a [MerchantRule], merchant: &str) -> Option<&'a MerchantRule> {
     let needle = merchant.to_lowercase();
-    rules.iter().find(|r| glob_match(&r.pattern.to_lowercase(), &needle))
+    rules
+        .iter()
+        .find(|r| glob_match(&r.pattern.to_lowercase(), &needle))
 }
 
 fn row_to_rule(row: &rusqlite::Row<'_>) -> rusqlite::Result<MerchantRule> {

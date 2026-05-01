@@ -104,10 +104,7 @@ fn against_db(conn: &Connection, rows: &[ParsedRow]) -> Result<Vec<DuplicateMatc
             if desc.is_empty() {
                 continue;
             }
-            let dist = strsim::levenshtein(
-                &desc.to_lowercase(),
-                &r.merchant.to_lowercase(),
-            );
+            let dist = strsim::levenshtein(&desc.to_lowercase(), &r.merchant.to_lowercase());
             if dist < 3 {
                 out.push(DuplicateMatch {
                     row_index: i,

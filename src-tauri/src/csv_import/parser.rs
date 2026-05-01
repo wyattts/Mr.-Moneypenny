@@ -91,10 +91,7 @@ pub fn parse_preview(content: &str) -> Result<PreviewResult> {
 /// after the header, then projects each row. A row missing required
 /// cells is a hard error so the user fixes the mapping rather than
 /// silently losing data.
-pub fn parse_with_mapping(
-    content: &str,
-    mapping: &ColumnMapping,
-) -> Result<Vec<ParsedRow>> {
+pub fn parse_with_mapping(content: &str, mapping: &ColumnMapping) -> Result<Vec<ParsedRow>> {
     let mut rdr = reader_from_str(content);
     let mut out = Vec::new();
     let skip = mapping.skip_rows;
@@ -160,8 +157,7 @@ pub fn parse_date(input: &str, format: &str) -> Result<OffsetDateTime> {
         "M/D/YYYY" => parse_split(input, '/', |a, b, c| (c, a, b))?,
         other => anyhow::bail!("unsupported date format: {other}"),
     };
-    let month = Month::try_from(m as u8)
-        .map_err(|_| anyhow!("invalid month {m} in {input}"))?;
+    let month = Month::try_from(m as u8).map_err(|_| anyhow!("invalid month {m} in {input}"))?;
     let date = Date::from_calendar_date(y as i32, month, d as u8)
         .map_err(|e| anyhow!("invalid date {input}: {e}"))?;
     let dt = PrimitiveDateTime::new(date, Time::MIDNIGHT).assume_utc();
@@ -197,7 +193,10 @@ pub fn parse_amount(input: &str) -> Result<(i64, bool)> {
         (s, false)
     };
     let s = s.trim().trim_start_matches('$').replace(',', "");
-    let f: f64 = s.trim().parse().map_err(|_| anyhow!("not a number: {input}"))?;
+    let f: f64 = s
+        .trim()
+        .parse()
+        .map_err(|_| anyhow!("not a number: {input}"))?;
     let neg = neg_paren || f < 0.0;
     let cents = (f.abs() * 100.0).round() as i64;
     Ok((cents, neg))

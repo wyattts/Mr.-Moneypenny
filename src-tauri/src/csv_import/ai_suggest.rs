@@ -139,10 +139,7 @@ struct RawMatch {
 /// map, dropping any entries whose merchant isn't in the input set
 /// (the model occasionally hallucinates merchant strings or rewords
 /// them).
-fn parse_response(
-    text: &str,
-    valid_merchants: &[String],
-) -> Result<HashMap<String, i64>> {
+fn parse_response(text: &str, valid_merchants: &[String]) -> Result<HashMap<String, i64>> {
     let trimmed = strip_code_fence(text.trim());
     let raw: RawResponse = serde_json::from_str(trimmed)
         .map_err(|e| anyhow!("LLM response was not valid JSON: {e}; response was: {text}"))?;

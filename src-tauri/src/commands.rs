@@ -1108,13 +1108,16 @@ pub async fn csv_import_ai_suggest(
             "http://localhost:11434",
         )
         .map_err(err)?;
-        let ollama_model = settings::get_or_default(
-            &conn,
-            settings::keys::OLLAMA_MODEL,
-            "llama3:8b",
+        let ollama_model =
+            settings::get_or_default(&conn, settings::keys::OLLAMA_MODEL, "llama3:8b")
+                .map_err(err)?;
+        (
+            hints,
+            provider_choice,
+            anth_model,
+            ollama_endpoint,
+            ollama_model,
         )
-        .map_err(err)?;
-        (hints, provider_choice, anth_model, ollama_endpoint, ollama_model)
     };
 
     let result = if provider_choice == "ollama" {
@@ -1126,8 +1129,9 @@ pub async fn csv_import_ai_suggest(
         let key = secrets::retrieve(secrets::keys::ANTHROPIC_API_KEY)
             .map_err(err)?
             .ok_or_else(|| "no Anthropic API key saved".to_string())?;
-        let provider = AnthropicProvider::with_options(key, &anth_model, "https://api.anthropic.com")
-            .map_err(err)?;
+        let provider =
+            AnthropicProvider::with_options(key, &anth_model, "https://api.anthropic.com")
+                .map_err(err)?;
         ai_suggest::suggest_categories(&provider, &input.merchants, &hints)
             .await
             .map_err(err)?
@@ -1183,8 +1187,8 @@ pub async fn csv_import_commit(
 ) -> Result<CommitResult, String> {
     let conn = state.db.lock().unwrap();
     let now = OffsetDateTime::now_utc();
-    let currency = settings::get_or_default(&conn, settings::keys::DEFAULT_CURRENCY, "USD")
-        .map_err(err)?;
+    let currency =
+        settings::get_or_default(&conn, settings::keys::DEFAULT_CURRENCY, "USD").map_err(err)?;
 
     let mut inserted = 0usize;
     for row in &input.rows {
@@ -1251,27 +1255,19 @@ pub async fn list_csv_import_profiles(
 }
 
 #[tauri::command]
-pub async fn delete_csv_import_profile(
-    id: i64,
-    state: State<'_, AppState>,
-) -> Result<(), String> {
+pub async fn delete_csv_import_profile(id: i64, state: State<'_, AppState>) -> Result<(), String> {
     let conn = state.db.lock().unwrap();
     csv_profiles::delete(&conn, id).map_err(err)
 }
 
 #[tauri::command]
-pub async fn list_merchant_rules(
-    state: State<'_, AppState>,
-) -> Result<Vec<MerchantRule>, String> {
+pub async fn list_merchant_rules(state: State<'_, AppState>) -> Result<Vec<MerchantRule>, String> {
     let conn = state.db.lock().unwrap();
     merchant_rules::list(&conn).map_err(err)
 }
 
 #[tauri::command]
-pub async fn delete_merchant_rule(
-    id: i64,
-    state: State<'_, AppState>,
-) -> Result<(), String> {
+pub async fn delete_merchant_rule(id: i64, state: State<'_, AppState>) -> Result<(), String> {
     let conn = state.db.lock().unwrap();
     merchant_rules::delete(&conn, id).map_err(err)
 }
