@@ -41,3 +41,6 @@ crashes/
 
 # Local-only patch spec inbox (per-version markdown drafts)
 Patches/
+
+# Claude Code local state (per-machine; do not share)
+.claude/
