@@ -436,6 +436,88 @@ export const setStartingBalance = (
 ): Promise<void> => invoke("set_starting_balance", { input });
 
 // -------------------------------------------------------------------
+// Forecast wave 2 (v0.3.3)
+// -------------------------------------------------------------------
+
+export interface MonteCarloInput {
+  starting_balance_cents: number;
+  monthly_contribution_cents: number;
+  annual_return_pct: number;
+  annual_volatility_pct: number;
+  horizon_years: number;
+  n_paths: number;
+  time_points: number;
+  seed?: number | null;
+}
+
+export interface MonthBand {
+  month: number;
+  p5: number;
+  p10: number;
+  p25: number;
+  p50: number;
+  p75: number;
+  p90: number;
+  p95: number;
+}
+
+export interface PathBands {
+  points: MonthBand[];
+  final_p5_cents: number;
+  final_p50_cents: number;
+  final_p95_cents: number;
+  n_paths: number;
+}
+
+export const monteCarloInvestment = (
+  input: MonteCarloInput,
+): Promise<PathBands> => invoke("monte_carlo_investment", { input });
+
+export interface GoalProbabilityInput {
+  starting_balance_cents: number;
+  monthly_contribution_cents: number;
+  annual_return_pct: number;
+  annual_volatility_pct: number;
+  horizon_years: number;
+  target_cents: number;
+  n_paths: number;
+  seed?: number | null;
+}
+
+export const computeGoalProbability = (
+  input: GoalProbabilityInput,
+): Promise<number> => invoke("compute_goal_probability", { input });
+
+export interface RunwayResult {
+  fixed_per_month_cents: number;
+  variable_per_month_cents: number;
+  total_burn_per_month_cents: number;
+  drawable_balance_cents: number;
+  months_at_recent_burn: number;
+  variable_p25_cents: number | null;
+  months_at_p25_variable: number | null;
+}
+
+export const computeRunway = (): Promise<RunwayResult> =>
+  invoke("compute_runway");
+
+export interface TrendResult {
+  monthly_totals_cents: number[];
+  n_months_with_data: number;
+  slope_cents_per_month: number;
+  intercept_cents: number;
+  r_squared: number;
+  direction: "rising" | "falling" | "flat";
+  headline: string;
+}
+
+export const computeCategoryTrend = (
+  categoryId: number,
+  monthsBack: number,
+): Promise<TrendResult> =>
+  invoke("compute_category_trend", { categoryId, monthsBack });
+
+// -------------------------------------------------------------------
 // CSV import (v0.3.2)
 // -------------------------------------------------------------------
 

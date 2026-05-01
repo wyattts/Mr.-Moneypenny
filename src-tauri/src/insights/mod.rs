@@ -6,8 +6,11 @@
 //! the host machine's system timezone.
 
 pub mod forecast;
+pub mod monte_carlo;
 pub mod range;
+pub mod runway;
 pub mod stats;
+pub mod trend;
 
 use std::collections::BTreeMap;
 
