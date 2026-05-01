@@ -955,6 +955,328 @@ pub async fn list_investment_categories(
 }
 
 // ---------------------------------------------------------------------
+// CSV import (v0.3.2).
+//
+// All bulk-import paths from bank/CC CSV exports go through these
+// handlers. The frontend wizard drives the flow; the backend hosts
+// parsing, deduplication, rules-based categorization, and the optional
+// batched LLM suggest call. See `Patches/v0.3.2.md` and
+// `src/csv_import/` for the architecture.
+// ---------------------------------------------------------------------
+
+use crate::csv_import::{
+    ai_suggest::{self, CategoryHint},
+    categorize::{self as categorize_mod, Decision},
+    dedupe::{self, DuplicateMatch},
+    parser::{self as csv_parser, ParsedRow, PreviewResult},
+};
+use crate::repository::{
+    csv_import_profiles::{self as csv_profiles, ColumnMapping, CsvImportProfile},
+    merchant_rules::{self, MerchantRule},
+};
+/// Preview payload for the wizard's first screen.
+#[derive(Debug, Serialize)]
+pub struct CsvPreview {
+    pub preview: PreviewResult,
+    /// Profile auto-suggested via header_signature match, if any.
+    pub suggested_profile: Option<CsvImportProfile>,
+    /// All saved profiles for the manual dropdown.
+    pub profiles: Vec<CsvImportProfile>,
+}
+
+#[tauri::command]
+pub async fn csv_import_preview(
+    content: String,
+    state: State<'_, AppState>,
+) -> Result<CsvPreview, String> {
+    let preview = csv_parser::parse_preview(&content).map_err(err)?;
+    let conn = state.db.lock().unwrap();
+    let suggested =
+        csv_profiles::find_by_signature(&conn, &preview.header_signature).map_err(err)?;
+    let profiles = csv_profiles::list(&conn).map_err(err)?;
+    Ok(CsvPreview {
+        preview,
+        suggested_profile: suggested,
+        profiles,
+    })
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SaveProfileInput {
+    pub name: String,
+    pub header_signature: Option<String>,
+    pub mapping: ColumnMapping,
+}
+
+#[tauri::command]
+pub async fn csv_import_save_profile(
+    input: SaveProfileInput,
+    state: State<'_, AppState>,
+) -> Result<i64, String> {
+    let conn = state.db.lock().unwrap();
+    let now = OffsetDateTime::now_utc();
+    csv_profiles::create(
+        &conn,
+        &input.name,
+        input.header_signature.as_deref(),
+        &input.mapping,
+        now,
+    )
+    .map_err(err)
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ParseInput {
+    pub content: String,
+    pub mapping: ColumnMapping,
+}
+
+/// Apply the user-confirmed mapping to the file and return the parsed
+/// rows. The wizard then runs categorize / dedupe.
+#[tauri::command]
+pub async fn csv_import_parse(input: ParseInput) -> Result<Vec<ParsedRow>, String> {
+    csv_parser::parse_with_mapping(&input.content, &input.mapping).map_err(err)
+}
+
+#[derive(Debug, Serialize)]
+pub struct CategorizeAndDedupeResult {
+    pub decisions: Vec<Decision>,
+    pub duplicates: Vec<DuplicateMatch>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CategorizeInput {
+    pub rows: Vec<ParsedRow>,
+}
+
+#[tauri::command]
+pub async fn csv_import_categorize_and_dedupe(
+    input: CategorizeInput,
+    state: State<'_, AppState>,
+) -> Result<CategorizeAndDedupeResult, String> {
+    let conn = state.db.lock().unwrap();
+    let decisions = categorize_mod::categorize_all(&conn, &input.rows).map_err(err)?;
+    let duplicates = dedupe::find_probable_duplicates(&conn, &input.rows).map_err(err)?;
+    Ok(CategorizeAndDedupeResult {
+        decisions,
+        duplicates,
+    })
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AiSuggestInput {
+    /// Distinct merchant strings to categorize.
+    pub merchants: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AiSuggestResponse {
+    pub suggestions: std::collections::HashMap<String, i64>,
+    pub cost_micros: i64,
+}
+
+#[tauri::command]
+pub async fn csv_import_ai_suggest(
+    input: AiSuggestInput,
+    state: State<'_, AppState>,
+) -> Result<AiSuggestResponse, String> {
+    // Build a category-hint list from the user's active categories.
+    let (hints, provider_choice, anth_model, ollama_endpoint, ollama_model) = {
+        let conn = state.db.lock().unwrap();
+        let cats = categories::list(&conn, false).map_err(err)?;
+        let hints: Vec<CategoryHint> = cats
+            .into_iter()
+            .filter(|c| c.is_active)
+            .map(|c| CategoryHint {
+                id: c.id,
+                name: c.name,
+                hint: Some(format!("{:?}", c.kind).to_lowercase()),
+            })
+            .collect();
+        let provider_choice = settings::get(&conn, settings::keys::LLM_PROVIDER)
+            .map_err(err)?
+            .unwrap_or_else(|| "anthropic".into());
+        let anth_model = settings::get_or_default(
+            &conn,
+            settings::keys::ANTHROPIC_MODEL,
+            DEFAULT_ANTHROPIC_MODEL,
+        )
+        .map_err(err)?;
+        let ollama_endpoint = settings::get_or_default(
+            &conn,
+            settings::keys::OLLAMA_ENDPOINT,
+            "http://localhost:11434",
+        )
+        .map_err(err)?;
+        let ollama_model = settings::get_or_default(
+            &conn,
+            settings::keys::OLLAMA_MODEL,
+            "llama3:8b",
+        )
+        .map_err(err)?;
+        (hints, provider_choice, anth_model, ollama_endpoint, ollama_model)
+    };
+
+    let result = if provider_choice == "ollama" {
+        let provider = OllamaProvider::with_base_url(ollama_model, ollama_endpoint).map_err(err)?;
+        ai_suggest::suggest_categories(&provider, &input.merchants, &hints)
+            .await
+            .map_err(err)?
+    } else {
+        let key = secrets::retrieve(secrets::keys::ANTHROPIC_API_KEY)
+            .map_err(err)?
+            .ok_or_else(|| "no Anthropic API key saved".to_string())?;
+        let provider = AnthropicProvider::with_options(key, &anth_model, "https://api.anthropic.com")
+            .map_err(err)?;
+        ai_suggest::suggest_categories(&provider, &input.merchants, &hints)
+            .await
+            .map_err(err)?
+    };
+    // (Cost surfaces in the wizard summary; we don't double-write to
+    // llm_usage from here because suggest_categories already returned
+    // the cost_micros and the underlying provider call wasn't routed
+    // through the bot's usage-logging path.)
+    Ok(AiSuggestResponse {
+        suggestions: result.suggestions,
+        cost_micros: result.cost_micros,
+    })
+}
+
+/// One row the user has decided to commit. The frontend assembles these
+/// after the review screens; the backend trusts the categorization and
+/// just inserts.
+#[derive(Debug, Deserialize)]
+pub struct CommittableRow {
+    pub occurred_at: String,
+    pub amount_cents: i64,
+    pub category_id: Option<i64>,
+    pub merchant: String,
+    pub description: Option<String>,
+    pub is_refund: bool,
+}
+
+/// Pattern-and-category pair to persist as a new merchant_rules row.
+#[derive(Debug, Deserialize)]
+pub struct RuleToSave {
+    pub pattern: String,
+    pub category_id: i64,
+    pub default_is_refund: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CommitInput {
+    pub rows: Vec<CommittableRow>,
+    pub rules_to_save: Vec<RuleToSave>,
+    pub profile_id: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CommitResult {
+    pub inserted: usize,
+    pub rules_added: usize,
+}
+
+#[tauri::command]
+pub async fn csv_import_commit(
+    input: CommitInput,
+    state: State<'_, AppState>,
+) -> Result<CommitResult, String> {
+    let conn = state.db.lock().unwrap();
+    let now = OffsetDateTime::now_utc();
+    let currency = settings::get_or_default(&conn, settings::keys::DEFAULT_CURRENCY, "USD")
+        .map_err(err)?;
+
+    let mut inserted = 0usize;
+    for row in &input.rows {
+        let occurred_at = OffsetDateTime::parse(
+            &row.occurred_at,
+            &time::format_description::well_known::Rfc3339,
+        )
+        .map_err(err)?;
+        expenses::insert(
+            &conn,
+            &crate::domain::NewExpense {
+                amount_cents: row.amount_cents,
+                currency: currency.clone(),
+                category_id: row.category_id,
+                description: row
+                    .description
+                    .clone()
+                    .or_else(|| Some(row.merchant.clone())),
+                occurred_at,
+                source: ExpenseSource::Csv,
+                raw_message: Some(row.merchant.clone()),
+                llm_confidence: None,
+                logged_by_chat_id: None,
+                is_refund: row.is_refund,
+                refund_for_expense_id: None,
+            },
+        )
+        .map_err(err)?;
+        inserted += 1;
+    }
+
+    let mut rules_added = 0usize;
+    for rule in &input.rules_to_save {
+        merchant_rules::create(
+            &conn,
+            &rule.pattern,
+            rule.category_id,
+            rule.default_is_refund,
+            0,
+            now,
+        )
+        .map_err(err)?;
+        rules_added += 1;
+    }
+
+    if let Some(id) = input.profile_id {
+        let _ = csv_profiles::touch(&conn, id, now);
+    }
+
+    Ok(CommitResult {
+        inserted,
+        rules_added,
+    })
+}
+
+// --- Settings management for profiles + rules ----------------------
+
+#[tauri::command]
+pub async fn list_csv_import_profiles(
+    state: State<'_, AppState>,
+) -> Result<Vec<CsvImportProfile>, String> {
+    let conn = state.db.lock().unwrap();
+    csv_profiles::list(&conn).map_err(err)
+}
+
+#[tauri::command]
+pub async fn delete_csv_import_profile(
+    id: i64,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let conn = state.db.lock().unwrap();
+    csv_profiles::delete(&conn, id).map_err(err)
+}
+
+#[tauri::command]
+pub async fn list_merchant_rules(
+    state: State<'_, AppState>,
+) -> Result<Vec<MerchantRule>, String> {
+    let conn = state.db.lock().unwrap();
+    merchant_rules::list(&conn).map_err(err)
+}
+
+#[tauri::command]
+pub async fn delete_merchant_rule(
+    id: i64,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let conn = state.db.lock().unwrap();
+    merchant_rules::delete(&conn, id).map_err(err)
+}
+
+// ---------------------------------------------------------------------
 // Misc.
 // ---------------------------------------------------------------------
 

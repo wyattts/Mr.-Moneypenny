@@ -23,7 +23,7 @@ fn migrations_are_idempotent() {
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 11, "after migrations, user_version should be 11");
+    assert_eq!(version, 14, "after migrations, user_version should be 14");
 }
 
 #[test]

@@ -1,6 +1,6 @@
 [package]
 name = "moneypenny"
-version = "0.3.1"
+version = "0.3.2"
 description = "Mr. Moneypenny — privacy-first FOSS budgeting app"
 authors = ["Wyatt Smith"]
 license = "AGPL-3.0-or-later"
@@ -40,6 +40,8 @@ hkdf = "0.12"
 sha2 = "0.10"
 machine-uid = "0.5"
 base64 = "0.22"
+csv = "1"
+strsim = "0.11"
 # Migration-only: read v0.2.6 secrets from the OS keyring on first launch
 # after upgrade and copy them into the new disk store. Will be dropped in
 # v0.2.7 once the migration window closes.

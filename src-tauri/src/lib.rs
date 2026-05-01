@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 pub mod app_state;
+pub mod csv_import;
 pub mod db;
 pub mod domain;
 pub mod insights;
@@ -173,6 +174,16 @@ mod app {
                 run_scenario,
                 set_starting_balance,
                 list_investment_categories,
+                csv_import_preview,
+                csv_import_save_profile,
+                csv_import_parse,
+                csv_import_categorize_and_dedupe,
+                csv_import_ai_suggest,
+                csv_import_commit,
+                list_csv_import_profiles,
+                delete_csv_import_profile,
+                list_merchant_rules,
+                delete_merchant_rule,
             ])
             .run(tauri::generate_context!())
             .expect("error while running tauri application");

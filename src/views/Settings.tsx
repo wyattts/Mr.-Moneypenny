@@ -32,8 +32,16 @@ import type {
   TelegramBotInfo,
   UsageSummary,
 } from "@/lib/tauri";
+import {
+  deleteCsvImportProfile,
+  deleteMerchantRule,
+  listCsvImportProfiles,
+  listMerchantRules,
+} from "@/lib/tauri";
+import type { CsvImportProfile, MerchantRule } from "@/lib/tauri";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { CURRENCIES } from "@/lib/currencies";
+import { CsvImportWizard } from "./CsvImport";
 import { ViewHeader } from "./ViewHeader";
 import { ErrorBanner, InfoBanner } from "@/wizard/components/Layout";
 import { GhostButton, PrimaryButton, SecondaryButton } from "@/wizard/components/Buttons";
@@ -177,6 +185,13 @@ export function Settings() {
           description="Tell Mr. Moneypenny what's currently in each investing-kind account. The forecast tools use this to project forward — without it, projections only count the contributions you've logged here, which severely underestimates accounts you opened before installing the app."
         >
           <InvestmentBalances onError={setError} onSaved={setInfo} />
+        </Section>
+
+        <Section
+          title="CSV import"
+          description="Bulk-import bank or credit-card CSVs. The first import of a new bank takes a few minutes of categorization clicks; subsequent imports of the same export are instant and free."
+        >
+          <CsvImportPanel onError={setError} onInfo={setInfo} />
         </Section>
 
         <Section
@@ -1026,6 +1041,137 @@ function BalanceRow({
       >
         Save
       </PrimaryButton>
+    </div>
+  );
+}
+
+function CsvImportPanel({
+  onError,
+  onInfo,
+}: {
+  onError: (m: string | null) => void;
+  onInfo: (m: string | null) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [profiles, setProfiles] = useState<CsvImportProfile[]>([]);
+  const [rules, setRules] = useState<MerchantRule[]>([]);
+
+  const reload = async () => {
+    try {
+      const [p, r] = await Promise.all([
+        listCsvImportProfiles(),
+        listMerchantRules(),
+      ]);
+      setProfiles(p);
+      setRules(r);
+    } catch (e) {
+      onError(String(e));
+    }
+  };
+
+  useEffect(() => {
+    void reload();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const removeProfile = async (id: number) => {
+    try {
+      await deleteCsvImportProfile(id);
+      await reload();
+    } catch (e) {
+      onError(String(e));
+    }
+  };
+  const removeRule = async (id: number) => {
+    try {
+      await deleteMerchantRule(id);
+      await reload();
+    } catch (e) {
+      onError(String(e));
+    }
+  };
+
+  return (
+    <div className="space-y-3">
+      <PrimaryButton onClick={() => setOpen(true)}>
+        Import a CSV…
+      </PrimaryButton>
+
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+        <div className="rounded-md border border-graphite-700 bg-graphite-800 p-3">
+          <div className="mb-2 text-xs uppercase tracking-wide text-graphite-400">
+            Saved bank profiles ({profiles.length})
+          </div>
+          {profiles.length === 0 ? (
+            <p className="text-xs text-graphite-500">
+              None yet. Each bank you import from gets one saved here so you
+              don&apos;t have to remap columns next time.
+            </p>
+          ) : (
+            <ul className="divide-y divide-graphite-700">
+              {profiles.map((p) => (
+                <li
+                  key={p.id}
+                  className="flex items-center justify-between gap-3 py-1.5"
+                >
+                  <span className="truncate text-sm text-graphite-100">
+                    {p.name}
+                  </span>
+                  <button
+                    onClick={() => void removeProfile(p.id)}
+                    className="rounded px-2 py-0.5 text-xs text-red-300 hover:bg-red-500/10"
+                  >
+                    delete
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+
+        <div className="rounded-md border border-graphite-700 bg-graphite-800 p-3">
+          <div className="mb-2 text-xs uppercase tracking-wide text-graphite-400">
+            Merchant rules ({rules.length})
+          </div>
+          {rules.length === 0 ? (
+            <p className="text-xs text-graphite-500">
+              Patterns that auto-categorize bank-statement merchants. Built up
+              one click at a time on the import review screen.
+            </p>
+          ) : (
+            <ul className="max-h-48 divide-y divide-graphite-700 overflow-y-auto">
+              {rules.map((r) => (
+                <li
+                  key={r.id}
+                  className="flex items-center justify-between gap-3 py-1.5 text-sm"
+                >
+                  <span className="truncate font-mono text-graphite-200">
+                    {r.pattern}
+                  </span>
+                  <button
+                    onClick={() => void removeRule(r.id)}
+                    className="rounded px-2 py-0.5 text-xs text-red-300 hover:bg-red-500/10"
+                  >
+                    delete
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
+
+      {open && (
+        <CsvImportWizard
+          onClose={() => {
+            setOpen(false);
+            void reload();
+          }}
+          onImported={(n) => {
+            onInfo(`Imported ${n} expense${n === 1 ? "" : "s"} from CSV.`);
+          }}
+        />
+      )}
     </div>
   );
 }

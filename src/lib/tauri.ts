@@ -434,3 +434,148 @@ export interface SetStartingBalanceInput {
 export const setStartingBalance = (
   input: SetStartingBalanceInput,
 ): Promise<void> => invoke("set_starting_balance", { input });
+
+// -------------------------------------------------------------------
+// CSV import (v0.3.2)
+// -------------------------------------------------------------------
+
+export interface ColumnMapping {
+  date_col: number;
+  amount_col: number;
+  merchant_col: number;
+  description_col: number | null;
+  category_col: number | null;
+  date_format: string;
+  neg_means_refund: boolean;
+  skip_rows: number;
+}
+
+export interface CsvImportProfile {
+  id: number;
+  name: string;
+  header_signature: string | null;
+  mapping: ColumnMapping;
+  created_at: string;
+  last_used_at: string | null;
+}
+
+export interface PreviewResult {
+  headers: string[];
+  sample_rows: string[][];
+  header_signature: string;
+  total_rows: number;
+}
+
+export interface CsvPreview {
+  preview: PreviewResult;
+  suggested_profile: CsvImportProfile | null;
+  profiles: CsvImportProfile[];
+}
+
+export const csvImportPreview = (content: string): Promise<CsvPreview> =>
+  invoke("csv_import_preview", { content });
+
+export const csvImportSaveProfile = (input: {
+  name: string;
+  header_signature: string | null;
+  mapping: ColumnMapping;
+}): Promise<number> => invoke("csv_import_save_profile", { input });
+
+export interface ParsedRow {
+  source_row_index: number;
+  occurred_at: string;
+  amount_cents: number;
+  merchant: string;
+  description: string | null;
+  raw_category: string | null;
+  is_refund: boolean;
+}
+
+export const csvImportParse = (input: {
+  content: string;
+  mapping: ColumnMapping;
+}): Promise<ParsedRow[]> => invoke("csv_import_parse", { input });
+
+export interface Decision {
+  row_index: number;
+  source: "rule" | "history" | "unmatched";
+  category_id: number | null;
+  override_is_refund: boolean | null;
+}
+
+export interface DuplicateMatch {
+  row_index: number;
+  kind: "csv" | "db";
+  existing_expense_id: number | null;
+  reason: string;
+}
+
+export interface CategorizeAndDedupeResult {
+  decisions: Decision[];
+  duplicates: DuplicateMatch[];
+}
+
+export const csvImportCategorizeAndDedupe = (
+  rows: ParsedRow[],
+): Promise<CategorizeAndDedupeResult> =>
+  invoke("csv_import_categorize_and_dedupe", { input: { rows } });
+
+export interface AiSuggestResponse {
+  suggestions: Record<string, number>;
+  cost_micros: number;
+}
+
+export const csvImportAiSuggest = (
+  merchants: string[],
+): Promise<AiSuggestResponse> =>
+  invoke("csv_import_ai_suggest", { input: { merchants } });
+
+export interface CommittableRow {
+  occurred_at: string;
+  amount_cents: number;
+  category_id: number | null;
+  merchant: string;
+  description: string | null;
+  is_refund: boolean;
+}
+
+export interface RuleToSave {
+  pattern: string;
+  category_id: number;
+  default_is_refund: boolean;
+}
+
+export interface CommitInput {
+  rows: CommittableRow[];
+  rules_to_save: RuleToSave[];
+  profile_id: number | null;
+}
+
+export interface CommitResult {
+  inserted: number;
+  rules_added: number;
+}
+
+export const csvImportCommit = (input: CommitInput): Promise<CommitResult> =>
+  invoke("csv_import_commit", { input });
+
+export const listCsvImportProfiles = (): Promise<CsvImportProfile[]> =>
+  invoke("list_csv_import_profiles");
+
+export const deleteCsvImportProfile = (id: number): Promise<void> =>
+  invoke("delete_csv_import_profile", { id });
+
+export interface MerchantRule {
+  id: number;
+  pattern: string;
+  category_id: number;
+  default_is_refund: boolean;
+  priority: number;
+  created_at: string;
+}
+
+export const listMerchantRules = (): Promise<MerchantRule[]> =>
+  invoke("list_merchant_rules");
+
+export const deleteMerchantRule = (id: number): Promise<void> =>
+  invoke("delete_merchant_rule", { id });

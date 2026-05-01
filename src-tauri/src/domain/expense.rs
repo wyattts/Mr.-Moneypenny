@@ -11,6 +11,8 @@ pub enum ExpenseSource {
     Telegram,
     /// Logged manually through the desktop GUI.
     Manual,
+    /// Bulk-imported from a bank/CC CSV file via the Settings → Import wizard.
+    Csv,
 }
 
 impl ExpenseSource {
@@ -18,6 +20,7 @@ impl ExpenseSource {
         match self {
             ExpenseSource::Telegram => "telegram",
             ExpenseSource::Manual => "manual",
+            ExpenseSource::Csv => "csv",
         }
     }
 }
@@ -28,6 +31,7 @@ impl std::str::FromStr for ExpenseSource {
         match s {
             "telegram" => Ok(ExpenseSource::Telegram),
             "manual" => Ok(ExpenseSource::Manual),
+            "csv" => Ok(ExpenseSource::Csv),
             other => anyhow::bail!("invalid expense source: {other}"),
         }
     }

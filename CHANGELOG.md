@@ -4,6 +4,38 @@ All notable changes to Mr. Moneypenny are documented here. The format roughly fo
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-05-01
+
+CSV importer. Bulk-load bank and credit-card export CSVs into the local expense ledger without paying API tokens for every row. Built around a `merchant_rules` table that the import wizard populates one click at a time on its review screen — first import of a new bank takes a few minutes, every subsequent import from the same bank is instant and free.
+
+### Added
+
+- **Settings → CSV import panel.** Launches a 5-step wizard (pick file → pick or create bank profile → map columns → categorize unmatched merchants → review probable duplicates → commit). The panel also lists saved bank profiles and merchant rules with delete affordances for each.
+- **Auto-detected bank profiles.** Each CSV's column-header row is hashed; if a saved profile's signature matches, the wizard auto-suggests it and skips the mapping screen entirely on re-imports.
+- **Three-layer merchant categorization** applied in order:
+  1. Saved `merchant_rules` (`STARBUCKS*` → Coffee).
+  2. Fuzzy match against existing `expenses.description` history (Levenshtein < 3 from a recent expense with a category).
+  3. Manual review screen for anything left. Each pick auto-saves a rule for next time.
+- **Optional ✨ AI-suggest** button on the review screen. Sends the unmatched merchant list + your category list to the configured LLM in **one batched call** and returns JSON. Cost ~$0.001-$0.01 per import regardless of row count. Off by default; only sends merchant strings (no amounts, dates, or descriptions).
+- **Probable-duplicate detection** at import time. Within-CSV dedupe (exact match on date + amount + merchant), against-DB dedupe (same date ±2d, exact amount, Levenshtein-fuzzy merchant). Surfaced in a review screen with checkboxes default-checked-to-skip.
+- **Negative amounts auto-marked as refunds.** Bank statements universally use negatives for credits/refunds/returns; the importer flips sign and sets `is_refund=1` to feed v0.2.6's signed-sum aggregation correctly. Configurable per profile.
+- **Date format flexibility.** `MM/DD/YYYY`, `DD/MM/YYYY`, `YYYY-MM-DD`, `MM-DD-YYYY`, `DD-MM-YYYY`, `M/D/YYYY` — picked once per profile.
+- **Amount parsing handles bank quirks**: leading `$`, comma thousands separators, parens-as-negation (`(1,234.56)`), explicit minus signs.
+
+### Internal
+
+- New `csv_import/` Rust module: `parser.rs` (csv-crate wrapper + column projection + amount/date parsers), `dedupe.rs` (within-CSV + against-DB Levenshtein), `categorize.rs` (3-layer match + auto-pattern suggestion), `ai_suggest.rs` (batched LLM call + JSON parse).
+- New `repository::csv_import_profiles` and `repository::merchant_rules` modules. Glob matching for merchant patterns is implemented in Rust (small recursive matcher with `*` and `?` semantics) so we control case-folding precisely.
+- 4 new migrations: 0012 (`csv_import_profiles`), 0013 (`merchant_rules`), 0014 (`source` CHECK gains `'csv'` so imported expenses are traceable). 0014 repeats v0.2.6's table-recreate dance because SQLite can't ALTER a CHECK in place.
+- `ExpenseSource` enum gains a `Csv` variant.
+- 10 new IPC commands: `csv_import_preview`, `csv_import_save_profile`, `csv_import_parse`, `csv_import_categorize_and_dedupe`, `csv_import_ai_suggest`, `csv_import_commit`, `list_csv_import_profiles`, `delete_csv_import_profile`, `list_merchant_rules`, `delete_merchant_rule`.
+- 48 new tests across `repository::csv_import_profiles` (6), `repository::merchant_rules` (7), `csv_import::parser` (12), `csv_import::dedupe` (5), `csv_import::categorize` (5), `csv_import::ai_suggest` (5). 257 tests passing total.
+- New deps: `csv = "1"` (~600 lines, MIT, no `unsafe`), `strsim = "0.11"` for Levenshtein.
+
+### Privacy
+
+CSV content stays on your machine. The only optional outbound traffic is the AI-suggest batched call, which sends only merchant strings + your category names — no amounts, dates, descriptions, or row counts beyond the merchant set. Off by default; opt in per-import.
+
 ## [0.3.1] - 2026-05-01
 
 Small follow-up patch on top of v0.3.0's Forecast view. No schema changes, no new IPC commands — just polish.
