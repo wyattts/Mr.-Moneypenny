@@ -1,6 +1,6 @@
 [package]
 name = "moneypenny"
-version = "0.2.6"
+version = "0.2.7"
 description = "Mr. Moneypenny — privacy-first FOSS budgeting app"
 authors = ["Wyatt Smith"]
 license = "AGPL-3.0-or-later"
@@ -35,6 +35,14 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"
 async-trait = "0.1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "http2"] }
 rand = "0.8"
+chacha20poly1305 = "0.10"
+hkdf = "0.12"
+sha2 = "0.10"
+machine-uid = "0.5"
+base64 = "0.22"
+# Migration-only: read v0.2.6 secrets from the OS keyring on first launch
+# after upgrade and copy them into the new disk store. Will be dropped in
+# v0.2.7 once the migration window closes.
 keyring = { version = "3", features = ["apple-native", "windows-native", "linux-native"] }
 
 [dev-dependencies]

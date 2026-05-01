@@ -4,6 +4,25 @@ All notable changes to Mr. Moneypenny are documented here. The format roughly fo
 
 ## [Unreleased]
 
+## [0.2.7] - 2026-05-01
+
+Reliability hotfix. The OS keyring backend that v0.2.6 and earlier relied on for the Anthropic API key and Telegram bot token has too many silent-failure modes on Linux — most notably, GNOME Keyring storing secrets in a session-only collection that gets wiped on reboot. v0.2.7 replaces the keyring entirely with an encrypted-on-disk store that just works across reboots, package switches, and desktop environments.
+
+### Changed
+
+- **Secrets now live in `~/.local/share/moneypenny/secrets.bin`** (and platform equivalents on macOS / Windows), encrypted with ChaCha20-Poly1305 under a key derived from a stable per-machine identifier. No daemon, no dbus, no PAM dependency. The file is `chmod 600` on Unix; same threat model as the OS keyring on a single-user machine.
+- **Master key derivation**: HKDF-SHA256 over `machine-uid || data_dir_path || per-installation salt`. Matches the keyring's per-machine + per-user binding — secrets don't decrypt if the file is moved to a different machine or user.
+- **Migration is transparent**: on first launch after upgrade, the new code opportunistically reads any existing keyring entries and copies them into the disk store. Users with intact keyrings notice nothing. Users whose keyrings had broken (the bug this release fixes) re-enter their credentials once via Settings — and they persist correctly from then on.
+
+### Sequencing note
+
+v0.2.7 was originally slotted as "API cost tracker" in the roadmap. That work shifts to v0.2.8; the local-whisper.cpp voice work moves to v0.2.9. Sequence is otherwise unchanged.
+
+### Internal
+
+- New `src-tauri/src/secrets/` module: `mod.rs` (public API matching the v0.2.6 surface), `kdf.rs` (HKDF-SHA256 over machine-uid + data dir), `cipher.rs` (ChaCha20-Poly1305 wrap/unwrap), `store.rs` (atomic save with `fsync` + rename), `migration.rs` (one-shot keyring → disk copy). 16 new unit tests covering round-trip, tamper detection, wrong-key failure, persistence across reopens, and chmod-600 enforcement on Unix.
+- New crate deps: `chacha20poly1305`, `hkdf`, `sha2`, `machine-uid`, `base64`. The `keyring` crate stays in the dep tree for v0.2.7 only — read-only, used by the migration shim — and will be dropped in v0.2.8.
+
 ## [0.2.6] - 2026-04-30
 
 First v0.2.6-track patch on the road to v1.0.0 — *bot reliability + recurring infrastructure*. Three new bot capabilities are wired through one shared scheduler primitive, and refunds finally have first-class support throughout the app.
