@@ -4,6 +4,20 @@ All notable changes to Mr. Moneypenny are documented here. The format roughly fo
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-05-01
+
+Small follow-up patch on top of v0.3.0's Forecast view. No schema changes, no new IPC commands — just polish.
+
+### Added
+
+- **Investment calculator: editable starting balance.** Previously the starting balance was sourced read-only from the saved investing-account record. Now there's a "$ Starting balance" input in the calculator itself; the input prefills from the saved balance when you switch accounts and is freely editable, so you can play out hypotheticals like "what if I rolled an extra $10k in?"
+- **Investment calculator: cumulative-contributions overlay.** New "Show contributions" checkbox below the chart toggles a third dashed line representing starting balance + cumulative deposits over time. Default off so the chart stays uncluttered; flip it on to see compounded growth visually separate from money you put in.
+
+### Changed
+
+- **Two decimal places everywhere.** All monetary amounts and percent displays now render to two decimals across the app — including investment-calculator hints, settings investment-account summaries, KPI "% of budget spent", and MoM-comparison delta (`+12.30%`, not `+12.3%`). Uniformity for tabular alignment. Chart-axis tick labels still use compact form (`$200k`) to avoid overflow.
+- **Forecast scenario tool** renamed and reframed: "Scenario: what if I cut..." → "Scenario: what if I changed..." since the sliders also accept positive (raise the cap) values. The result panel now shows "Saves per year" or "Costs per year" depending on the sign, with green/yellow color cues respectively.
+
 ## [0.3.0] - 2026-05-01
 
 The power-user update — wave 1. New "Forecast" view in the sidebar with three tools (investment calculator, goal-seek, scenario sliders), plus per-category descriptive stats and a histogram on every Categories row. All deterministic for now; Monte Carlo / bootstrap variants land in v0.3.1.

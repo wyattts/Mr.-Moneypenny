@@ -990,7 +990,7 @@ function BalanceRow({
         <div className="text-sm text-graphite-100">{account.name}</div>
         <div className="text-xs text-graphite-500">
           {account.avg_monthly_contribution_cents
-            ? `12-mo avg contribution: $${(account.avg_monthly_contribution_cents / 100).toFixed(0)}/mo`
+            ? `12-mo avg contribution: $${(account.avg_monthly_contribution_cents / 100).toFixed(2)}/mo`
             : "No contributions logged yet"}
         </div>
       </div>

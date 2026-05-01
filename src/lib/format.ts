@@ -46,9 +46,9 @@ export function formatDateTime(iso: string, locale: string | null = null): strin
   }).format(new Date(iso));
 }
 
-/** Format a percent like "+12.3%" or "-5%". */
+/** Format a percent like "+12.30%" or "-5.00%". Two decimals for uniformity. */
 export function formatDelta(pct: number | null): string {
   if (pct === null || !Number.isFinite(pct)) return "—";
   const sign = pct > 0 ? "+" : "";
-  return `${sign}${pct.toFixed(1)}%`;
+  return `${sign}${pct.toFixed(2)}%`;
 }

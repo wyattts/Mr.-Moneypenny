@@ -222,7 +222,7 @@ function KpiStrip({
         primary={formatMoney(totalRemaining, currency, locale)}
         secondary={
           totalBudget > 0
-            ? `${Math.round((data.kpi.total_spent_cents / totalBudget) * 100)}% of budget spent`
+            ? `${((data.kpi.total_spent_cents / totalBudget) * 100).toFixed(2)}% of budget spent`
             : "no budget set"
         }
         valueClass={totalRemainingClass}

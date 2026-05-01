@@ -32,7 +32,7 @@ export function Forecast() {
     <div>
       <ViewHeader
         title="Forecast"
-        subtitle="Look-forward tools — investment projection, goal-seek, and a what-if for your variable categories. Deterministic for now; Monte Carlo paths land in v0.3.1."
+        subtitle="Look-forward tools — investment projection, goal-seek, and a what-if for your variable categories. Deterministic for now; Monte Carlo paths land in v0.3.2."
       />
       <div className="space-y-6 px-8 py-6">
         {error && <ErrorBanner>{error}</ErrorBanner>}
@@ -57,10 +57,12 @@ const RETURN_PRESETS = [
 function InvestmentCalculator({ onError }: { onError: (m: string) => void }) {
   const [accounts, setAccounts] = useState<InvestmentSummary[]>([]);
   const [accountId, setAccountId] = useState<number | "all" | null>(null);
-  const [contributionDollars, setContributionDollars] = useState("500");
+  const [startingDollars, setStartingDollars] = useState("0.00");
+  const [contributionDollars, setContributionDollars] = useState("500.00");
   const [returnPct, setReturnPct] = useState(7);
   const [inflationPct, setInflationPct] = useState(2.5);
   const [horizonYears, setHorizonYears] = useState(30);
+  const [showContributions, setShowContributions] = useState(false);
   const [projection, setProjection] = useState<InvestmentProjection | null>(null);
 
   useEffect(() => {
@@ -74,9 +76,12 @@ function InvestmentCalculator({ onError }: { onError: (m: string) => void }) {
             setAccountId(first.category_id);
             if (first.avg_monthly_contribution_cents) {
               setContributionDollars(
-                ((first.avg_monthly_contribution_cents ?? 0) / 100).toFixed(0),
+                ((first.avg_monthly_contribution_cents ?? 0) / 100).toFixed(2),
               );
             }
+            setStartingDollars(
+              ((first.starting_balance_cents ?? 0) / 100).toFixed(2),
+            );
           }
         }
       } catch (e) {
@@ -104,13 +109,21 @@ function InvestmentCalculator({ onError }: { onError: (m: string) => void }) {
     return { startingTotal, avgTotal };
   }, [accounts, accountId]);
 
-  // Auto-prefill contribution when switching accounts.
+  // Auto-prefill contribution + starting balance when switching accounts.
+  // The starting-balance input is editable — switching accounts overwrites
+  // it (matches the contribution behavior). The user can then tweak.
   useEffect(() => {
     if (accountId === "all" && aggregate) {
-      setContributionDollars((aggregate.avgTotal / 100).toFixed(0));
-    } else if (selectedAccount?.avg_monthly_contribution_cents) {
-      setContributionDollars(
-        (selectedAccount.avg_monthly_contribution_cents / 100).toFixed(0),
+      setContributionDollars((aggregate.avgTotal / 100).toFixed(2));
+      setStartingDollars((aggregate.startingTotal / 100).toFixed(2));
+    } else if (selectedAccount) {
+      if (selectedAccount.avg_monthly_contribution_cents) {
+        setContributionDollars(
+          (selectedAccount.avg_monthly_contribution_cents / 100).toFixed(2),
+        );
+      }
+      setStartingDollars(
+        ((selectedAccount.starting_balance_cents ?? 0) / 100).toFixed(2),
       );
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -118,10 +131,8 @@ function InvestmentCalculator({ onError }: { onError: (m: string) => void }) {
 
   async function recompute() {
     try {
-      const startingCents =
-        accountId === "all"
-          ? (aggregate?.startingTotal ?? 0)
-          : (selectedAccount?.starting_balance_cents ?? 0);
+      const startingDollarsNum = parseFloat(startingDollars) || 0;
+      const startingCents = Math.round(startingDollarsNum * 100);
       const monthlyDollars = parseFloat(contributionDollars) || 0;
       const r = await projectInvestment({
         starting_balance_cents: startingCents,
@@ -142,16 +153,27 @@ function InvestmentCalculator({ onError }: { onError: (m: string) => void }) {
     if (accountId === null) return;
     void recompute();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [accountId, contributionDollars, returnPct, inflationPct, horizonYears, accounts]);
+  }, [
+    accountId,
+    startingDollars,
+    contributionDollars,
+    returnPct,
+    inflationPct,
+    horizonYears,
+    accounts,
+  ]);
 
   const chartData = useMemo(() => {
     if (!projection) return [];
+    const startingCents = Math.round((parseFloat(startingDollars) || 0) * 100);
+    const monthlyCents = Math.round((parseFloat(contributionDollars) || 0) * 100);
     return projection.trajectory.map((p) => ({
       year: +(p.month / 12).toFixed(2),
       Nominal: p.nominal_cents / 100,
       Real: p.real_cents / 100,
+      Contributions: (startingCents + monthlyCents * p.month) / 100,
     }));
-  }, [projection]);
+  }, [projection, startingDollars, contributionDollars]);
 
   if (accounts.length === 0) {
     return (
@@ -189,6 +211,19 @@ function InvestmentCalculator({ onError }: { onError: (m: string) => void }) {
             </select>
           </label>
           <NumberField
+            label="Starting balance"
+            value={startingDollars}
+            onChange={setStartingDollars}
+            prefix="$"
+            hint={
+              accountId === "all"
+                ? `Sum of all account starting balances: ${formatMoney(aggregate?.startingTotal ?? 0)}`
+                : (selectedAccount?.starting_balance_cents ?? 0) > 0
+                  ? `From your saved balance — edit to test scenarios.`
+                  : "Already invested? Enter it here. The projection compounds it alongside your contributions."
+            }
+          />
+          <NumberField
             label="Monthly contribution"
             value={contributionDollars}
             onChange={setContributionDollars}
@@ -202,7 +237,7 @@ function InvestmentCalculator({ onError }: { onError: (m: string) => void }) {
             }
           />
           <NumberSlider
-            label={`Annual return: ${returnPct.toFixed(1)}%`}
+            label={`Annual return: ${returnPct.toFixed(2)}%`}
             min={0}
             max={15}
             step={0.5}
@@ -225,7 +260,7 @@ function InvestmentCalculator({ onError }: { onError: (m: string) => void }) {
             ))}
           </div>
           <NumberSlider
-            label={`Annual inflation: ${inflationPct.toFixed(1)}%`}
+            label={`Annual inflation: ${inflationPct.toFixed(2)}%`}
             min={0}
             max={6}
             step={0.5}
@@ -311,9 +346,19 @@ function InvestmentCalculator({ onError }: { onError: (m: string) => void }) {
                         dot={false}
                       />
                     )}
+                    {showContributions && (
+                      <Line
+                        type="monotone"
+                        dataKey="Contributions"
+                        stroke="#94a3b8"
+                        strokeWidth={2}
+                        strokeDasharray="2 4"
+                        dot={false}
+                      />
+                    )}
                   </LineChart>
                 </ResponsiveContainer>
-                <div className="mt-2 flex gap-4 text-xs text-graphite-400">
+                <div className="mt-2 flex flex-wrap items-center gap-4 text-xs text-graphite-400">
                   <span className="flex items-center gap-1.5">
                     <span className="inline-block h-0.5 w-4 bg-forest-400" /> Nominal
                   </span>
@@ -323,6 +368,18 @@ function InvestmentCalculator({ onError }: { onError: (m: string) => void }) {
                       (today&apos;s $)
                     </span>
                   )}
+                  <label className="ml-auto flex cursor-pointer items-center gap-1.5 select-none">
+                    <input
+                      type="checkbox"
+                      checked={showContributions}
+                      onChange={(e) => setShowContributions(e.target.checked)}
+                      className="h-3 w-3 accent-forest-500"
+                    />
+                    <span className="flex items-center gap-1.5">
+                      <span className="inline-block h-0.5 w-4 bg-graphite-300" />{" "}
+                      Show contributions
+                    </span>
+                  </label>
                 </div>
               </div>
             </>
@@ -398,7 +455,7 @@ function GoalSeekTool({ onError }: { onError: (m: string) => void }) {
             onChange={setHorizon}
           />
           <NumberSlider
-            label={`Annual return: ${returnPct.toFixed(1)}%`}
+            label={`Annual return: ${returnPct.toFixed(2)}%`}
             min={0}
             max={15}
             step={0.5}
@@ -428,7 +485,7 @@ function GoalSeekTool({ onError }: { onError: (m: string) => void }) {
                   </div>
                   <div className="mt-2 text-xs text-graphite-500">
                     to hit {formatMoney(Math.round((parseFloat(target) || 0) * 100))} in{" "}
-                    {horizon} years at {returnPct}%
+                    {horizon} years at {returnPct.toFixed(2)}%
                   </div>
                 </>
               )}
@@ -489,20 +546,20 @@ function ScenarioTool({ onError }: { onError: (m: string) => void }) {
 
   if (variables.length === 0) {
     return (
-      <Section title="Scenario: what if I cut...">
+      <Section title="Scenario: what if I changed...">
         <p className="text-sm text-graphite-400">
           Set monthly targets on variable categories first (Categories tab) and
-          this tool will let you simulate cuts.
+          this tool will let you simulate changes.
         </p>
       </Section>
     );
   }
 
   return (
-    <Section title="Scenario: what if I cut...">
+    <Section title="Scenario: what if I changed...">
       <p className="mb-3 text-sm text-graphite-400">
-        Drag the sliders to simulate trimming a category by a percent. Annual
-        savings shown on the right.
+        Drag the sliders to raise or trim a category by a percent. Annual
+        impact shown on the right.
       </p>
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[2fr_1fr]">
         <div className="space-y-2">
@@ -550,7 +607,7 @@ function ScenarioTool({ onError }: { onError: (m: string) => void }) {
           </div>
           <div>
             <div className="text-xs uppercase tracking-wide text-graphite-400">
-              After your cuts
+              After your changes
             </div>
             <div className="text-lg tabular-nums text-graphite-100">
               {result
@@ -560,12 +617,26 @@ function ScenarioTool({ onError }: { onError: (m: string) => void }) {
             </div>
           </div>
           <div>
-            <div className="text-xs uppercase tracking-wide text-forest-300">
-              Saves per year
+            <div
+              className={`text-xs uppercase tracking-wide ${
+                (result?.savings_per_year_cents ?? 0) >= 0
+                  ? "text-forest-300"
+                  : "text-yellow-300"
+              }`}
+            >
+              {(result?.savings_per_year_cents ?? 0) >= 0
+                ? "Saves per year"
+                : "Costs per year"}
             </div>
-            <div className="text-2xl font-semibold tabular-nums text-forest-100">
+            <div
+              className={`text-2xl font-semibold tabular-nums ${
+                (result?.savings_per_year_cents ?? 0) >= 0
+                  ? "text-forest-100"
+                  : "text-yellow-100"
+              }`}
+            >
               {result
-                ? formatMoney(Math.max(0, result.savings_per_year_cents))
+                ? formatMoney(Math.abs(result.savings_per_year_cents))
                 : "—"}
             </div>
           </div>
