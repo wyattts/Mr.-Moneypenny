@@ -297,28 +297,39 @@ mod tests {
         let dd = tmp.path().to_str().unwrap();
         let mut f = SecretsFile::open(path.clone(), dd).unwrap();
         f.put("k", "v").unwrap();
-        // Corrupt the file: flip a byte in the JSON ct field.
+
+        // Corrupt the file by deterministically replacing the ct
+        // base64 value with one of equal length but a single bit
+        // different. Earlier this used a "find the ct field, flip a
+        // byte" heuristic that silently no-op'd ~1 run in 30 because
+        // the random byte at the chosen offset happened to be
+        // non-alphanumeric. Now we parse the JSON, mutate, re-write —
+        // which always actually tampers.
         let raw = std::fs::read_to_string(&path).unwrap();
-        // Replace the ct base64 with garbage that's still valid base64.
-        let corrupted = raw.replacen("\"ct\":", "\"ct\": \"AAAA\", \"_evil\":", 1);
-        // Actually easier: corrupt bytes at a known offset.
-        let bytes: Vec<u8> = raw.bytes().collect();
-        let mut bytes2 = bytes.clone();
-        // Find the literal "ct": " and flip a char inside its value.
-        if let Some(idx) = raw.find("\"ct\":") {
-            // Move past the quote that opens the value.
-            let target_idx = idx + "\"ct\": \"".len() + 2;
-            if target_idx < bytes2.len() && bytes2[target_idx].is_ascii_alphanumeric() {
-                bytes2[target_idx] = if bytes2[target_idx] == b'A' {
-                    b'B'
-                } else {
-                    b'A'
-                };
-            }
-        }
-        std::fs::write(&path, &bytes2).unwrap();
-        // Suppress unused
-        let _ = corrupted;
+        let mut json: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        let entries = json
+            .get_mut("entries")
+            .and_then(|e| e.as_object_mut())
+            .expect("entries object present");
+        let entry = entries
+            .values_mut()
+            .next()
+            .expect("at least one entry")
+            .as_object_mut()
+            .unwrap();
+        let ct = entry
+            .get_mut("ct")
+            .and_then(|v| v.as_str())
+            .expect("ct field present")
+            .to_string();
+        // Flip the first character to a different valid base64 char.
+        // 'A' ↔ 'B' covers both cases without having to handle padding.
+        let mut chars: Vec<char> = ct.chars().collect();
+        chars[0] = if chars[0] == 'A' { 'B' } else { 'A' };
+        let tampered_ct: String = chars.into_iter().collect();
+        entry.insert("ct".into(), serde_json::Value::String(tampered_ct));
+
+        std::fs::write(&path, serde_json::to_string(&json).unwrap()).unwrap();
 
         let f2 = SecretsFile::open(path, dd).unwrap();
         assert!(f2.get("k").is_err(), "tampered ct must produce an error");
