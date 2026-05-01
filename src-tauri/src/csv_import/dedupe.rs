@@ -125,7 +125,6 @@ mod tests {
     use crate::db;
     use crate::domain::{ExpenseSource, NewExpense};
     use crate::repository::{categories, expenses};
-    use time::OffsetDateTime;
 
     fn fresh_conn() -> Connection {
         let conn = db::open_in_memory().unwrap();
