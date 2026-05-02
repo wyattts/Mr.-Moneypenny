@@ -44,6 +44,75 @@ function volatilityForReturn(returnPct: number): number {
   return 15;
 }
 
+// Compact $ axis label that scales by magnitude — keeps long
+// projection numbers from bleeding off the chart's left edge.
+function formatYAxisDollars(v: number): string {
+  const abs = Math.abs(v);
+  if (abs >= 1_000_000) return `$${(v / 1_000_000).toFixed(1)}M`;
+  if (abs >= 1_000) return `$${(v / 1_000).toFixed(0)}k`;
+  return `$${v.toFixed(0)}`;
+}
+
+interface ProjectionDatum {
+  year: number;
+  Nominal: number;
+  Real: number;
+  Contributions: number;
+  pLo: number;
+  pHi: number;
+}
+
+// Custom Recharts tooltip content. We read pLo / pHi straight from
+// the data row instead of relying on transparent-Line registrations
+// (which Recharts will sometimes drop from the active payload, leaving
+// the band edges invisible on hover — the v0.3.5 bug this fixes).
+function ProjectionTooltipContent(props: {
+  active: boolean | undefined;
+  payload: { payload?: ProjectionDatum }[] | undefined;
+  label: number | undefined;
+  loPctLabel: string;
+  hiPctLabel: string;
+  showContributions: boolean;
+  showReal: boolean;
+}) {
+  const { active, payload, label, loPctLabel, hiPctLabel, showContributions, showReal } = props;
+  if (!active || !payload || payload.length === 0) return null;
+  const d = payload[0]?.payload;
+  if (!d) return null;
+  return (
+    <div
+      className="rounded-md border border-graphite-700 bg-graphite-900 p-2 text-xs"
+      style={{ minWidth: 180 }}
+    >
+      <div className="mb-1 text-graphite-400">Year {label}</div>
+      <Row label="Nominal" color="#34d399" value={d.Nominal} />
+      {showReal && <Row label="Real (today's $)" color="#facc15" value={d.Real} />}
+      <Row label={`Lower (P${loPctLabel})`} color="#60a5fa" value={d.pLo} />
+      <Row label={`Upper (P${hiPctLabel})`} color="#60a5fa" value={d.pHi} />
+      {showContributions && (
+        <Row label="Contributions" color="#94a3b8" value={d.Contributions} />
+      )}
+    </div>
+  );
+}
+
+function Row({ label, color, value }: { label: string; color: string; value: number }) {
+  return (
+    <div className="flex items-baseline justify-between gap-3">
+      <span className="flex items-center gap-1.5">
+        <span
+          className="inline-block h-2 w-2 rounded-full"
+          style={{ background: color }}
+        />
+        <span className="text-graphite-300">{label}</span>
+      </span>
+      <span className="font-mono tabular-nums text-graphite-50">
+        {formatMoney(Math.round(value * 100))}
+      </span>
+    </div>
+  );
+}
+
 export function Forecast() {
   const [error, setError] = useState<string | null>(null);
   return (
@@ -229,12 +298,24 @@ function Simulator({ onError }: { onError: (m: string) => void }) {
       Nominal: p.nominal_cents / 100,
       Real: p.real_cents / 100,
       Contributions: p.contributions_cents / 100,
-      band_lo: p.p_lo_cents / 100,
+      pLo: p.p_lo_cents / 100,
+      pHi: p.p_hi_cents / 100,
+      // Stacking helpers consumed by the two visual Areas only.
+      // band_offset is the invisible base; band_span sits on top.
+      band_offset: p.p_lo_cents / 100,
       band_span: (p.p_hi_cents - p.p_lo_cents) / 100,
-      Lower: p.p_lo_cents / 100,
-      Upper: p.p_hi_cents / 100,
     }));
   }, [trajectory]);
+
+  // Percentile labels for the tooltip, derived from the active band.
+  const loPctLabel = useMemo(
+    () => ((1 - bandPct) / 2 * 100).toFixed(1),
+    [bandPct],
+  );
+  const hiPctLabel = useMemo(
+    () => (100 - (1 - bandPct) / 2 * 100).toFixed(1),
+    [bandPct],
+  );
 
   return (
     <Section title="Simulator">
@@ -505,7 +586,10 @@ function Simulator({ onError }: { onError: (m: string) => void }) {
                 </div>
               </div>
               <ResponsiveContainer width="100%" height={260}>
-                <ComposedChart data={chartData}>
+                <ComposedChart
+                  data={chartData}
+                  margin={{ top: 5, right: 10, left: 5, bottom: 5 }}
+                >
                   <CartesianGrid stroke="#2a3138" strokeDasharray="3 3" />
                   <XAxis
                     dataKey="year"
@@ -514,28 +598,32 @@ function Simulator({ onError }: { onError: (m: string) => void }) {
                   />
                   <YAxis
                     stroke="#94a3b8"
-                    tickFormatter={(v) =>
-                      v >= 1000 ? `$${(v / 1000).toFixed(0)}k` : `$${v.toFixed(0)}`
-                    }
+                    width={78}
+                    tickFormatter={formatYAxisDollars}
                   />
                   <Tooltip
-                    cursor={false}
-                    contentStyle={{
-                      backgroundColor: "#1a1f24",
-                      border: "1px solid #2a3138",
-                      borderRadius: 6,
-                      color: "#e5e7eb",
-                    }}
-                    formatter={(v: number, name: string) => {
-                      if (name === "band_lo" || name === "band_span")
-                        return null as unknown as string;
-                      return formatMoney(Math.round(v * 100));
-                    }}
-                    labelFormatter={(l) => `Year ${l}`}
+                    cursor={{ stroke: "#3b4148", strokeWidth: 1 }}
+                    content={(p) => (
+                      <ProjectionTooltipContent
+                        active={p.active === true}
+                        payload={
+                          p.payload as
+                            | { payload?: ProjectionDatum }[]
+                            | undefined
+                        }
+                        label={
+                          typeof p.label === "number" ? p.label : undefined
+                        }
+                        loPctLabel={loPctLabel}
+                        hiPctLabel={hiPctLabel}
+                        showContributions={showContributions}
+                        showReal={inflationPct > 0}
+                      />
+                    )}
                   />
                   <Area
                     type="monotone"
-                    dataKey="band_lo"
+                    dataKey="band_offset"
                     stackId="band"
                     stroke="none"
                     fill="transparent"
@@ -548,29 +636,11 @@ function Simulator({ onError }: { onError: (m: string) => void }) {
                     dataKey="band_span"
                     stackId="band"
                     stroke="none"
-                    fill="#34d399"
+                    fill="#60a5fa"
                     fillOpacity={0.18}
                     isAnimationActive={false}
                     legendType="none"
                     activeDot={false}
-                  />
-                  <Line
-                    type="monotone"
-                    dataKey="Lower"
-                    stroke="transparent"
-                    dot={false}
-                    activeDot={false}
-                    legendType="none"
-                    isAnimationActive={false}
-                  />
-                  <Line
-                    type="monotone"
-                    dataKey="Upper"
-                    stroke="transparent"
-                    dot={false}
-                    activeDot={false}
-                    legendType="none"
-                    isAnimationActive={false}
                   />
                   <Line
                     type="monotone"
@@ -612,7 +682,7 @@ function Simulator({ onError }: { onError: (m: string) => void }) {
                   </span>
                 )}
                 <span className="flex items-center gap-1.5">
-                  <span className="inline-block h-2 w-4 rounded-sm bg-forest-400/30" />{" "}
+                  <span className="inline-block h-2 w-4 rounded-sm bg-blue-400/30" />{" "}
                   {(bandPct * 100).toFixed(2)}% band
                 </span>
                 <label className="ml-auto flex cursor-pointer items-center gap-1.5 select-none">
@@ -978,9 +1048,8 @@ function CategoryAnalyzer({ onError }: { onError: (m: string) => void }) {
                 <XAxis dataKey="label" stroke="#94a3b8" tick={{ fontSize: 10 }} />
                 <YAxis
                   stroke="#94a3b8"
-                  tickFormatter={(v) =>
-                    v >= 1000 ? `$${(v / 1000).toFixed(0)}k` : `$${v.toFixed(0)}`
-                  }
+                  width={78}
+                  tickFormatter={formatYAxisDollars}
                 />
                 <Tooltip
                   cursor={false}

@@ -4,6 +4,26 @@ All notable changes to Mr. Moneypenny are documented here. The format roughly fo
 
 ## [Unreleased]
 
+## [0.3.6] - 2026-05-02
+
+Simulator chart polish — band tooltip values, distinct band color, and Y-axis labels that no longer bleed off the chart.
+
+### Fixed
+
+- **Band edge values now appear in the projection-chart tooltip.** The v0.3.5 chart relied on transparent Recharts `Line`s named `Lower` / `Upper` to register tooltip entries for the band edges; with `stroke="transparent" + activeDot={false}`, Recharts dropped them from the active hover payload, so the band's P_lo / P_hi numbers never showed up. Replaced with a custom Tooltip content function that reads the band edges directly from the chart datum — values appear reliably, and the labels now include the actual percentile (e.g., "Lower (P10)" / "Upper (P90)") so users see what band width the current confidence resolves to.
+- **Y-axis labels no longer bleed off the chart's left edge** for large projections. Tick formatter now scales by magnitude (`$1.5M` for ≥$1M, `$200k` for ≥$1k, otherwise `$X`); YAxis width bumped to 78px so seven-figure labels render in their gutter instead of overflowing into the plot area. Same fix applied to the Category Analyzer chart.
+
+### Changed
+
+- **Probability band color** switches from forest-400/30 to blue-400/30 (`#60a5fa` at 18% opacity) so the band is visually distinct from the forest-green Nominal line. The band reads as "uncertainty around the deterministic curve" instead of competing with it.
+- Chart cursor on hover is now a faint vertical guideline (graphite-700) so users can see exactly which year the tooltip is reading.
+
+### Internal
+
+- Drop the redundant `band_lo` / `Lower` / `Upper` fields from the chart datum; band stacking now uses `band_offset` (transparent base) + `band_span` (filled) and the tooltip reads `pLo` / `pHi` straight from the datum.
+- New `formatYAxisDollars(v)` helper used by both Simulator and Category Analyzer charts.
+- New `ProjectionTooltipContent` + `Row` components in `Forecast.tsx` for the custom tooltip.
+
 ## [0.3.5] - 2026-05-02
 
 Forecast view simplification — Investment Calculator and Goal-seek removed (their probabilistic-but-deterministic nature was less accurate than what the Simulator already does), the Simulator absorbs their best affordances, and the projection chart now lives inside the Simulator with bands that scale with confidence.
