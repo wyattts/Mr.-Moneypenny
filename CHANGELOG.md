@@ -4,9 +4,11 @@ All notable changes to Mr. Moneypenny are documented here. The format roughly fo
 
 ## [Unreleased]
 
-## [0.3.3] - 2026-05-01
+## [0.3.4] - 2026-05-02
 
-Forecast wave 2 (redux) — bidirectional Monte Carlo Simulator + Category Analyzer + 80% probability bands on the Investment Calculator chart. The first attempt at v0.3.3 shipped Monte Carlo as two passive numbers bolted onto existing tools and was scrapped before any users saw it; this version gives probability questions their own surface with proper levers.
+**Same code as the (briefly-published, now-deleted) v0.3.3 redux release.** The version number was bumped to 0.3.4 because the scrapped first-attempt v0.3.3 had already been auto-updated to some installs (Wyatt's), and Tauri's updater does strict semver `>` comparison — meaning a re-released v0.3.3 with different code couldn't reach those installs. v0.3.4 is the same redux content shipped under a fresh version number so the auto-updater promotes it correctly. No v0.3.3 release exists in the public history.
+
+Forecast wave 2 (redux) — bidirectional Monte Carlo Simulator + Category Analyzer + 80% probability bands on the Investment Calculator chart. The first attempt at v0.3.3 shipped Monte Carlo as two passive numbers bolted onto existing tools and was scrapped after Wyatt installed and reviewed it; this version gives probability questions their own surface with proper levers.
 
 ### Added
 
