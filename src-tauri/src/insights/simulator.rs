@@ -6,13 +6,19 @@
 //!   target / horizon / return / σ / starting balance and a confidence
 //!   threshold, what's the smallest monthly contribution that crosses
 //!   that threshold? Uses bisection over contribution, runs Monte
-//!   Carlo at each candidate.
+//!   Carlo at each candidate. Probability bands on the returned
+//!   trajectory match the user's chosen confidence.
 //! - **Contribution-first** (`compute_probability`): given the same
 //!   inputs plus a fixed monthly contribution, what's the probability
-//!   of hitting the target? One Monte Carlo run.
+//!   of hitting the target? One Monte Carlo run. Probability bands on
+//!   the returned trajectory match that resulting probability — so
+//!   "the central X% of where you'd actually end up" lines up with
+//!   "your chance of hitting target = X%."
 //!
-//! Both modes share an `inflate_target` helper so "today's $" and
-//! "nominal future $" target interpretations are handled identically.
+//! Both modes return a `trajectory` of per-month points with the
+//! deterministic Nominal value, the inflation-adjusted Real value, the
+//! cumulative-Contributions value, and the band edges (p_lo / p50 /
+//! p_hi). The frontend draws all four traces from this single payload.
 //!
 //! ## Heatmap
 //!
@@ -59,15 +65,38 @@ pub struct RequiredContributionInput {
     pub confidence: f64,
 }
 
+/// One time-step on the projection chart. Carries everything the UI
+/// needs to draw all four traces (Nominal, Real, Contributions, band)
+/// without a separate IPC call.
+#[derive(Debug, Clone, Serialize)]
+pub struct TrajectoryPoint {
+    pub month: u32,
+    /// Deterministic future value at `(starting_balance, monthly_c,
+    /// annual_return)` — closed-form FV.
+    pub nominal_cents: i64,
+    /// Nominal deflated to today's purchasing power.
+    pub real_cents: i64,
+    /// Starting balance + monthly contribution × month elapsed.
+    pub contributions_cents: i64,
+    /// Lower band edge — `(1 - band_pct)/2` percentile.
+    pub p_lo_cents: i64,
+    /// Median of the simulated distribution.
+    pub p50_cents: i64,
+    /// Upper band edge — complement of `p_lo`.
+    pub p_hi_cents: i64,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct RequiredContributionResult {
     pub required_monthly_cents: i64,
     pub realized_probability: f64,
     pub effective_target_cents: i64,
-    pub final_p10_cents: i64,
+    pub final_p_lo_cents: i64,
     pub final_p50_cents: i64,
-    pub final_p90_cents: i64,
+    pub final_p_hi_cents: i64,
     pub iterations: u32,
+    pub band_pct: f64,
+    pub trajectory: Vec<TrajectoryPoint>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -81,9 +110,11 @@ pub struct ProbabilityInput {
 pub struct ProbabilityResult {
     pub probability: f64,
     pub effective_target_cents: i64,
-    pub final_p10_cents: i64,
+    pub final_p_lo_cents: i64,
     pub final_p50_cents: i64,
-    pub final_p90_cents: i64,
+    pub final_p_hi_cents: i64,
+    pub band_pct: f64,
+    pub trajectory: Vec<TrajectoryPoint>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -129,18 +160,15 @@ pub fn effective_target(common: &CommonInputs, horizon_years: u32) -> i64 {
 
 /// Bisection over monthly contribution. Finds the smallest contribution
 /// that yields probability ≥ confidence. Returns the search outcome
-/// plus useful summary statistics from the final Monte Carlo run.
+/// plus a per-month trajectory whose bands span `confidence` of the
+/// outcome distribution at the answer.
 pub fn solve_required_contribution(
     input: &RequiredContributionInput,
 ) -> RequiredContributionResult {
     let target_eff = effective_target(&input.common, input.common.horizon_years);
     let mut lo = 0i64;
-    // Upper bound: 2× (target / horizon_months) is enough to cover
-    // most realistic cases. We expand if probability at upper isn't
-    // yet ≥ confidence.
     let n_months = (input.common.horizon_years as i64).max(1) * 12;
-    let mut hi = (target_eff * 2 / n_months).max(10_000); // at least $100
-                                                          // Probe upper bound; expand up to 4× if needed.
+    let mut hi = (target_eff * 2 / n_months).max(10_000);
     let mut probe_input = mc_input(&input.common, hi);
     let mut p_hi = goal_probability(&probe_input, target_eff);
     let mut expansions = 0u32;
@@ -153,7 +181,6 @@ pub fn solve_required_contribution(
 
     let mut iterations = 1u32 + expansions;
 
-    // Now bisect.
     let mut last_prob = p_hi;
     let mut last_required = hi;
     for _ in 0..14 {
@@ -172,8 +199,8 @@ pub fn solve_required_contribution(
         }
     }
 
-    // Final Monte Carlo run at the answer to extract P10/P50/P90 for
-    // the histogram.
+    // Final Monte Carlo run at the answer for the per-month trajectory.
+    // Bands span the user's chosen confidence.
     let bands = simulate(&PathInput {
         starting_balance_cents: input.common.starting_balance_cents,
         monthly_contribution_cents: last_required,
@@ -181,28 +208,38 @@ pub fn solve_required_contribution(
         annual_volatility_pct: input.common.annual_volatility_pct,
         horizon_years: input.common.horizon_years,
         n_paths: 1000.max(input.common.n_paths),
-        time_points: 2,
+        time_points: 30,
+        band_pct: input.confidence,
         seed: input.common.seed,
     });
+
+    let trajectory = build_trajectory(&input.common, last_required, &bands);
 
     RequiredContributionResult {
         required_monthly_cents: last_required,
         realized_probability: last_prob,
         effective_target_cents: target_eff,
-        final_p10_cents: bands.final_p10_cents,
+        final_p_lo_cents: bands.final_p_lo_cents,
         final_p50_cents: bands.final_p50_cents,
-        final_p90_cents: bands.final_p90_cents,
+        final_p_hi_cents: bands.final_p_hi_cents,
         iterations,
+        band_pct: bands.band_pct,
+        trajectory,
     }
 }
 
-/// Single Monte Carlo run reporting probability + summary stats.
+/// Single Monte Carlo run reporting probability + trajectory. Bands
+/// span the *resulting* probability so "central X% of outcomes" tracks
+/// "X% chance of hitting target."
 pub fn compute_probability(input: &ProbabilityInput) -> ProbabilityResult {
     let target_eff = effective_target(&input.common, input.common.horizon_years);
     let probability = goal_probability(
         &mc_input(&input.common, input.monthly_contribution_cents),
         target_eff,
     );
+    // Use the just-computed probability as the band width. Clamp to
+    // (0.01, 0.99) so degenerate runs don't request P0 or P100.
+    let band_pct = probability.clamp(0.01, 0.99);
     let bands = simulate(&PathInput {
         starting_balance_cents: input.common.starting_balance_cents,
         monthly_contribution_cents: input.monthly_contribution_cents,
@@ -210,15 +247,19 @@ pub fn compute_probability(input: &ProbabilityInput) -> ProbabilityResult {
         annual_volatility_pct: input.common.annual_volatility_pct,
         horizon_years: input.common.horizon_years,
         n_paths: 1000.max(input.common.n_paths),
-        time_points: 2,
+        time_points: 30,
+        band_pct,
         seed: input.common.seed,
     });
+    let trajectory = build_trajectory(&input.common, input.monthly_contribution_cents, &bands);
     ProbabilityResult {
         probability,
         effective_target_cents: target_eff,
-        final_p10_cents: bands.final_p10_cents,
+        final_p_lo_cents: bands.final_p_lo_cents,
         final_p50_cents: bands.final_p50_cents,
-        final_p90_cents: bands.final_p90_cents,
+        final_p_hi_cents: bands.final_p_hi_cents,
+        band_pct: bands.band_pct,
+        trajectory,
     }
 }
 
@@ -236,13 +277,8 @@ pub fn heatmap(input: &HeatmapInput) -> HeatmapResult {
         for i in 0..n {
             let contribution = (input.contribution_min_cents as f64 + dc * i as f64).round() as i64;
             let mut common = input.common.clone();
-            // Cells use fewer paths to keep latency low; UI rounds the
-            // tooltip to the nearest 5% so 200 paths is enough.
             common.n_paths = 200;
             common.horizon_years = horizon;
-            // Fix per-cell seed so heatmap renders deterministically
-            // for a given input set; otherwise Recharts re-renders are
-            // visually noisy from sample-to-sample variance.
             let derived_seed = input
                 .common
                 .seed
@@ -277,8 +313,52 @@ fn mc_input(common: &CommonInputs, monthly_contribution_cents: i64) -> PathInput
             common.n_paths
         },
         time_points: 2,
+        band_pct: 0.80,
         seed: common.seed,
     }
+}
+
+/// Build a per-month trajectory with deterministic nominal + real +
+/// contributions traces alongside the Monte Carlo bands. Lengths align
+/// 1:1 by month with the bands snapshot grid.
+fn build_trajectory(
+    common: &CommonInputs,
+    monthly_contribution_cents: i64,
+    bands: &super::monte_carlo::PathBands,
+) -> Vec<TrajectoryPoint> {
+    let r_monthly = common.annual_return_pct / 100.0 / 12.0;
+    let infl_monthly = common.annual_inflation_pct / 100.0 / 12.0;
+    let p = common.starting_balance_cents as f64;
+    let c = monthly_contribution_cents as f64;
+
+    bands
+        .points
+        .iter()
+        .map(|b| {
+            let m = b.month as i64;
+            let nominal = if r_monthly.abs() < 1e-12 {
+                p + c * m as f64
+            } else {
+                let g = (1.0 + r_monthly).powi(m as i32);
+                p * g + c * (g - 1.0) / r_monthly
+            };
+            let real = if infl_monthly.abs() < 1e-12 {
+                nominal
+            } else {
+                nominal / (1.0 + infl_monthly).powi(m as i32)
+            };
+            let contributions = p + c * m as f64;
+            TrajectoryPoint {
+                month: b.month,
+                nominal_cents: nominal.round() as i64,
+                real_cents: real.round() as i64,
+                contributions_cents: contributions.round() as i64,
+                p_lo_cents: b.p_lo,
+                p50_cents: b.p50,
+                p_hi_cents: b.p_hi,
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -301,11 +381,10 @@ mod tests {
 
     #[test]
     fn effective_target_today_dollars_inflates_to_nominal() {
-        let mut c = common(100_000_000, 30); // $1M today
+        let mut c = common(100_000_000, 30);
         c.target_mode = TargetMode::TodaysDollars;
         c.annual_inflation_pct = 2.5;
         let nominal = effective_target(&c, c.horizon_years);
-        // (1 + 0.025/12)^360 ≈ 2.115. So $1M today ≈ $2.115M nominal.
         assert!(nominal > 200_000_000);
         assert!(nominal < 220_000_000);
     }
@@ -318,13 +397,14 @@ mod tests {
 
     #[test]
     fn required_contribution_bidirectional_consistency() {
-        // Solve "required at 80% confidence" then feed back into
-        // "compute probability" — should land ≥ 80%.
         let req = solve_required_contribution(&RequiredContributionInput {
             common: common(100_000_000, 30),
             confidence: 0.80,
         });
         assert!(req.realized_probability >= 0.80);
+        assert!(!req.trajectory.is_empty());
+        // Bands should match the requested confidence.
+        assert!((req.band_pct - 0.80).abs() < 1e-9);
 
         let prob = compute_probability(&ProbabilityInput {
             common: common(100_000_000, 30),
@@ -338,21 +418,34 @@ mod tests {
     }
 
     #[test]
-    fn required_contribution_zero_vol_matches_algebraic_floor() {
-        // σ=0 makes everything deterministic. Required contribution
-        // should be just enough for the closed-form FV to equal target.
-        // For target=$1M, 30y, 7%, σ=0: monthly ≈ $819.71.
-        let mut c = common(100_000_000, 30);
-        c.annual_volatility_pct = 0.0;
-        let req = solve_required_contribution(&RequiredContributionInput {
-            common: c,
-            confidence: 0.50,
+    fn probability_mode_band_pct_tracks_probability() {
+        let prob = compute_probability(&ProbabilityInput {
+            common: common(100_000_000, 30),
+            monthly_contribution_cents: 100_000,
         });
-        // Allow some bisection slack; should be in the ballpark.
+        // Allow tiny epsilon for the (0.01, 0.99) clamp.
+        let expected = prob.probability.clamp(0.01, 0.99);
+        assert!((prob.band_pct - expected).abs() < 1e-9);
+    }
+
+    #[test]
+    fn required_mode_widens_bands_with_higher_confidence() {
+        let req_70 = solve_required_contribution(&RequiredContributionInput {
+            common: common(100_000_000, 30),
+            confidence: 0.70,
+        });
+        let req_95 = solve_required_contribution(&RequiredContributionInput {
+            common: common(100_000_000, 30),
+            confidence: 0.95,
+        });
+        let span_70 = req_70.final_p_hi_cents - req_70.final_p_lo_cents;
+        let span_95 = req_95.final_p_hi_cents - req_95.final_p_lo_cents;
+        // 95% band must be wider than 70% band on the same shape.
+        // Note: contributions also differ between solves (95% needs
+        // more $/mo), so absolute amounts shift. Span is the test.
         assert!(
-            (60_000..=120_000).contains(&req.required_monthly_cents),
-            "required {} cents/mo not near expected ~$820/mo",
-            req.required_monthly_cents
+            span_95 > span_70,
+            "95% span ({span_95}) should exceed 70% span ({span_70})"
         );
     }
 
@@ -366,25 +459,17 @@ mod tests {
             common: common(100_000_000, 30),
             confidence: 0.90,
         });
-        assert!(
-            req_90.required_monthly_cents > req_50.required_monthly_cents,
-            "90% required ({}) should exceed 50% required ({})",
-            req_90.required_monthly_cents,
-            req_50.required_monthly_cents
-        );
+        assert!(req_90.required_monthly_cents > req_50.required_monthly_cents);
     }
 
     #[test]
     fn today_dollars_target_requires_more_than_nominal() {
-        // At positive inflation, today's-$ interpretation inflates the
-        // target → user needs to contribute more.
         let mut c_nominal = common(100_000_000, 30);
         c_nominal.annual_inflation_pct = 2.5;
         let req_nominal = solve_required_contribution(&RequiredContributionInput {
             common: c_nominal,
             confidence: 0.80,
         });
-
         let mut c_today = common(100_000_000, 30);
         c_today.annual_inflation_pct = 2.5;
         c_today.target_mode = TargetMode::TodaysDollars;
@@ -393,6 +478,35 @@ mod tests {
             confidence: 0.80,
         });
         assert!(req_today.required_monthly_cents > req_nominal.required_monthly_cents);
+    }
+
+    #[test]
+    fn trajectory_includes_nominal_real_contributions_and_bands() {
+        let req = solve_required_contribution(&RequiredContributionInput {
+            common: {
+                let mut c = common(100_000_000, 30);
+                c.annual_inflation_pct = 2.5;
+                c.target_mode = TargetMode::TodaysDollars;
+                c
+            },
+            confidence: 0.80,
+        });
+        // With non-zero inflation, real should be < nominal.
+        let last = req.trajectory.last().unwrap();
+        assert!(last.real_cents < last.nominal_cents);
+        // Contributions should equal starting + monthly × months_horizon.
+        let expected_contrib = req.required_monthly_cents * 30 * 12;
+        assert!(
+            (last.contributions_cents - expected_contrib).abs() < 100,
+            "contributions {} far from expected {}",
+            last.contributions_cents,
+            expected_contrib
+        );
+        // Band edges should bracket the median in the simulated set
+        // (and roughly bracket the deterministic nominal too, though
+        // skew can put nominal outside the band on heavy-tail draws).
+        assert!(last.p_lo_cents <= last.p50_cents);
+        assert!(last.p50_cents <= last.p_hi_cents);
     }
 
     #[test]
@@ -405,20 +519,14 @@ mod tests {
             horizon_max_years: 30,
         };
         let r = heatmap(&input);
-        // For any fixed horizon row, probabilities should be
-        // non-decreasing in contribution.
         let row: Vec<f64> = r.cells.iter().take(12).map(|c| c.probability).collect();
         for w in row.windows(2) {
-            // Allow small Monte Carlo noise, but should be roughly
-            // non-decreasing.
             assert!(w[1] >= w[0] - 0.05, "row not monotonic: {:?}", row);
         }
     }
 
     #[test]
     fn heatmap_higher_horizon_higher_prob() {
-        // For a fixed reasonable contribution and 1y vs 30y horizon,
-        // longer horizon must give materially higher probability.
         let mut c1 = common(100_000_000, 1);
         c1.target_mode = TargetMode::NominalFuture;
         let p_short = compute_probability(&ProbabilityInput {

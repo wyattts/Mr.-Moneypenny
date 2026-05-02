@@ -2,29 +2,25 @@
 //!
 //! Runs N paths (default 1,000) where each month's return is drawn
 //! from a Normal distribution: μ = annual_rate/12, σ = annual_vol/√12.
-//! At each requested time-step we sort the path values across paths and
-//! extract percentiles, producing probability bands the UI overlays
-//! on the deterministic projection from `forecast::project_investment`.
+//! At each requested time-step we sort the path values across paths
+//! and extract three percentiles: the median (P50) and the two edges
+//! of a configurable confidence band (`band_pct`). Other code derives
+//! "the central X% of outcomes" purely from these three numbers.
+//!
+//! Caller-supplied `band_pct` controls the band width:
+//!
+//! ```text
+//! p_lo  =  ((1 - band_pct) / 2) × 100
+//! p_hi  =  100 - p_lo
+//! ```
+//!
+//! e.g., band_pct = 0.80 → P10..P90; 0.95 → P2.5..P97.5; 0.62 → P19..P81.
 //!
 //! ## Why parametric Normal (and not bootstrap)?
 //!
 //! Bootstrap from historical returns is more accurate when applicable
 //! but requires ≥12 months of investing-category contribution + balance
 //! data, which most users won't have for a long time after install.
-//! See `Patches/v0.3.3.md` for the trade-off discussion.
-//!
-//! ## Volatility presets
-//!
-//! Tied to the user's chosen return preset on the calculator UI:
-//!
-//! | Preset                | Return | σ (annual) |
-//! |-----------------------|--------|------------|
-//! | Conservative (HYSA)   | 4%     | 5%         |
-//! | Balanced (60/40)      | 7%     | 10%        |
-//! | Stock-heavy (S&P)     | 10%    | 15%        |
-//!
-//! These match historical asset-class numbers within the precision
-//! that matters for personal-finance forecasting.
 
 use rand::distributions::{Distribution, Uniform};
 use rand::SeedableRng;
@@ -41,36 +37,36 @@ pub struct PathInput {
     pub horizon_years: u32,
     /// Default 1000 if zero or unset.
     pub n_paths: u32,
-    /// How many time-steps to report bands at. Defaults to 30 (matches
-    /// `project_investment` trajectory_points). Always includes t=0
-    /// and t=horizon.
+    /// How many time-steps to report bands at. Defaults to 30. Always
+    /// includes t=0 and t=horizon.
     pub time_points: u32,
+    /// Confidence band width (0..1). 0.80 = central 80% of outcomes.
+    /// Defaults to 0.80 if 0 or unset.
+    pub band_pct: f64,
     /// Optional fixed RNG seed for reproducibility (tests + replays).
-    /// None → thread RNG, fresh each call.
     pub seed: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct MonthBand {
     pub month: u32,
-    pub p5: i64,
-    pub p10: i64,
-    pub p25: i64,
+    /// Lower edge of the band — `(1 - band_pct)/2` percentile.
+    pub p_lo: i64,
     pub p50: i64,
-    pub p75: i64,
-    pub p90: i64,
-    pub p95: i64,
+    /// Upper edge of the band — complement of `p_lo`.
+    pub p_hi: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PathBands {
     pub points: Vec<MonthBand>,
-    pub final_p5_cents: i64,
-    pub final_p10_cents: i64,
+    pub final_p_lo_cents: i64,
     pub final_p50_cents: i64,
-    pub final_p90_cents: i64,
-    pub final_p95_cents: i64,
+    pub final_p_hi_cents: i64,
     pub n_paths: u32,
+    /// Echoed back so the UI can label "X% probability band" without
+    /// guessing what band_pct the call resolved to.
+    pub band_pct: f64,
 }
 
 /// Run the simulation and produce per-month percentile bands at the
@@ -86,6 +82,11 @@ pub fn simulate(input: &PathInput) -> PathBands {
         30
     } else {
         input.time_points
+    };
+    let band_pct = if input.band_pct <= 0.0 || input.band_pct >= 1.0 {
+        0.80
+    } else {
+        input.band_pct
     };
     let mu_monthly = input.annual_return_pct / 100.0 / 12.0;
     let sigma_monthly = (input.annual_volatility_pct / 100.0) / 12_f64.sqrt();
@@ -118,37 +119,35 @@ pub fn simulate(input: &PathInput) -> PathBands {
         }
     }
 
+    // Compute the band-edge percentile points from band_pct.
+    let lo_pct = ((1.0 - band_pct) / 2.0) * 100.0;
+    let hi_pct = 100.0 - lo_pct;
+
     let mut points = Vec::with_capacity(snapshot_months.len());
     for (i, m) in snapshot_months.iter().enumerate() {
         let col = &mut grid[i];
         col.sort_unstable();
         points.push(MonthBand {
             month: *m as u32,
-            p5: percentile(col, 5),
-            p10: percentile(col, 10),
-            p25: percentile(col, 25),
-            p50: percentile(col, 50),
-            p75: percentile(col, 75),
-            p90: percentile(col, 90),
-            p95: percentile(col, 95),
+            p_lo: percentile_f(col, lo_pct),
+            p50: percentile_f(col, 50.0),
+            p_hi: percentile_f(col, hi_pct),
         });
     }
 
     let last = points.last().expect("at least t=horizon present");
     PathBands {
-        final_p5_cents: last.p5,
-        final_p10_cents: last.p10,
+        final_p_lo_cents: last.p_lo,
         final_p50_cents: last.p50,
-        final_p90_cents: last.p90,
-        final_p95_cents: last.p95,
+        final_p_hi_cents: last.p_hi,
         points,
         n_paths: n_paths as u32,
+        band_pct,
     }
 }
 
 /// Goal-probability variant: counts what fraction of paths end above
-/// `target_cents`. Reuses the same engine but skips the percentile
-/// machinery.
+/// `target_cents`. Reuses the same engine but skips percentiles.
 pub fn goal_probability(input: &PathInput, target_cents: i64) -> f64 {
     let n_paths = if input.n_paths == 0 {
         1000
@@ -206,14 +205,14 @@ fn even_grid(total: i64, n: u32) -> Vec<i64> {
 }
 
 /// Linear-interpolated percentile on a sorted slice. p in [0, 100].
-fn percentile(sorted: &[i64], p: u32) -> i64 {
+fn percentile_f(sorted: &[i64], p: f64) -> i64 {
     if sorted.is_empty() {
         return 0;
     }
     if sorted.len() == 1 {
         return sorted[0];
     }
-    let p = p.clamp(0, 100) as f64 / 100.0;
+    let p = p.clamp(0.0, 100.0) / 100.0;
     let idx = p * (sorted.len() - 1) as f64;
     let lo = idx.floor() as usize;
     let hi = idx.ceil() as usize;
@@ -236,9 +235,8 @@ mod tests {
         diff / (expected.abs() as f64).max(1.0) <= tol_pct
     }
 
-    #[test]
-    fn zero_volatility_p50_matches_closed_form() {
-        let r = simulate(&PathInput {
+    fn defaults() -> PathInput {
+        PathInput {
             starting_balance_cents: 0,
             monthly_contribution_cents: 50_000,
             annual_return_pct: 7.0,
@@ -246,93 +244,97 @@ mod tests {
             horizon_years: 30,
             n_paths: 200,
             time_points: 30,
+            band_pct: 0.80,
             seed: Some(42),
-        });
+        }
+    }
+
+    #[test]
+    fn zero_volatility_p50_matches_closed_form() {
+        let r = simulate(&defaults());
         let p50 = r.final_p50_cents;
         assert!(
             close_pct(p50, 60_998_571, 0.001),
             "P50 {} far from $609,985.71",
             p50
         );
-        assert_eq!(r.final_p5_cents, p50);
-        assert_eq!(r.final_p95_cents, p50);
+        assert_eq!(r.final_p_lo_cents, p50);
+        assert_eq!(r.final_p_hi_cents, p50);
     }
 
     #[test]
-    fn nonzero_volatility_produces_band_spread() {
-        let r = simulate(&PathInput {
-            starting_balance_cents: 0,
-            monthly_contribution_cents: 50_000,
-            annual_return_pct: 7.0,
-            annual_volatility_pct: 15.0,
-            horizon_years: 30,
-            n_paths: 1000,
-            time_points: 30,
-            seed: Some(42),
-        });
-        assert!(r.final_p95_cents > r.final_p5_cents);
-        assert!(r.final_p95_cents > r.final_p50_cents);
-        assert!(r.final_p50_cents > r.final_p5_cents);
-        assert!(r.final_p10_cents < r.final_p50_cents);
-        assert!(r.final_p90_cents > r.final_p50_cents);
-        assert!(r.final_p5_cents < 50_000_000);
-        assert!(r.final_p95_cents > 70_000_000);
+    fn band_widens_with_higher_band_pct() {
+        let mut input = defaults();
+        input.annual_volatility_pct = 15.0;
+        input.n_paths = 1000;
+
+        input.band_pct = 0.50;
+        let r50 = simulate(&input);
+        let span_50 = r50.final_p_hi_cents - r50.final_p_lo_cents;
+
+        input.band_pct = 0.90;
+        let r90 = simulate(&input);
+        let span_90 = r90.final_p_hi_cents - r90.final_p_lo_cents;
+
+        assert!(
+            span_90 > span_50,
+            "90% band ({span_90}) should be wider than 50% band ({span_50})"
+        );
+    }
+
+    #[test]
+    fn band_pct_default_when_zero() {
+        let mut input = defaults();
+        input.band_pct = 0.0;
+        let r = simulate(&input);
+        assert!(
+            (r.band_pct - 0.80).abs() < 1e-9,
+            "expected default 0.80, got {}",
+            r.band_pct
+        );
+    }
+
+    #[test]
+    fn band_pct_echoed_back() {
+        let mut input = defaults();
+        input.annual_volatility_pct = 10.0;
+        input.band_pct = 0.62;
+        let r = simulate(&input);
+        assert!((r.band_pct - 0.62).abs() < 1e-9);
     }
 
     #[test]
     fn seed_makes_results_reproducible() {
         let make = || {
-            simulate(&PathInput {
-                starting_balance_cents: 1_000_000,
-                monthly_contribution_cents: 100_000,
-                annual_return_pct: 7.0,
-                annual_volatility_pct: 10.0,
-                horizon_years: 10,
-                n_paths: 200,
-                time_points: 12,
-                seed: Some(123),
-            })
+            let mut input = defaults();
+            input.starting_balance_cents = 1_000_000;
+            input.monthly_contribution_cents = 100_000;
+            input.annual_volatility_pct = 10.0;
+            input.horizon_years = 10;
+            input.n_paths = 200;
+            input.time_points = 12;
+            input.seed = Some(123);
+            simulate(&input)
         };
         let a = make();
         let b = make();
         assert_eq!(a.final_p50_cents, b.final_p50_cents);
-        assert_eq!(a.final_p10_cents, b.final_p10_cents);
-        assert_eq!(a.final_p90_cents, b.final_p90_cents);
+        assert_eq!(a.final_p_lo_cents, b.final_p_lo_cents);
+        assert_eq!(a.final_p_hi_cents, b.final_p_hi_cents);
     }
 
     #[test]
     fn goal_probability_zero_vol_decisive() {
-        let p = goal_probability(
-            &PathInput {
-                starting_balance_cents: 0,
-                monthly_contribution_cents: 50_000,
-                annual_return_pct: 7.0,
-                annual_volatility_pct: 0.0,
-                horizon_years: 30,
-                n_paths: 200,
-                time_points: 30,
-                seed: Some(42),
-            },
-            100_000_000,
-        );
+        let p = goal_probability(&defaults(), 100_000_000);
         assert!(p < 0.01, "expected ~0 probability, got {p}");
     }
 
     #[test]
     fn goal_probability_with_vol_is_in_range() {
-        let p = goal_probability(
-            &PathInput {
-                starting_balance_cents: 0,
-                monthly_contribution_cents: 50_000,
-                annual_return_pct: 7.0,
-                annual_volatility_pct: 15.0,
-                horizon_years: 30,
-                n_paths: 1000,
-                time_points: 30,
-                seed: Some(42),
-            },
-            60_998_571,
-        );
+        let mut input = defaults();
+        input.annual_volatility_pct = 15.0;
+        input.n_paths = 1000;
+        let p = goal_probability(&input, 60_998_571);
         assert!(
             (0.30..=0.60).contains(&p),
             "probability {p} outside expected 0.30..0.60 band"
@@ -342,10 +344,10 @@ mod tests {
     #[test]
     fn percentile_linear_interpolation() {
         let s = vec![10, 20, 30, 40, 50];
-        assert_eq!(percentile(&s, 0), 10);
-        assert_eq!(percentile(&s, 100), 50);
-        assert_eq!(percentile(&s, 50), 30);
-        assert_eq!(percentile(&s, 25), 20);
+        assert_eq!(percentile_f(&s, 0.0), 10);
+        assert_eq!(percentile_f(&s, 100.0), 50);
+        assert_eq!(percentile_f(&s, 50.0), 30);
+        assert_eq!(percentile_f(&s, 25.0), 20);
     }
 
     #[test]

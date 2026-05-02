@@ -4,6 +4,26 @@ All notable changes to Mr. Moneypenny are documented here. The format roughly fo
 
 ## [Unreleased]
 
+## [0.3.5] - 2026-05-02
+
+Forecast view simplification — Investment Calculator and Goal-seek removed (their probabilistic-but-deterministic nature was less accurate than what the Simulator already does), the Simulator absorbs their best affordances, and the projection chart now lives inside the Simulator with bands that scale with confidence.
+
+### Changed
+
+- **Forecast: Goal-seek section removed.** Its closed-form algebraic answer ignores volatility — the Simulator's "Find required contribution" mode replaces it with a Monte-Carlo-aware solver that returns the smallest contribution hitting the target with the user's chosen confidence (50–95%).
+- **Forecast: Investment Calculator section removed.** The projection chart relocates inside the Simulator panel and renders from the same Monte Carlo run that produced the headline number — no more separate IPC call.
+- **Probability bands now scale with confidence.** In "Find required" mode, the band width matches the confidence slider (80% confidence → P10–P90 band; 90% → P5–P95; 70% → P15–P85). In "Show probability" mode, the band matches the *resulting* probability — so "the central X% of where you'd actually end up" lines up with "your X% chance of hitting target." The chart legend always shows the band's current width.
+- **Simulator inherits Investment Calculator's "Pre-fill from account" affordance.** A small dropdown in the Simulator header offers all your investing-kind categories (Savings, 401k, Roth IRA, etc.) plus an "All investing accounts (sum)" option; picking one auto-fills starting balance + monthly contribution from your saved data.
+- **Simulator gains return-rate preset chips** (Conservative / Balanced / Stock-heavy) lifted from the old Investment Calculator.
+- **Heatmap text color is now legible on every tile.** Charcoal (`#1f2937`) on amber-700 and lime-700 cells; light text on red-900 and green-800 cells. Earlier, the medium-luminance tiles disappeared into uniform graphite-400 text.
+
+### Internal
+
+- `monte_carlo::simulate` gains `band_pct` input; `MonthBand` simplifies to `month + p_lo + p50 + p_hi` (custom percentiles instead of a fixed P5/P10/.../P95 set). Same paths under the hood — just the percentile extraction is parameterized now.
+- `simulator::solve_required_contribution` and `compute_probability` results gain a `trajectory: Vec<TrajectoryPoint>` field carrying nominal + real + contributions + band edges per month, so the chart renders from a single payload.
+- `insights::forecast::solve_goal_seek` + `GoalSeekInput`/`GoalSeekResult` removed. `project_investment` stays internal but no longer exposed via IPC. 3 IPC commands removed: `solve_goal_seek`, `project_investment`, `monte_carlo_investment`.
+- Frontend: the InvestmentCalculator and GoalSeekTool components removed entirely. Forecast view now mounts only Simulator + CategoryAnalyzer + ScenarioTool. 280 tests passing.
+
 ## [0.3.4] - 2026-05-02
 
 **Same code as the (briefly-published, now-deleted) v0.3.3 redux release.** The version number was bumped to 0.3.4 because the scrapped first-attempt v0.3.3 had already been auto-updated to some installs (Wyatt's), and Tauri's updater does strict semver `>` comparison — meaning a re-released v0.3.3 with different code couldn't reach those installs. v0.3.4 is the same redux content shipped under a fresh version number so the auto-updater promotes it correctly. No v0.3.3 release exists in the public history.

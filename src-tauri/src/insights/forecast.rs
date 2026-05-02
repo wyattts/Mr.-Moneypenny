@@ -144,64 +144,6 @@ fn future_value(p: f64, c: f64, r: f64, n_months: i64) -> f64 {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct GoalSeekInput {
-    pub target_cents: i64,
-    pub starting_balance_cents: i64,
-    pub annual_return_pct: f64,
-    pub horizon_years: u32,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct GoalSeekResult {
-    pub required_monthly_cents: i64,
-    /// True when the starting balance + return alone exceeds the
-    /// target — no contribution required (or contribution can be zero).
-    pub already_on_track: bool,
-}
-
-/// Solve the FV formula for `C` (monthly contribution).
-///
-/// FV = P(1+r)^n + C * ((1+r)^n - 1) / r
-/// → C = (FV - P(1+r)^n) * r / ((1+r)^n - 1)
-pub fn solve_goal_seek(input: &GoalSeekInput) -> GoalSeekResult {
-    let n_months = (input.horizon_years as i64) * 12;
-    if n_months <= 0 {
-        // Caller asked for "today" — required monthly is the entire gap.
-        let required = (input.target_cents - input.starting_balance_cents).max(0);
-        return GoalSeekResult {
-            required_monthly_cents: required,
-            already_on_track: required == 0,
-        };
-    }
-    let r = input.annual_return_pct / 100.0 / 12.0;
-    let p = input.starting_balance_cents as f64;
-    let target = input.target_cents as f64;
-
-    let growth = if r.abs() < 1e-12 {
-        1.0
-    } else {
-        (1.0 + r).powi(n_months as i32)
-    };
-    let p_grown = p * growth;
-    if p_grown >= target {
-        return GoalSeekResult {
-            required_monthly_cents: 0,
-            already_on_track: true,
-        };
-    }
-    let needed = target - p_grown;
-    let monthly = if r.abs() < 1e-12 {
-        needed / n_months as f64
-    } else {
-        needed * r / (growth - 1.0)
-    };
-    GoalSeekResult {
-        required_monthly_cents: monthly.ceil() as i64,
-        already_on_track: false,
-    }
-}
-
-#[derive(Debug, Clone, Deserialize)]
 pub struct ScenarioCut {
     pub category_id: i64,
     /// Percent change. -25.0 means cut 25%; +10.0 means raise the cap 10%.
@@ -340,54 +282,6 @@ mod tests {
         let last = p.trajectory.last().unwrap();
         assert_eq!(last.month, 120); // 10 years × 12
         assert_eq!(last.nominal_cents, p.final_nominal_cents);
-    }
-
-    #[test]
-    fn goal_seek_inverts_projection() {
-        // Goal-seek for $1M in 30 years at 7% from $0 start should give a
-        // monthly that, when fed back into project_investment, lands at
-        // ~$1M.
-        let goal = solve_goal_seek(&GoalSeekInput {
-            target_cents: 100_000_000, // $1M expressed in cents
-            starting_balance_cents: 0,
-            annual_return_pct: 7.0,
-            horizon_years: 30,
-        });
-        assert!(!goal.already_on_track);
-        let proj = project_investment(&ProjectInvestmentInput {
-            starting_balance_cents: 0,
-            monthly_contribution_cents: goal.required_monthly_cents,
-            annual_return_pct: 7.0,
-            annual_inflation_pct: 0.0,
-            horizon_years: 30,
-            trajectory_points: 12,
-        });
-        // Should land within $1k of target after rounding (we ceil the
-        // monthly contribution).
-        assert!(
-            (proj.final_nominal_cents - 100_000_000).abs() < 100_000,
-            "projected {} far from $1M target",
-            proj.final_nominal_cents
-        );
-        assert!(
-            proj.final_nominal_cents >= 100_000_000,
-            "ceiling on contribution should leave us ≥ target"
-        );
-    }
-
-    #[test]
-    fn goal_seek_already_funded_returns_zero_monthly() {
-        // $500k start, target $400k, 5 years, 5% return.
-        // P grown alone exceeds target → already on track.
-        let r = solve_goal_seek(&GoalSeekInput {
-            // 40k and 50k dollars in cents.
-            target_cents: 4_000_000,
-            starting_balance_cents: 5_000_000,
-            annual_return_pct: 5.0,
-            horizon_years: 5,
-        });
-        assert!(r.already_on_track);
-        assert_eq!(r.required_monthly_cents, 0);
     }
 
     #[test]

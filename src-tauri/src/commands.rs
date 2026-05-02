@@ -12,10 +12,7 @@ use crate::app_state::AppState;
 use crate::domain::{CategoryKind, ExpenseSource, NewCategory};
 use crate::insights::{
     dashboard,
-    forecast::{
-        self as forecast_mod, GoalSeekInput, GoalSeekResult, InvestmentProjection,
-        ProjectInvestmentInput, ScenarioCut, ScenarioResult,
-    },
+    forecast::{self as forecast_mod, ScenarioCut, ScenarioResult},
     range::DateRange,
     stats::{self as stats_mod, DescriptiveStats, Histogram},
     DashboardSnapshot,
@@ -827,18 +824,6 @@ pub async fn get_category_stats(
     })
 }
 
-#[tauri::command]
-pub async fn project_investment(
-    input: ProjectInvestmentInput,
-) -> Result<InvestmentProjection, String> {
-    Ok(forecast_mod::project_investment(&input))
-}
-
-#[tauri::command]
-pub async fn solve_goal_seek(input: GoalSeekInput) -> Result<GoalSeekResult, String> {
-    Ok(forecast_mod::solve_goal_seek(&input))
-}
-
 #[derive(Debug, Deserialize)]
 pub struct ScenarioInput {
     pub cuts: Vec<ScenarioCut>,
@@ -962,16 +947,10 @@ pub async fn list_investment_categories(
 use crate::insights::category_analyzer::{
     self as cat_analyzer_mod, AnalysisWindow, CategoryAnalysis,
 };
-use crate::insights::monte_carlo::{simulate as mc_simulate, PathBands, PathInput};
 use crate::insights::simulator::{
     self as simulator_mod, HeatmapInput, HeatmapResult, ProbabilityInput, ProbabilityResult,
     RequiredContributionInput, RequiredContributionResult,
 };
-
-#[tauri::command]
-pub async fn monte_carlo_investment(input: PathInput) -> Result<PathBands, String> {
-    Ok(mc_simulate(&input))
-}
 
 #[tauri::command]
 pub async fn simulator_solve_required_contribution(

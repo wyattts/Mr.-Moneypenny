@@ -357,48 +357,6 @@ export const getCategoryStats = (
 ): Promise<CategoryStatsResponse> =>
   invoke("get_category_stats", { categoryId, monthsBack });
 
-export interface ProjectionPoint {
-  month: number;
-  nominal_cents: number;
-  real_cents: number;
-}
-
-export interface InvestmentProjection {
-  trajectory: ProjectionPoint[];
-  final_nominal_cents: number;
-  final_real_cents: number;
-  total_contributed_cents: number;
-  total_growth_cents: number;
-}
-
-export interface ProjectInvestmentInput {
-  starting_balance_cents: number;
-  monthly_contribution_cents: number;
-  annual_return_pct: number;
-  annual_inflation_pct: number;
-  horizon_years: number;
-  trajectory_points: number;
-}
-
-export const projectInvestment = (
-  input: ProjectInvestmentInput,
-): Promise<InvestmentProjection> => invoke("project_investment", { input });
-
-export interface GoalSeekInput {
-  target_cents: number;
-  starting_balance_cents: number;
-  annual_return_pct: number;
-  horizon_years: number;
-}
-
-export interface GoalSeekResult {
-  required_monthly_cents: number;
-  already_on_track: boolean;
-}
-
-export const solveGoalSeek = (input: GoalSeekInput): Promise<GoalSeekResult> =>
-  invoke("solve_goal_seek", { input });
-
 export interface ScenarioCut {
   category_id: number;
   pct_change: number;
@@ -436,44 +394,8 @@ export const setStartingBalance = (
 ): Promise<void> => invoke("set_starting_balance", { input });
 
 // -------------------------------------------------------------------
-// Forecast wave 2 (v0.3.3): Monte Carlo bands, simulator, category analyzer.
+// Forecast Simulator + Category Analyzer (v0.3.3+).
 // -------------------------------------------------------------------
-
-export interface MonteCarloInput {
-  starting_balance_cents: number;
-  monthly_contribution_cents: number;
-  annual_return_pct: number;
-  annual_volatility_pct: number;
-  horizon_years: number;
-  n_paths: number;
-  time_points: number;
-  seed?: number | null;
-}
-
-export interface MonthBand {
-  month: number;
-  p5: number;
-  p10: number;
-  p25: number;
-  p50: number;
-  p75: number;
-  p90: number;
-  p95: number;
-}
-
-export interface PathBands {
-  points: MonthBand[];
-  final_p5_cents: number;
-  final_p10_cents: number;
-  final_p50_cents: number;
-  final_p90_cents: number;
-  final_p95_cents: number;
-  n_paths: number;
-}
-
-export const monteCarloInvestment = (
-  input: MonteCarloInput,
-): Promise<PathBands> => invoke("monte_carlo_investment", { input });
 
 export type TargetMode = "todays_dollars" | "nominal_future";
 
@@ -489,6 +411,16 @@ export interface SimulatorCommonInputs {
   seed?: number | null;
 }
 
+export interface TrajectoryPoint {
+  month: number;
+  nominal_cents: number;
+  real_cents: number;
+  contributions_cents: number;
+  p_lo_cents: number;
+  p50_cents: number;
+  p_hi_cents: number;
+}
+
 export interface RequiredContributionInput extends SimulatorCommonInputs {
   confidence: number;
 }
@@ -497,10 +429,12 @@ export interface RequiredContributionResult {
   required_monthly_cents: number;
   realized_probability: number;
   effective_target_cents: number;
-  final_p10_cents: number;
+  final_p_lo_cents: number;
   final_p50_cents: number;
-  final_p90_cents: number;
+  final_p_hi_cents: number;
   iterations: number;
+  band_pct: number;
+  trajectory: TrajectoryPoint[];
 }
 
 export const simulatorSolveRequired = (
@@ -515,9 +449,11 @@ export interface ProbabilityInput extends SimulatorCommonInputs {
 export interface ProbabilityResult {
   probability: number;
   effective_target_cents: number;
-  final_p10_cents: number;
+  final_p_lo_cents: number;
   final_p50_cents: number;
-  final_p90_cents: number;
+  final_p_hi_cents: number;
+  band_pct: number;
+  trajectory: TrajectoryPoint[];
 }
 
 export const simulatorComputeProbability = (
