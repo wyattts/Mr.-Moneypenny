@@ -92,6 +92,26 @@ pub fn list_in_range(
     Ok(rows)
 }
 
+/// Per-category window query for the v0.3.3 Category Analyzer. Returns
+/// individual rows in chronological order so the caller can compute
+/// per-transaction stats and bucket-into-periods without re-querying.
+pub fn list_in_range_by_category(
+    conn: &Connection,
+    category_id: i64,
+    start: OffsetDateTime,
+    end: OffsetDateTime,
+) -> Result<Vec<Expense>> {
+    let mut stmt = conn.prepare_cached(&format!(
+        "SELECT {SELECT_COLS} FROM expenses
+         WHERE category_id = ?1 AND occurred_at >= ?2 AND occurred_at < ?3
+         ORDER BY occurred_at ASC, id ASC"
+    ))?;
+    let rows = stmt
+        .query_map(params![category_id, start, end], map_row)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
 pub fn recent(conn: &Connection, limit: u32) -> Result<Vec<Expense>> {
     let mut stmt = conn.prepare_cached(&format!(
         "SELECT {SELECT_COLS} FROM expenses

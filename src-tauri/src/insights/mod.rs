@@ -5,8 +5,11 @@
 //! timezone-aware functions, so behavior is identical regardless of
 //! the host machine's system timezone.
 
+pub mod category_analyzer;
 pub mod forecast;
+pub mod monte_carlo;
 pub mod range;
+pub mod simulator;
 pub mod stats;
 
 use std::collections::BTreeMap;

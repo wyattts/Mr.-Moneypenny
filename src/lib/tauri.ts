@@ -436,6 +436,173 @@ export const setStartingBalance = (
 ): Promise<void> => invoke("set_starting_balance", { input });
 
 // -------------------------------------------------------------------
+// Forecast wave 2 (v0.3.3): Monte Carlo bands, simulator, category analyzer.
+// -------------------------------------------------------------------
+
+export interface MonteCarloInput {
+  starting_balance_cents: number;
+  monthly_contribution_cents: number;
+  annual_return_pct: number;
+  annual_volatility_pct: number;
+  horizon_years: number;
+  n_paths: number;
+  time_points: number;
+  seed?: number | null;
+}
+
+export interface MonthBand {
+  month: number;
+  p5: number;
+  p10: number;
+  p25: number;
+  p50: number;
+  p75: number;
+  p90: number;
+  p95: number;
+}
+
+export interface PathBands {
+  points: MonthBand[];
+  final_p5_cents: number;
+  final_p10_cents: number;
+  final_p50_cents: number;
+  final_p90_cents: number;
+  final_p95_cents: number;
+  n_paths: number;
+}
+
+export const monteCarloInvestment = (
+  input: MonteCarloInput,
+): Promise<PathBands> => invoke("monte_carlo_investment", { input });
+
+export type TargetMode = "todays_dollars" | "nominal_future";
+
+export interface SimulatorCommonInputs {
+  target_cents: number;
+  horizon_years: number;
+  starting_balance_cents: number;
+  annual_return_pct: number;
+  annual_volatility_pct: number;
+  annual_inflation_pct: number;
+  target_mode: TargetMode;
+  n_paths: number;
+  seed?: number | null;
+}
+
+export interface RequiredContributionInput extends SimulatorCommonInputs {
+  confidence: number;
+}
+
+export interface RequiredContributionResult {
+  required_monthly_cents: number;
+  realized_probability: number;
+  effective_target_cents: number;
+  final_p10_cents: number;
+  final_p50_cents: number;
+  final_p90_cents: number;
+  iterations: number;
+}
+
+export const simulatorSolveRequired = (
+  input: RequiredContributionInput,
+): Promise<RequiredContributionResult> =>
+  invoke("simulator_solve_required_contribution", { input });
+
+export interface ProbabilityInput extends SimulatorCommonInputs {
+  monthly_contribution_cents: number;
+}
+
+export interface ProbabilityResult {
+  probability: number;
+  effective_target_cents: number;
+  final_p10_cents: number;
+  final_p50_cents: number;
+  final_p90_cents: number;
+}
+
+export const simulatorComputeProbability = (
+  input: ProbabilityInput,
+): Promise<ProbabilityResult> =>
+  invoke("simulator_compute_probability", { input });
+
+export interface HeatmapInput extends SimulatorCommonInputs {
+  contribution_min_cents: number;
+  contribution_max_cents: number;
+  horizon_min_years: number;
+  horizon_max_years: number;
+}
+
+export interface HeatmapCell {
+  contribution_cents: number;
+  horizon_years: number;
+  probability: number;
+}
+
+export interface HeatmapResult {
+  cells: HeatmapCell[];
+  effective_target_cents_at_each_horizon: number[];
+}
+
+export const simulatorHeatmap = (input: HeatmapInput): Promise<HeatmapResult> =>
+  invoke("simulator_heatmap", { input });
+
+export type AnalysisWindow =
+  | "two_weeks"
+  | "month"
+  | "quarter"
+  | "half_year"
+  | "year";
+
+export interface PerTransactionStats {
+  n: number;
+  mean_cents: number;
+  median_cents: number;
+  stddev_cents: number;
+  min_cents: number;
+  max_cents: number;
+}
+
+export interface PerBucketStats {
+  n_buckets: number;
+  mean_cents: number;
+  median_cents: number;
+  stddev_cents: number;
+  min_cents: number;
+  max_cents: number;
+}
+
+export interface BucketPoint {
+  bucket_index: number;
+  label: string;
+  total_cents: number;
+}
+
+export interface RefundSummary {
+  count: number;
+  total_cents: number;
+  net_spent_cents: number;
+}
+
+export interface CategoryAnalysis {
+  window: AnalysisWindow;
+  bucket_label: string;
+  buckets: BucketPoint[];
+  per_transaction: PerTransactionStats | null;
+  per_bucket: PerBucketStats | null;
+  refunds: RefundSummary;
+  slope_cents_per_month_per_year: number;
+  r_squared: number;
+  direction: "rising" | "falling" | "flat";
+  headline: string;
+}
+
+export const analyzeCategory = (
+  categoryId: number,
+  window: AnalysisWindow,
+): Promise<CategoryAnalysis> =>
+  invoke("analyze_category", { categoryId, window });
+
+// -------------------------------------------------------------------
 // CSV import (v0.3.2)
 // -------------------------------------------------------------------
 

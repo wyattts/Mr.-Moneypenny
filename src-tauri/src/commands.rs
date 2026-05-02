@@ -955,6 +955,54 @@ pub async fn list_investment_categories(
 }
 
 // ---------------------------------------------------------------------
+// Forecast wave 2 — Monte Carlo bands, simulator, category analyzer.
+// (v0.3.3)
+// ---------------------------------------------------------------------
+
+use crate::insights::category_analyzer::{
+    self as cat_analyzer_mod, AnalysisWindow, CategoryAnalysis,
+};
+use crate::insights::monte_carlo::{simulate as mc_simulate, PathBands, PathInput};
+use crate::insights::simulator::{
+    self as simulator_mod, HeatmapInput, HeatmapResult, ProbabilityInput, ProbabilityResult,
+    RequiredContributionInput, RequiredContributionResult,
+};
+
+#[tauri::command]
+pub async fn monte_carlo_investment(input: PathInput) -> Result<PathBands, String> {
+    Ok(mc_simulate(&input))
+}
+
+#[tauri::command]
+pub async fn simulator_solve_required_contribution(
+    input: RequiredContributionInput,
+) -> Result<RequiredContributionResult, String> {
+    Ok(simulator_mod::solve_required_contribution(&input))
+}
+
+#[tauri::command]
+pub async fn simulator_compute_probability(
+    input: ProbabilityInput,
+) -> Result<ProbabilityResult, String> {
+    Ok(simulator_mod::compute_probability(&input))
+}
+
+#[tauri::command]
+pub async fn simulator_heatmap(input: HeatmapInput) -> Result<HeatmapResult, String> {
+    Ok(simulator_mod::heatmap(&input))
+}
+
+#[tauri::command]
+pub async fn analyze_category(
+    category_id: i64,
+    window: AnalysisWindow,
+    state: State<'_, AppState>,
+) -> Result<CategoryAnalysis, String> {
+    let conn = state.db.lock().unwrap();
+    cat_analyzer_mod::analyze(&conn, category_id, window, OffsetDateTime::now_utc()).map_err(err)
+}
+
+// ---------------------------------------------------------------------
 // CSV import (v0.3.2).
 //
 // All bulk-import paths from bank/CC CSV exports go through these

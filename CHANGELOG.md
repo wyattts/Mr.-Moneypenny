@@ -4,6 +4,35 @@ All notable changes to Mr. Moneypenny are documented here. The format roughly fo
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-05-01
+
+Forecast wave 2 (redux) — bidirectional Monte Carlo Simulator + Category Analyzer + 80% probability bands on the Investment Calculator chart. The first attempt at v0.3.3 shipped Monte Carlo as two passive numbers bolted onto existing tools and was scrapped before any users saw it; this version gives probability questions their own surface with proper levers.
+
+### Added
+
+- **Forecast → Simulator** (new section). Bidirectional Monte Carlo: pick "Find required contribution" mode and the tool bisects to the smallest monthly contribution that hits your target with your chosen confidence (50–95%, 70/80/90 chip presets). Or pick "Show probability" mode and pin a contribution to see the resulting probability live. Inputs include target $, horizon, return rate, inflation, starting balance, and a "Target is in: today's $ vs nominal future $" toggle. Advanced disclosure exposes a σ override slider (default tied to return preset: 5/10/15% σ for Conservative/Balanced/Stock-heavy).
+- **Probability heatmap** under the Simulator: 12×12 grid of (monthly contribution × horizon years) → probability of hitting target, color-coded red/amber/lime/green at 50/70/90% thresholds. Hover any cell for exact values. Anchored on whichever value the active solver just produced so users see the trade-space *around* their answer.
+- **Investment Calculator: 80% probability band overlay (reinstated).** Default off; checkbox below the chart toggles a forest-green ribbon between P10 and P90 from a 1,000-path Monte Carlo simulation. Chart tooltip on hover shows the band's actual P10 (lower) and P90 (upper) dollar values at every year — not just the deterministic Nominal line.
+- **Forecast → Category Analyzer** (renamed and expanded from Trend Analyzer). Pick a category + window from {2 weeks, month, quarter, half year, year}; granularity auto-derives to ~12 buckets per window. Side-by-side stats panels: per-transaction (n purchases, mean / median / σ / min / max — refunds excluded; surfaced as a separate net-spent line) and per-bucket (totals at the auto-derived granularity). Linear-regression chart with slope normalized to `$/mo per year` regardless of window size, plus a plain-English headline ("Spending is rising at $42/mo per year — strong trend (R²=0.71)").
+
+### Internal
+
+- New `src-tauri/src/insights/monte_carlo.rs`: 1,000-path simulator with Box-Muller Normal sampling, optional fixed RNG seed for reproducibility, percentile extraction. Final P5/P10/P50/P90/P95 fields on the result for convenient UI consumption.
+- New `src-tauri/src/insights/simulator.rs`: bidirectional solver. `solve_required_contribution` bisects over contribution (up to 14 iterations), `compute_probability` does a single run, `heatmap` produces a 12×12 grid (200 paths per cell to keep total under ~30k paths). `effective_target` helper handles today's-$ → nominal inflation. 7 unit tests including bidirectional consistency (round-trip from solver to probability).
+- New `src-tauri/src/insights/category_analyzer.rs`: replaces the scrapped `trend.rs` with auto-bucketing per window, dual stats (per-transaction and per-bucket), refund summary, slope normalization. 6 unit tests.
+- `repository::expenses` gains `list_in_range_by_category` so the analyzer can query individual rows for per-transaction stats without re-querying.
+- 5 new IPC commands: `monte_carlo_investment`, `simulator_solve_required_contribution`, `simulator_compute_probability`, `simulator_heatmap`, `analyze_category`. 21 new tests; 278 total passing.
+- No new dependencies (Monte Carlo uses existing `rand`).
+
+### What was scrapped from the original v0.3.3
+
+- The Survivability tool (out of scope per Wyatt — a different category of question than what Mr. Moneypenny is for right now).
+- The probability badge on Goal-seek (the old design implied users could see a probability without offering any way to act on it; the Simulator is the canonical place for probability questions).
+
+### Privacy / honesty
+
+Every probabilistic output makes its assumptions visible: the Simulator headline always quotes the volatility figure used and the inflation interpretation. The "Target is in: today's $" toggle inflates the target before checking simulated paths so a user typing "$1M" actually means "$1M today's purchasing power" by default, not literal nominal $1M at the horizon date.
+
 ## [0.3.2] - 2026-05-01
 
 CSV importer. Bulk-load bank and credit-card export CSVs into the local expense ledger without paying API tokens for every row. Built around a `merchant_rules` table that the import wizard populates one click at a time on its review screen — first import of a new bank takes a few minutes, every subsequent import from the same bank is instant and free.
