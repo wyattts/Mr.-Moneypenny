@@ -13,6 +13,9 @@ import {
 
 import {
   analyzeCategory,
+  debtGoalSeek,
+  debtSimulatePortfolio,
+  debtSimulateSchedule,
   listCategories,
   listInvestmentCategories,
   runScenario,
@@ -24,8 +27,15 @@ import type {
   AnalysisWindow,
   CategoryAnalysis,
   CategoryView,
+  CompoundingFrequency,
+  DebtGoalSeekResult,
+  DebtInput,
+  DebtScheduleResult,
   HeatmapResult,
   InvestmentSummary,
+  LumpSum,
+  PortfolioResult,
+  PortfolioStrategy,
   ProbabilityResult,
   RequiredContributionResult,
   ScenarioResult,
@@ -113,17 +123,44 @@ function Row({ label, color, value }: { label: string; color: string; value: num
   );
 }
 
+// Hand-off payload from the Debt Manager into the Simulator. Carries
+// the freed-up monthly payment and the remaining horizon after payoff,
+// so the user can see "if I redirect this into investing, where do I
+// end up?" The `bump` counter lets the effect re-fire even when the
+// numeric values are identical to the prior hand-off.
+export interface SimulatorPrefill {
+  monthly_contribution_cents: number;
+  starting_balance_cents: number;
+  horizon_years: number;
+  bump: number;
+}
+
 export function Forecast() {
   const [error, setError] = useState<string | null>(null);
+  const [simulatorPrefill, setSimulatorPrefill] =
+    useState<SimulatorPrefill | null>(null);
+  // Surface the Simulator's current return assumption back to the Debt
+  // Manager so it can show the APR-vs-return context line. Lifted to
+  // Forecast so both children can read/write it.
+  const [simulatorReturnPct, setSimulatorReturnPct] = useState<number>(7);
   return (
     <div>
       <ViewHeader
         title="Forecast"
-        subtitle="Look-forward tools — investment simulator, scenario sliders, and a category analyzer."
+        subtitle="Look-forward tools — investment simulator, debt manager, scenario sliders, and a category analyzer."
       />
       <div className="space-y-6 px-8 py-6">
         {error && <ErrorBanner>{error}</ErrorBanner>}
-        <Simulator onError={setError} />
+        <Simulator
+          onError={setError}
+          prefill={simulatorPrefill}
+          onReturnPctChange={setSimulatorReturnPct}
+        />
+        <DebtManager
+          onError={setError}
+          onSendToSimulator={setSimulatorPrefill}
+          simulatorReturnPct={simulatorReturnPct}
+        />
         <CategoryAnalyzer onError={setError} />
         <ScenarioTool onError={setError} />
       </div>
@@ -143,7 +180,15 @@ const RETURN_PRESETS = [
   { label: "Stock-heavy (S&P 500 historical)", rate: 10 },
 ];
 
-function Simulator({ onError }: { onError: (m: string) => void }) {
+function Simulator({
+  onError,
+  prefill,
+  onReturnPctChange,
+}: {
+  onError: (m: string) => void;
+  prefill?: SimulatorPrefill | null;
+  onReturnPctChange?: (pct: number) => void;
+}) {
   const [mode, setMode] = useState<SimMode>("required");
   const [targetDollars, setTargetDollars] = useState("1000000.00");
   const [horizon, setHorizon] = useState(30);
@@ -182,6 +227,31 @@ function Simulator({ onError }: { onError: (m: string) => void }) {
       }
     })();
   }, [onError]);
+
+  // Notify the parent whenever the return assumption changes so the
+  // Debt Manager can frame APR vs. return.
+  useEffect(() => {
+    onReturnPctChange?.(returnPct);
+  }, [returnPct, onReturnPctChange]);
+
+  // External prefill — fired by the Debt Manager's "send freed payment
+  // to Simulator" button. Switches to probability mode (we have a
+  // fixed payment, the user wants to see odds), and stamps in the
+  // amount + starting balance + horizon. The `bump` counter on the
+  // payload guarantees the effect re-runs even when values are
+  // identical to the prior hand-off.
+  useEffect(() => {
+    if (!prefill) return;
+    setContributionDollars(
+      (prefill.monthly_contribution_cents / 100).toFixed(2),
+    );
+    setStartingDollars((prefill.starting_balance_cents / 100).toFixed(2));
+    setHorizon(prefill.horizon_years);
+    setMode("probability");
+    // Drop any account-prefill selection so the explicit hand-off
+    // sticks instead of getting overwritten next render.
+    setAccountId(null);
+  }, [prefill]);
 
   // Apply prefill when the user picks an account. "all" sums everything.
   useEffect(() => {
@@ -733,6 +803,1176 @@ function Simulator({ onError }: { onError: (m: string) => void }) {
         </div>
       </div>
     </Section>
+  );
+}
+
+// ---------------------------------------------------------------------
+// Debt Manager (v0.3.7)
+// ---------------------------------------------------------------------
+//
+// Pure deterministic debt amortization. Two modes:
+// - Forward calc:  payment + horizon → schedule, total interest, payoff.
+// - Goal seek:     target months → required payment.
+//
+// A portfolio toggle (off by default) switches the form to a multi-debt
+// layout that distributes a fixed monthly budget across debts using
+// either snowball (smallest balance first) or avalanche (highest APR
+// first). Goal-seek is intentionally single-debt only: the portfolio
+// equivalent (bisecting total budget) is straightforward but adds UI
+// complexity that doesn't pay off until users ask for it.
+//
+// "Send to Simulator" pipes the freed-up monthly payment + remaining
+// horizon into the Simulator above so the user can see the after-payoff
+// investing trajectory. The APR-as-guaranteed-return callout next to
+// the result frames the comparison: paying off this debt is equivalent
+// to a guaranteed return at the debt's APR.
+
+type DebtMode = "forward" | "goal";
+
+const COMPOUNDING_OPTIONS: { value: CompoundingFrequency; label: string }[] = [
+  { value: "monthly", label: "Monthly" },
+  { value: "daily", label: "Daily" },
+  { value: "yearly", label: "Yearly" },
+  { value: "continuous", label: "Continuous" },
+];
+
+interface PortfolioDebtRow {
+  id: number;
+  label: string;
+  balance: string;
+  apr: string;
+  compounding: CompoundingFrequency;
+  minimum: string;
+}
+
+interface LumpSumRow {
+  id: number;
+  month: string;
+  amount: string;
+}
+
+let nextRowId = 1;
+const newId = () => nextRowId++;
+
+function DebtManager({
+  onError,
+  onSendToSimulator,
+  simulatorReturnPct,
+}: {
+  onError: (m: string) => void;
+  onSendToSimulator: (p: SimulatorPrefill) => void;
+  simulatorReturnPct: number;
+}) {
+  const [mode, setMode] = useState<DebtMode>("forward");
+  const [portfolioMode, setPortfolioMode] = useState(false);
+
+  // --- Single-debt inputs ---
+  const [balance, setBalance] = useState("10000.00");
+  const [apr, setApr] = useState("18.99");
+  const [compounding, setCompounding] = useState<CompoundingFrequency>("monthly");
+  const [monthlyPayment, setMonthlyPayment] = useState("250.00");
+  // Goal seek expressed as years + months so the user can think in
+  // either; the months unit is what we send to the backend.
+  const [targetYears, setTargetYears] = useState(2);
+  const [targetMonths, setTargetMonths] = useState(0);
+  const [inflation, setInflation] = useState(2.5);
+  const [lumpSums, setLumpSums] = useState<LumpSumRow[]>([]);
+
+  // --- Portfolio inputs ---
+  const [portfolioBudget, setPortfolioBudget] = useState("800.00");
+  const [strategy, setStrategy] = useState<PortfolioStrategy>("avalanche");
+  const [debts, setDebts] = useState<PortfolioDebtRow[]>(() => [
+    {
+      id: newId(),
+      label: "Card A",
+      balance: "5000.00",
+      apr: "22.99",
+      compounding: "monthly",
+      minimum: "100.00",
+    },
+    {
+      id: newId(),
+      label: "Card B",
+      balance: "10000.00",
+      apr: "12.99",
+      compounding: "monthly",
+      minimum: "200.00",
+    },
+  ]);
+
+  // --- Results ---
+  const [forwardResult, setForwardResult] =
+    useState<DebtScheduleResult | null>(null);
+  const [goalResult, setGoalResult] = useState<DebtGoalSeekResult | null>(null);
+  const [portfolioResult, setPortfolioResult] =
+    useState<PortfolioResult | null>(null);
+  // Side-by-side comparison: when in portfolio mode, also run the
+  // *other* strategy so the user sees the trade-off without toggling.
+  const [portfolioOther, setPortfolioOther] =
+    useState<PortfolioResult | null>(null);
+
+  // --- Derived numeric values ---
+  const balanceCents = useMemo(
+    () => Math.round((parseFloat(balance) || 0) * 100),
+    [balance],
+  );
+  const aprPct = useMemo(() => parseFloat(apr) || 0, [apr]);
+  const monthlyPaymentCents = useMemo(
+    () => Math.round((parseFloat(monthlyPayment) || 0) * 100),
+    [monthlyPayment],
+  );
+  const targetMonthsTotal = useMemo(
+    () => Math.max(1, targetYears * 12 + targetMonths),
+    [targetYears, targetMonths],
+  );
+  const portfolioBudgetCents = useMemo(
+    () => Math.round((parseFloat(portfolioBudget) || 0) * 100),
+    [portfolioBudget],
+  );
+
+  const lumpSumsPayload: LumpSum[] = useMemo(
+    () =>
+      lumpSums
+        .map((l) => ({
+          month_offset: Math.max(0, parseInt(l.month, 10) || 0),
+          amount_cents: Math.round((parseFloat(l.amount) || 0) * 100),
+        }))
+        .filter((l) => l.amount_cents > 0),
+    [lumpSums],
+  );
+
+  // --- Single-debt fetches ---
+  useEffect(() => {
+    if (portfolioMode) return;
+    if (balanceCents <= 0) return;
+    let cancelled = false;
+    const run = async () => {
+      try {
+        if (mode === "forward") {
+          const r = await debtSimulateSchedule({
+            debt: {
+              balance_cents: balanceCents,
+              apr_pct: aprPct,
+              compounding,
+            },
+            monthly_payment_cents: monthlyPaymentCents,
+            lump_sums: lumpSumsPayload,
+            annual_inflation_pct: inflation,
+          });
+          if (!cancelled) {
+            setForwardResult(r);
+            setGoalResult(null);
+          }
+        } else {
+          const r = await debtGoalSeek({
+            debt: {
+              balance_cents: balanceCents,
+              apr_pct: aprPct,
+              compounding,
+            },
+            target_months: targetMonthsTotal,
+            lump_sums: lumpSumsPayload,
+            annual_inflation_pct: inflation,
+          });
+          if (!cancelled) {
+            setGoalResult(r);
+            setForwardResult(null);
+          }
+        }
+      } catch (e) {
+        if (!cancelled) onError(String(e));
+      }
+    };
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    portfolioMode,
+    mode,
+    balanceCents,
+    aprPct,
+    compounding,
+    monthlyPaymentCents,
+    targetMonthsTotal,
+    inflation,
+    lumpSumsPayload,
+    onError,
+  ]);
+
+  // --- Portfolio fetch (and parallel "other strategy" for comparison). ---
+  useEffect(() => {
+    if (!portfolioMode) return;
+    if (debts.length === 0) return;
+    let cancelled = false;
+    const debtPayload: DebtInput[] = debts.map((d) => ({
+      label: d.label || null,
+      balance_cents: Math.round((parseFloat(d.balance) || 0) * 100),
+      apr_pct: parseFloat(d.apr) || 0,
+      compounding: d.compounding,
+      minimum_payment_cents: Math.round((parseFloat(d.minimum) || 0) * 100),
+    }));
+    const run = async () => {
+      try {
+        const [primary, other] = await Promise.all([
+          debtSimulatePortfolio({
+            debts: debtPayload,
+            total_monthly_budget_cents: portfolioBudgetCents,
+            strategy,
+            lump_sums: lumpSumsPayload,
+            annual_inflation_pct: inflation,
+          }),
+          debtSimulatePortfolio({
+            debts: debtPayload,
+            total_monthly_budget_cents: portfolioBudgetCents,
+            strategy: strategy === "snowball" ? "avalanche" : "snowball",
+            lump_sums: lumpSumsPayload,
+            annual_inflation_pct: inflation,
+          }),
+        ]);
+        if (!cancelled) {
+          setPortfolioResult(primary);
+          setPortfolioOther(other);
+        }
+      } catch (e) {
+        if (!cancelled) onError(String(e));
+      }
+    };
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    portfolioMode,
+    debts,
+    portfolioBudgetCents,
+    strategy,
+    lumpSumsPayload,
+    inflation,
+    onError,
+  ]);
+
+  const addLumpSum = () =>
+    setLumpSums((rows) => [
+      ...rows,
+      { id: newId(), month: "12", amount: "1000.00" },
+    ]);
+  const removeLumpSum = (id: number) =>
+    setLumpSums((rows) => rows.filter((r) => r.id !== id));
+  const updateLumpSum = (id: number, patch: Partial<LumpSumRow>) =>
+    setLumpSums((rows) =>
+      rows.map((r) => (r.id === id ? { ...r, ...patch } : r)),
+    );
+
+  const addDebt = () =>
+    setDebts((rows) => [
+      ...rows,
+      {
+        id: newId(),
+        label: `Card ${String.fromCharCode(65 + rows.length)}`,
+        balance: "1000.00",
+        apr: "15.00",
+        compounding: "monthly",
+        minimum: "50.00",
+      },
+    ]);
+  const removeDebt = (id: number) =>
+    setDebts((rows) => rows.filter((r) => r.id !== id));
+  const updateDebt = (id: number, patch: Partial<PortfolioDebtRow>) =>
+    setDebts((rows) =>
+      rows.map((r) => (r.id === id ? { ...r, ...patch } : r)),
+    );
+
+  // The "send to Simulator" handler. Picks a sensible horizon for the
+  // post-payoff window: the user's likely retirement runway, capped at
+  // 50 years to match the Simulator's slider. We don't try to be cute
+  // about ages — 30 years is the default the Simulator boots with.
+  const sendToSimulator = (
+    monthlyCents: number,
+    payoffMonth: number | null,
+  ) => {
+    const POST_PAYOFF_YEARS = 30;
+    const horizon = payoffMonth ? POST_PAYOFF_YEARS : POST_PAYOFF_YEARS;
+    onSendToSimulator({
+      monthly_contribution_cents: monthlyCents,
+      starting_balance_cents: 0,
+      horizon_years: horizon,
+      bump: Date.now(),
+    });
+    // Scroll the Simulator into view so the user sees the prefill take
+    // effect.
+    requestAnimationFrame(() => {
+      const root = document.getElementById("forecast-root");
+      root?.scrollTo?.({ top: 0, behavior: "smooth" });
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    });
+  };
+
+  return (
+    <Section title="Debt Manager">
+      <p className="mb-3 text-sm text-graphite-400">
+        Plan a debt payoff. Forward calc takes a monthly payment and shows
+        your timeline; goal seek finds the smallest payment that hits a
+        deadline. Lump sums and inflation are factored in. Toggle{" "}
+        <em>Portfolio mode</em> for multiple debts at once.
+      </p>
+
+      <div className="mb-4 flex flex-wrap items-center gap-3">
+        {!portfolioMode && (
+          <div className="inline-flex rounded-md border border-graphite-700 bg-graphite-800 p-0.5 text-sm">
+            <button
+              onClick={() => setMode("forward")}
+              className={`rounded px-3 py-1 transition ${
+                mode === "forward"
+                  ? "bg-forest-600 text-graphite-50"
+                  : "text-graphite-300 hover:bg-graphite-700"
+              }`}
+            >
+              Forward calc
+            </button>
+            <button
+              onClick={() => setMode("goal")}
+              className={`rounded px-3 py-1 transition ${
+                mode === "goal"
+                  ? "bg-forest-600 text-graphite-50"
+                  : "text-graphite-300 hover:bg-graphite-700"
+              }`}
+            >
+              Goal seek
+            </button>
+          </div>
+        )}
+        <label className="flex cursor-pointer select-none items-center gap-1.5 text-xs text-graphite-300">
+          <input
+            type="checkbox"
+            checked={portfolioMode}
+            onChange={(e) => setPortfolioMode(e.target.checked)}
+            className="h-3 w-3 accent-forest-500"
+          />
+          Portfolio mode
+        </label>
+      </div>
+
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1fr_2fr]">
+        <div className="space-y-3">
+          {!portfolioMode ? (
+            <>
+              <NumberField
+                label="Debt balance"
+                value={balance}
+                onChange={setBalance}
+                prefix="$"
+              />
+              <NumberField label="APR" value={apr} onChange={setApr} prefix="%" />
+              <SelectField
+                label="Compounding"
+                value={compounding}
+                onChange={(v) => setCompounding(v as CompoundingFrequency)}
+                options={COMPOUNDING_OPTIONS}
+              />
+              {mode === "forward" ? (
+                <NumberField
+                  label="Monthly payment"
+                  value={monthlyPayment}
+                  onChange={setMonthlyPayment}
+                  prefix="$"
+                />
+              ) : (
+                <div className="grid grid-cols-2 gap-2">
+                  <NumberSlider
+                    label={`Target years: ${targetYears}`}
+                    min={0}
+                    max={30}
+                    step={1}
+                    value={targetYears}
+                    onChange={setTargetYears}
+                  />
+                  <NumberSlider
+                    label={`Target months: ${targetMonths}`}
+                    min={0}
+                    max={11}
+                    step={1}
+                    value={targetMonths}
+                    onChange={setTargetMonths}
+                  />
+                </div>
+              )}
+            </>
+          ) : (
+            <>
+              <NumberField
+                label="Total monthly budget"
+                value={portfolioBudget}
+                onChange={setPortfolioBudget}
+                prefix="$"
+                hint="Must be at least the sum of every debt's minimum."
+              />
+              <div>
+                <span className="text-xs uppercase tracking-wide text-graphite-400">
+                  Strategy
+                </span>
+                <div className="mt-1 inline-flex rounded-md border border-graphite-700 bg-graphite-800 p-0.5 text-xs">
+                  <button
+                    onClick={() => setStrategy("avalanche")}
+                    className={`rounded px-2 py-0.5 ${
+                      strategy === "avalanche"
+                        ? "bg-forest-600 text-graphite-50"
+                        : "text-graphite-300"
+                    }`}
+                  >
+                    Avalanche (highest APR)
+                  </button>
+                  <button
+                    onClick={() => setStrategy("snowball")}
+                    className={`rounded px-2 py-0.5 ${
+                      strategy === "snowball"
+                        ? "bg-forest-600 text-graphite-50"
+                        : "text-graphite-300"
+                    }`}
+                  >
+                    Snowball (smallest balance)
+                  </button>
+                </div>
+              </div>
+              <div className="space-y-2">
+                <div className="text-xs uppercase tracking-wide text-graphite-400">
+                  Debts
+                </div>
+                {debts.map((d) => (
+                  <div
+                    key={d.id}
+                    className="rounded-md border border-graphite-700 bg-graphite-800 p-2"
+                  >
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="text"
+                        value={d.label}
+                        onChange={(e) =>
+                          updateDebt(d.id, { label: e.target.value })
+                        }
+                        className="w-24 rounded border border-graphite-700 bg-graphite-900 px-2 py-1 text-xs text-graphite-100"
+                      />
+                      <button
+                        onClick={() => removeDebt(d.id)}
+                        className="ml-auto text-xs text-graphite-500 hover:text-red-300"
+                        title="Remove debt"
+                      >
+                        ×
+                      </button>
+                    </div>
+                    <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
+                      <label>
+                        <span className="text-graphite-400">Balance</span>
+                        <input
+                          type="text"
+                          inputMode="decimal"
+                          value={d.balance}
+                          onChange={(e) =>
+                            updateDebt(d.id, { balance: e.target.value })
+                          }
+                          className="mt-0.5 w-full rounded border border-graphite-700 bg-graphite-900 px-2 py-1 text-graphite-100"
+                        />
+                      </label>
+                      <label>
+                        <span className="text-graphite-400">APR %</span>
+                        <input
+                          type="text"
+                          inputMode="decimal"
+                          value={d.apr}
+                          onChange={(e) =>
+                            updateDebt(d.id, { apr: e.target.value })
+                          }
+                          className="mt-0.5 w-full rounded border border-graphite-700 bg-graphite-900 px-2 py-1 text-graphite-100"
+                        />
+                      </label>
+                      <label>
+                        <span className="text-graphite-400">Min payment</span>
+                        <input
+                          type="text"
+                          inputMode="decimal"
+                          value={d.minimum}
+                          onChange={(e) =>
+                            updateDebt(d.id, { minimum: e.target.value })
+                          }
+                          className="mt-0.5 w-full rounded border border-graphite-700 bg-graphite-900 px-2 py-1 text-graphite-100"
+                        />
+                      </label>
+                      <label>
+                        <span className="text-graphite-400">Compounding</span>
+                        <select
+                          value={d.compounding}
+                          onChange={(e) =>
+                            updateDebt(d.id, {
+                              compounding: e.target.value as CompoundingFrequency,
+                            })
+                          }
+                          className="mt-0.5 w-full rounded border border-graphite-700 bg-graphite-900 px-2 py-1 text-graphite-100"
+                        >
+                          {COMPOUNDING_OPTIONS.map((o) => (
+                            <option key={o.value} value={o.value}>
+                              {o.label}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    </div>
+                  </div>
+                ))}
+                <button
+                  onClick={addDebt}
+                  className="rounded-md border border-graphite-700 px-2 py-1 text-xs text-graphite-300 hover:border-graphite-500"
+                >
+                  + Add debt
+                </button>
+              </div>
+            </>
+          )}
+
+          <NumberSlider
+            label={`Annual inflation: ${inflation.toFixed(2)}%`}
+            min={0}
+            max={6}
+            step={0.5}
+            value={inflation}
+            onChange={setInflation}
+          />
+
+          <div className="space-y-2">
+            <div className="text-xs uppercase tracking-wide text-graphite-400">
+              Lump sums
+            </div>
+            {lumpSums.length === 0 && (
+              <div className="text-xs text-graphite-500">
+                None — add a one-time payment (tax refund, bonus, etc.)
+              </div>
+            )}
+            {lumpSums.map((l) => (
+              <div key={l.id} className="flex items-center gap-2 text-xs">
+                <span className="text-graphite-400">At month</span>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  value={l.month}
+                  onChange={(e) => updateLumpSum(l.id, { month: e.target.value })}
+                  className="w-14 rounded border border-graphite-700 bg-graphite-800 px-2 py-1 text-graphite-100"
+                />
+                <span className="text-graphite-400">$</span>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={l.amount}
+                  onChange={(e) =>
+                    updateLumpSum(l.id, { amount: e.target.value })
+                  }
+                  className="w-24 rounded border border-graphite-700 bg-graphite-800 px-2 py-1 text-graphite-100"
+                />
+                <button
+                  onClick={() => removeLumpSum(l.id)}
+                  className="text-graphite-500 hover:text-red-300"
+                  title="Remove lump sum"
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+            <button
+              onClick={addLumpSum}
+              className="rounded-md border border-graphite-700 px-2 py-1 text-xs text-graphite-300 hover:border-graphite-500"
+            >
+              + Add lump sum
+            </button>
+          </div>
+        </div>
+
+        <div className="space-y-3">
+          {!portfolioMode && mode === "forward" && forwardResult && (
+            <SingleResultCard
+              result={forwardResult}
+              monthlyPaymentCents={monthlyPaymentCents}
+              aprPct={aprPct}
+              simulatorReturnPct={simulatorReturnPct}
+              onSendToSimulator={() =>
+                sendToSimulator(monthlyPaymentCents, forwardResult.payoff_month)
+              }
+            />
+          )}
+          {!portfolioMode && mode === "goal" && goalResult && (
+            <SingleResultCard
+              result={goalResult.schedule}
+              monthlyPaymentCents={goalResult.required_monthly_payment_cents}
+              aprPct={aprPct}
+              simulatorReturnPct={simulatorReturnPct}
+              feasible={goalResult.feasible}
+              isGoalSeek
+              onSendToSimulator={() =>
+                sendToSimulator(
+                  goalResult.required_monthly_payment_cents,
+                  goalResult.schedule.payoff_month,
+                )
+              }
+            />
+          )}
+          {portfolioMode && portfolioResult && (
+            <PortfolioResultCard
+              primary={portfolioResult}
+              other={portfolioOther}
+              budgetCents={portfolioBudgetCents}
+              onSendToSimulator={() =>
+                sendToSimulator(
+                  portfolioBudgetCents,
+                  portfolioResult.payoff_month,
+                )
+              }
+            />
+          )}
+
+          {!portfolioMode && (forwardResult || goalResult) && (
+            <DebtChart
+              trajectory={
+                (forwardResult?.trajectory ?? goalResult?.schedule.trajectory) ??
+                []
+              }
+              startingBalanceCents={balanceCents}
+            />
+          )}
+          {portfolioMode && portfolioResult && (
+            <PortfolioChart result={portfolioResult} other={portfolioOther} />
+          )}
+        </div>
+      </div>
+    </Section>
+  );
+}
+
+// Inline result card for the single-debt mode. Used by both Forward
+// and Goal seek; the latter passes `isGoalSeek` so we frame the
+// monthly-payment value as "required" rather than "your" payment.
+function SingleResultCard({
+  result,
+  monthlyPaymentCents,
+  aprPct,
+  simulatorReturnPct,
+  onSendToSimulator,
+  isGoalSeek = false,
+  feasible = true,
+}: {
+  result: DebtScheduleResult;
+  monthlyPaymentCents: number;
+  aprPct: number;
+  simulatorReturnPct: number;
+  onSendToSimulator: () => void;
+  isGoalSeek?: boolean;
+  feasible?: boolean;
+}) {
+  const aprBeatsReturn = aprPct > simulatorReturnPct;
+  return (
+    <div className="rounded-md border border-graphite-700 bg-graphite-800 p-4">
+      {isGoalSeek && (
+        <>
+          <div className="text-xs uppercase tracking-wide text-graphite-400">
+            Required monthly payment
+          </div>
+          <div className="mt-1 text-3xl font-semibold tabular-nums text-graphite-50">
+            {formatMoney(monthlyPaymentCents)}
+            <span className="ml-1 text-sm text-graphite-500">/ mo</span>
+          </div>
+          {!feasible && (
+            <div className="mt-1 text-xs text-amber-300">
+              Couldn&apos;t reach the target within practical payment levels.
+            </div>
+          )}
+        </>
+      )}
+      <div className="mt-2 grid grid-cols-2 gap-3 text-xs text-graphite-300">
+        <div>
+          <div className="text-graphite-500">Pays off</div>
+          <div className="font-mono tabular-nums text-graphite-50">
+            {result.payoff_month
+              ? `Year ${result.payoff_year_offset! + 1}, month ${
+                  result.payoff_month_in_year
+                } (${result.payoff_month} mo total)`
+              : "Doesn't pay off"}
+          </div>
+        </div>
+        <div>
+          <div className="text-graphite-500">Total interest</div>
+          <div className="font-mono tabular-nums text-graphite-50">
+            {formatMoney(result.total_interest_cents)}
+          </div>
+        </div>
+        <div>
+          <div className="text-graphite-500">Total paid (nominal)</div>
+          <div className="font-mono tabular-nums text-graphite-50">
+            {formatMoney(result.total_paid_cents)}
+          </div>
+        </div>
+        <div>
+          <div className="text-graphite-500">In today&apos;s $</div>
+          <div className="font-mono tabular-nums text-graphite-50">
+            {formatMoney(result.total_paid_today_cents)}
+          </div>
+        </div>
+      </div>
+      {result.warning && (
+        <div className="mt-3 rounded border border-amber-700/40 bg-amber-900/20 p-2 text-xs text-amber-200">
+          ⚠ {result.warning}
+        </div>
+      )}
+      <div className="mt-3 rounded border border-graphite-700 bg-graphite-900 p-2 text-xs text-graphite-300">
+        <div className="text-graphite-400">
+          Equivalent guaranteed return
+        </div>
+        <div className="mt-0.5">
+          Paying off this debt is equivalent to a{" "}
+          <span className="font-semibold text-graphite-50">
+            {aprPct.toFixed(2)}%
+          </span>{" "}
+          guaranteed return — your Simulator&apos;s nominal return is{" "}
+          {simulatorReturnPct.toFixed(2)}%.{" "}
+          {aprBeatsReturn ? (
+            <span className="text-amber-200">
+              The debt&apos;s APR is higher, so paying it down likely beats
+              investing the same dollars.
+            </span>
+          ) : (
+            <span className="text-forest-200">
+              Investing at the assumed return likely beats extra debt
+              payoff — but a guaranteed return is worth more than an
+              expected one.
+            </span>
+          )}
+        </div>
+      </div>
+      <button
+        onClick={onSendToSimulator}
+        className="mt-3 rounded-md border border-forest-600/40 bg-forest-700/20 px-3 py-1.5 text-xs text-forest-100 hover:bg-forest-700/30"
+      >
+        After payoff: invest {formatMoney(monthlyPaymentCents)}/mo →
+        Simulator
+      </button>
+    </div>
+  );
+}
+
+function PortfolioResultCard({
+  primary,
+  other,
+  budgetCents,
+  onSendToSimulator,
+}: {
+  primary: PortfolioResult;
+  other: PortfolioResult | null;
+  budgetCents: number;
+  onSendToSimulator: () => void;
+}) {
+  const fmtMonth = (r: PortfolioResult) =>
+    r.payoff_month
+      ? `Year ${r.payoff_year_offset! + 1}, month ${r.payoff_month_in_year} (${
+          r.payoff_month
+        } mo)`
+      : "Doesn't pay off";
+  return (
+    <div className="rounded-md border border-graphite-700 bg-graphite-800 p-4">
+      <div className="text-xs uppercase tracking-wide text-graphite-400">
+        {primary.strategy === "avalanche" ? "Avalanche" : "Snowball"} strategy
+      </div>
+      <div className="mt-2 grid grid-cols-2 gap-3 text-xs text-graphite-300">
+        <div>
+          <div className="text-graphite-500">Pays off</div>
+          <div className="font-mono tabular-nums text-graphite-50">
+            {fmtMonth(primary)}
+          </div>
+        </div>
+        <div>
+          <div className="text-graphite-500">Total interest</div>
+          <div className="font-mono tabular-nums text-graphite-50">
+            {formatMoney(primary.total_interest_cents)}
+          </div>
+        </div>
+        <div>
+          <div className="text-graphite-500">Total paid (nominal)</div>
+          <div className="font-mono tabular-nums text-graphite-50">
+            {formatMoney(primary.total_paid_cents)}
+          </div>
+        </div>
+        <div>
+          <div className="text-graphite-500">In today&apos;s $</div>
+          <div className="font-mono tabular-nums text-graphite-50">
+            {formatMoney(primary.total_paid_today_cents)}
+          </div>
+        </div>
+      </div>
+      {other && (
+        <div className="mt-3 rounded border border-graphite-700 bg-graphite-900 p-2 text-xs">
+          <div className="text-graphite-400">
+            vs. {other.strategy === "avalanche" ? "avalanche" : "snowball"}
+          </div>
+          <div className="mt-0.5 grid grid-cols-2 gap-2 text-graphite-300">
+            <span>
+              Pays off:{" "}
+              <span className="font-mono tabular-nums text-graphite-100">
+                {fmtMonth(other)}
+              </span>
+            </span>
+            <span>
+              Interest:{" "}
+              <span className="font-mono tabular-nums text-graphite-100">
+                {formatMoney(other.total_interest_cents)}
+              </span>
+            </span>
+          </div>
+          {primary.paid_off && other.paid_off && (
+            <div className="mt-1 text-graphite-500">
+              Difference:{" "}
+              <span
+                className={
+                  primary.total_interest_cents <= other.total_interest_cents
+                    ? "text-forest-200"
+                    : "text-amber-200"
+                }
+              >
+                {formatMoney(
+                  Math.abs(
+                    primary.total_interest_cents - other.total_interest_cents,
+                  ),
+                )}{" "}
+                {primary.total_interest_cents <= other.total_interest_cents
+                  ? "less"
+                  : "more"}{" "}
+                interest with {primary.strategy}.
+              </span>
+            </div>
+          )}
+        </div>
+      )}
+      {primary.warning && (
+        <div className="mt-3 rounded border border-amber-700/40 bg-amber-900/20 p-2 text-xs text-amber-200">
+          ⚠ {primary.warning}
+        </div>
+      )}
+      <div className="mt-3 text-xs text-graphite-500">
+        Sum of minimums: {formatMoney(primary.minimum_budget_cents)} · Budget:{" "}
+        {formatMoney(budgetCents)}
+      </div>
+      <button
+        onClick={onSendToSimulator}
+        className="mt-3 rounded-md border border-forest-600/40 bg-forest-700/20 px-3 py-1.5 text-xs text-forest-100 hover:bg-forest-700/30"
+      >
+        After payoff: invest {formatMoney(budgetCents)}/mo → Simulator
+      </button>
+    </div>
+  );
+}
+
+interface DebtChartDatum {
+  month: number;
+  balance: number;
+  principal: number;
+  interest: number;
+}
+
+function DebtChart({
+  trajectory,
+  startingBalanceCents,
+}: {
+  trajectory: DebtScheduleResult["trajectory"];
+  startingBalanceCents: number;
+}) {
+  const data: DebtChartDatum[] = useMemo(() => {
+    if (trajectory.length === 0) return [];
+    const seed: DebtChartDatum = {
+      month: 0,
+      balance: startingBalanceCents / 100,
+      principal: 0,
+      interest: 0,
+    };
+    const rest = trajectory.map((t) => ({
+      month: t.month,
+      balance: t.balance_cents / 100,
+      principal: t.cumulative_principal_cents / 100,
+      interest: t.cumulative_interest_cents / 100,
+    }));
+    return [seed, ...rest];
+  }, [trajectory, startingBalanceCents]);
+
+  if (data.length <= 1) return null;
+  return (
+    <div className="rounded-md border border-graphite-700 bg-graphite-800 p-3">
+      <div className="mb-1 flex items-baseline justify-between">
+        <div className="text-xs uppercase tracking-wide text-graphite-400">
+          Payoff trajectory
+        </div>
+        <div className="text-xs text-graphite-500">
+          balance falls · paid principal/interest stack rises
+        </div>
+      </div>
+      <ResponsiveContainer width="100%" height={260}>
+        <ComposedChart
+          data={data}
+          margin={{ top: 5, right: 10, left: 5, bottom: 5 }}
+        >
+          <CartesianGrid stroke="#2a3138" strokeDasharray="3 3" />
+          <XAxis
+            dataKey="month"
+            stroke="#94a3b8"
+            tickFormatter={(v) => `${v}m`}
+          />
+          <YAxis stroke="#94a3b8" width={78} tickFormatter={formatYAxisDollars} />
+          <Tooltip
+            cursor={{ stroke: "#3b4148", strokeWidth: 1 }}
+            content={(p) => (
+              <DebtTooltipContent
+                active={p.active === true}
+                payload={
+                  p.payload as { payload?: DebtChartDatum }[] | undefined
+                }
+                label={typeof p.label === "number" ? p.label : undefined}
+              />
+            )}
+          />
+          <Area
+            type="monotone"
+            dataKey="principal"
+            stackId="paid"
+            stroke="none"
+            fill="#34d399"
+            fillOpacity={0.3}
+            isAnimationActive={false}
+            activeDot={false}
+          />
+          <Area
+            type="monotone"
+            dataKey="interest"
+            stackId="paid"
+            stroke="none"
+            fill="#facc15"
+            fillOpacity={0.3}
+            isAnimationActive={false}
+            activeDot={false}
+          />
+          <Line
+            type="monotone"
+            dataKey="balance"
+            stroke="#f87171"
+            strokeWidth={2}
+            dot={false}
+          />
+        </ComposedChart>
+      </ResponsiveContainer>
+      <div className="mt-2 flex flex-wrap gap-4 text-xs text-graphite-400">
+        <span className="flex items-center gap-1.5">
+          <span className="inline-block h-0.5 w-4 bg-red-400" /> Balance
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span className="inline-block h-2 w-4 rounded-sm bg-forest-400/30" />{" "}
+          Cumulative principal
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span className="inline-block h-2 w-4 rounded-sm bg-yellow-400/30" />{" "}
+          Cumulative interest
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function DebtTooltipContent({
+  active,
+  payload,
+  label,
+}: {
+  active: boolean | undefined;
+  payload: { payload?: DebtChartDatum }[] | undefined;
+  label: number | undefined;
+}) {
+  if (!active || !payload || payload.length === 0) return null;
+  const d = payload[0]?.payload;
+  if (!d) return null;
+  return (
+    <div className="rounded-md border border-graphite-700 bg-graphite-900 p-2 text-xs">
+      <div className="mb-1 text-graphite-400">Month {label}</div>
+      <Row label="Balance" color="#f87171" value={d.balance} />
+      <Row label="Principal paid" color="#34d399" value={d.principal} />
+      <Row label="Interest paid" color="#facc15" value={d.interest} />
+      <Row label="Total out" color="#94a3b8" value={d.principal + d.interest} />
+    </div>
+  );
+}
+
+interface PortfolioChartDatum {
+  month: number;
+  balance: number;
+  otherBalance?: number;
+  interest: number;
+  principal: number;
+}
+
+function PortfolioChart({
+  result,
+  other,
+}: {
+  result: PortfolioResult;
+  other: PortfolioResult | null;
+}) {
+  const data: PortfolioChartDatum[] = useMemo(() => {
+    const otherById = new Map<number, number>();
+    if (other) {
+      for (const m of other.trajectory) {
+        otherById.set(m.month, m.total_balance_cents / 100);
+      }
+    }
+    return result.trajectory.map((t) => {
+      const datum: PortfolioChartDatum = {
+        month: t.month,
+        balance: t.total_balance_cents / 100,
+        interest: t.cumulative_interest_cents / 100,
+        principal: t.cumulative_principal_cents / 100,
+      };
+      const ob = otherById.get(t.month);
+      if (ob !== undefined) datum.otherBalance = ob;
+      return datum;
+    });
+  }, [result, other]);
+
+  if (data.length === 0) return null;
+  const otherLabel =
+    other?.strategy === "avalanche" ? "Avalanche" : "Snowball";
+  return (
+    <div className="rounded-md border border-graphite-700 bg-graphite-800 p-3">
+      <div className="mb-1 flex items-baseline justify-between">
+        <div className="text-xs uppercase tracking-wide text-graphite-400">
+          Portfolio balance over time
+        </div>
+        <div className="text-xs text-graphite-500">
+          {result.strategy === "avalanche" ? "avalanche" : "snowball"} solid ·{" "}
+          {other ? `${otherLabel.toLowerCase()} dashed` : ""}
+        </div>
+      </div>
+      <ResponsiveContainer width="100%" height={260}>
+        <ComposedChart
+          data={data}
+          margin={{ top: 5, right: 10, left: 5, bottom: 5 }}
+        >
+          <CartesianGrid stroke="#2a3138" strokeDasharray="3 3" />
+          <XAxis
+            dataKey="month"
+            stroke="#94a3b8"
+            tickFormatter={(v) => `${v}m`}
+          />
+          <YAxis stroke="#94a3b8" width={78} tickFormatter={formatYAxisDollars} />
+          <Tooltip
+            cursor={{ stroke: "#3b4148", strokeWidth: 1 }}
+            content={(p) => (
+              <PortfolioTooltipContent
+                active={p.active === true}
+                payload={
+                  p.payload as { payload?: PortfolioChartDatum }[] | undefined
+                }
+                label={typeof p.label === "number" ? p.label : undefined}
+                otherLabel={otherLabel}
+              />
+            )}
+          />
+          <Area
+            type="monotone"
+            dataKey="principal"
+            stackId="paid"
+            stroke="none"
+            fill="#34d399"
+            fillOpacity={0.25}
+            isAnimationActive={false}
+            activeDot={false}
+          />
+          <Area
+            type="monotone"
+            dataKey="interest"
+            stackId="paid"
+            stroke="none"
+            fill="#facc15"
+            fillOpacity={0.25}
+            isAnimationActive={false}
+            activeDot={false}
+          />
+          <Line
+            type="monotone"
+            dataKey="balance"
+            stroke="#f87171"
+            strokeWidth={2}
+            dot={false}
+          />
+          {other && (
+            <Line
+              type="monotone"
+              dataKey="otherBalance"
+              stroke="#a78bfa"
+              strokeWidth={2}
+              strokeDasharray="4 3"
+              dot={false}
+            />
+          )}
+        </ComposedChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
+function PortfolioTooltipContent({
+  active,
+  payload,
+  label,
+  otherLabel,
+}: {
+  active: boolean | undefined;
+  payload: { payload?: PortfolioChartDatum }[] | undefined;
+  label: number | undefined;
+  otherLabel: string;
+}) {
+  if (!active || !payload || payload.length === 0) return null;
+  const d = payload[0]?.payload;
+  if (!d) return null;
+  return (
+    <div className="rounded-md border border-graphite-700 bg-graphite-900 p-2 text-xs">
+      <div className="mb-1 text-graphite-400">Month {label}</div>
+      <Row label="Balance" color="#f87171" value={d.balance} />
+      {d.otherBalance !== undefined && (
+        <Row label={otherLabel} color="#a78bfa" value={d.otherBalance} />
+      )}
+      <Row label="Principal paid" color="#34d399" value={d.principal} />
+      <Row label="Interest paid" color="#facc15" value={d.interest} />
+    </div>
+  );
+}
+
+// Tiny dropdown helper used only by the Debt Manager. Mirrors the
+// styling of NumberField for consistency with the rest of the form.
+function SelectField<T extends string>({
+  label,
+  value,
+  onChange,
+  options,
+}: {
+  label: string;
+  value: T;
+  onChange: (v: T) => void;
+  options: { value: T; label: string }[];
+}) {
+  return (
+    <label className="block">
+      <span className="text-xs uppercase tracking-wide text-graphite-400">
+        {label}
+      </span>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value as T)}
+        className="mt-1 w-full rounded-md border border-graphite-700 bg-graphite-800 px-3 py-2 text-sm text-graphite-100"
+      >
+        {options.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+    </label>
   );
 }
 

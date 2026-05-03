@@ -6,6 +6,7 @@
 //! the host machine's system timezone.
 
 pub mod category_analyzer;
+pub mod debt;
 pub mod forecast;
 pub mod monte_carlo;
 pub mod range;

@@ -539,6 +539,131 @@ export const analyzeCategory = (
   invoke("analyze_category", { categoryId, window });
 
 // -------------------------------------------------------------------
+// Debt management (v0.3.7)
+// -------------------------------------------------------------------
+
+export type CompoundingFrequency =
+  | "monthly"
+  | "daily"
+  | "yearly"
+  | "continuous";
+
+export type PortfolioStrategy = "snowball" | "avalanche";
+
+export interface LumpSum {
+  month_offset: number;
+  amount_cents: number;
+}
+
+export interface DebtInput {
+  label?: string | null;
+  balance_cents: number;
+  apr_pct: number;
+  compounding: CompoundingFrequency;
+  minimum_payment_cents?: number | null;
+}
+
+export interface DebtMonth {
+  month: number;
+  balance_cents: number;
+  interest_charged_cents: number;
+  principal_paid_cents: number;
+  payment_cents: number;
+  lump_sum_cents: number;
+  cumulative_interest_cents: number;
+  cumulative_principal_cents: number;
+  cumulative_paid_today_cents: number;
+}
+
+export interface DebtScheduleInput {
+  debt: DebtInput;
+  monthly_payment_cents: number;
+  lump_sums: LumpSum[];
+  annual_inflation_pct: number;
+  max_months?: number | null;
+}
+
+export interface DebtScheduleResult {
+  paid_off: boolean;
+  payoff_month: number | null;
+  payoff_year_offset: number | null;
+  payoff_month_in_year: number | null;
+  total_interest_cents: number;
+  total_paid_cents: number;
+  total_paid_today_cents: number;
+  trajectory: DebtMonth[];
+  breakeven_payment_cents: number;
+  warning: string | null;
+}
+
+export interface DebtGoalSeekInput {
+  debt: DebtInput;
+  target_months: number;
+  lump_sums: LumpSum[];
+  annual_inflation_pct: number;
+}
+
+export interface DebtGoalSeekResult {
+  required_monthly_payment_cents: number;
+  schedule: DebtScheduleResult;
+  feasible: boolean;
+}
+
+export interface PortfolioInput {
+  debts: DebtInput[];
+  total_monthly_budget_cents: number;
+  strategy: PortfolioStrategy;
+  lump_sums: LumpSum[];
+  annual_inflation_pct: number;
+  max_months?: number | null;
+}
+
+export interface PortfolioMonth {
+  month: number;
+  total_balance_cents: number;
+  interest_charged_cents: number;
+  total_paid_cents: number;
+  cumulative_interest_cents: number;
+  cumulative_principal_cents: number;
+  cumulative_paid_today_cents: number;
+}
+
+export interface DebtPayoffInfo {
+  label: string | null;
+  starting_balance_cents: number;
+  apr_pct: number;
+  payoff_month: number | null;
+  total_interest_cents: number;
+}
+
+export interface PortfolioResult {
+  strategy: PortfolioStrategy;
+  paid_off: boolean;
+  payoff_month: number | null;
+  payoff_year_offset: number | null;
+  payoff_month_in_year: number | null;
+  total_interest_cents: number;
+  total_paid_cents: number;
+  total_paid_today_cents: number;
+  trajectory: PortfolioMonth[];
+  per_debt: DebtPayoffInfo[];
+  minimum_budget_cents: number;
+  warning: string | null;
+}
+
+export const debtSimulateSchedule = (
+  input: DebtScheduleInput,
+): Promise<DebtScheduleResult> => invoke("debt_simulate_schedule", { input });
+
+export const debtGoalSeek = (
+  input: DebtGoalSeekInput,
+): Promise<DebtGoalSeekResult> => invoke("debt_goal_seek", { input });
+
+export const debtSimulatePortfolio = (
+  input: PortfolioInput,
+): Promise<PortfolioResult> => invoke("debt_simulate_portfolio", { input });
+
+// -------------------------------------------------------------------
 // CSV import (v0.3.2)
 // -------------------------------------------------------------------
 

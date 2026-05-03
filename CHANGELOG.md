@@ -4,6 +4,30 @@ All notable changes to Mr. Moneypenny are documented here. The format roughly fo
 
 ## [Unreleased]
 
+## [0.3.7] - 2026-05-03
+
+Debt Manager — pure-deterministic debt amortization tool inside the Forecast view, with goal seek, lump sums, portfolio mode (snowball vs. avalanche), inflation-adjusted today's-dollars cost, and a one-click hand-off to the investment Simulator for "after payoff, where do these dollars go?" planning.
+
+### Added
+
+- **Debt Manager** is a new section in the Forecast view. Two modes for a single debt:
+  - **Forward calc** — given a balance, APR, compounding, monthly payment, and any lump sums, returns payoff month + year, total interest, total paid (nominal and today's $), and a payoff trajectory chart.
+  - **Goal seek** — given a target payoff in months (configurable as years + months), bisects the smallest monthly payment that hits the target. Reports payoff year *and* month-within-year (debt amortization is deterministic, so the precision is meaningful — unlike the Simulator's probabilistic horizon).
+- **Compounding frequency** picker: monthly, daily, yearly, or continuous. APR is converted to an effective monthly periodic rate using textbook conversions before iterating the schedule.
+- **Lump sums** — add any number of one-time payments (tax refund, bonus, etc.) at specific months. Lump sums apply on top of the monthly payment.
+- **Inflation slider** drives a parallel today's-dollars total — every month's payment is discounted to present value and summed alongside the nominal total.
+- **Portfolio mode** (toggle, off by default) handles multiple debts at once with a fixed monthly budget. Strategy selector chooses **avalanche** (extra goes to highest APR) or **snowball** (extra goes to smallest balance); the *other* strategy runs in parallel and the result card shows the side-by-side interest delta so the trade-off is visible without toggling. Per-debt fields: balance, APR, compounding, minimum payment.
+- **Breakeven warning** — if your monthly payment is at or below the initial interest charge with no lump sums, the result card shows a warning and surfaces the breakeven payment so you know what it takes to make progress.
+- **Equivalent guaranteed return callout** next to every result: paying off this debt is equivalent to a guaranteed return at the debt's APR. Compared inline against the Simulator's current nominal-return assumption, with a one-line verdict in either direction.
+- **"After payoff: invest [payment]/mo → Simulator"** button hands off the freed-up monthly payment + a 30-year horizon into the Simulator above. The Simulator switches to "Show probability" mode and prefills contribution + horizon so the user sees the after-payoff investing trajectory.
+
+### Internal
+
+- New `src-tauri/src/insights/debt.rs` (~700 LOC). Exposes `simulate_schedule`, `goal_seek` (bisection), and `simulate_portfolio` (snowball / avalanche). Pure functions; no DB reads. 10 unit tests cover compounding-rate conversions, zero-APR linear payoff, the textbook 5%/60-month amortization, the below-breakeven warning, lump-sum acceleration, goal-seek convergence + year/month decomposition, inflation discount, snowball-vs-avalanche on inverted balance/APR, and the below-minimums warning.
+- New Tauri commands: `debt_simulate_schedule`, `debt_goal_seek`, `debt_simulate_portfolio`. All three are pure (no `State<AppState>`).
+- TS bindings + 11 new types in `src/lib/tauri.ts`.
+- Forecast.tsx gains `DebtManager`, `SingleResultCard`, `PortfolioResultCard`, `DebtChart`, `PortfolioChart`, `SelectField`. Simulator gains an optional `prefill?: SimulatorPrefill | null` prop and a `onReturnPctChange` callback so the Debt Manager can react to the user's chosen return assumption. The `Forecast` parent owns both pieces of shared state.
+
 ## [0.3.6] - 2026-05-02
 
 Simulator chart polish — band tooltip values, distinct band color, and Y-axis labels that no longer bleed off the chart.

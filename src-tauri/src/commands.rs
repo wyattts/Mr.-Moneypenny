@@ -982,6 +982,35 @@ pub async fn analyze_category(
 }
 
 // ---------------------------------------------------------------------
+// Debt management (v0.3.7).
+//
+// Pure calculator: no DB reads. The frontend gathers all inputs and
+// receives a deterministic month-by-month schedule plus summary stats.
+// Goal-seek bisects the monthly payment; portfolio mode handles
+// snowball / avalanche distribution of a fixed monthly budget.
+// ---------------------------------------------------------------------
+
+use crate::insights::debt::{
+    self as debt_mod, GoalSeekInput, GoalSeekResult, PortfolioInput, PortfolioResult,
+    ScheduleInput, ScheduleResult,
+};
+
+#[tauri::command]
+pub async fn debt_simulate_schedule(input: ScheduleInput) -> Result<ScheduleResult, String> {
+    Ok(debt_mod::simulate_schedule(&input))
+}
+
+#[tauri::command]
+pub async fn debt_goal_seek(input: GoalSeekInput) -> Result<GoalSeekResult, String> {
+    Ok(debt_mod::goal_seek(&input))
+}
+
+#[tauri::command]
+pub async fn debt_simulate_portfolio(input: PortfolioInput) -> Result<PortfolioResult, String> {
+    Ok(debt_mod::simulate_portfolio(&input))
+}
+
+// ---------------------------------------------------------------------
 // CSV import (v0.3.2).
 //
 // All bulk-import paths from bank/CC CSV exports go through these
