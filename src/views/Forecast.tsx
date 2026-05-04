@@ -482,6 +482,8 @@ function Simulator({
                 value={confidence}
                 onChange={(e) => setConfidence(Number(e.target.value))}
                 className="mt-1 w-full"
+                aria-label={`Confidence: ${(confidence * 100).toFixed(2)}%`}
+                aria-valuetext={`${(confidence * 100).toFixed(0)} percent`}
               />
               <div className="mt-1 flex gap-2">
                 {[0.7, 0.8, 0.9].map((v) => (
@@ -2409,6 +2411,8 @@ function ScenarioTool({ onError }: { onError: (m: string) => void }) {
                   value={pct}
                   onChange={(e) => setCut(c.id, Number(e.target.value))}
                   className="flex-1"
+                  aria-label={`${c.name} adjustment`}
+                  aria-valuetext={`${pct > 0 ? "+" : ""}${pct} percent`}
                 />
                 <div className="w-16 text-right text-sm tabular-nums text-graphite-300">
                   {pct > 0 ? "+" : ""}
@@ -2541,6 +2545,11 @@ function NumberSlider({
   value: number;
   onChange: (v: number) => void;
 }) {
+  // The label prop already encodes the value + unit (e.g., "Horizon:
+  // 30 years"), so we reuse it for both aria-label and aria-valuetext.
+  // Without these, screen readers announce only the bare numeric value
+  // ("slider, 30") with no unit context — making the Forecast/Simulator
+  // sliders effectively unusable with assistive tech.
   return (
     <label className="block">
       <span className="text-xs uppercase tracking-wide text-graphite-400">
@@ -2554,6 +2563,8 @@ function NumberSlider({
         value={value}
         onChange={(e) => onChange(Number(e.target.value))}
         className="mt-1 w-full"
+        aria-label={label}
+        aria-valuetext={label}
       />
     </label>
   );
