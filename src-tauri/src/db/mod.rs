@@ -471,7 +471,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(orphan_count, 0, "first INSERT must roll back with the failure");
+        assert_eq!(
+            orphan_count, 0,
+            "first INSERT must roll back with the failure"
+        );
     }
 
     /// Same guarantee for `recreate: true` migrations: the FK pragma is

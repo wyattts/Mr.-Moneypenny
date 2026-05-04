@@ -302,8 +302,7 @@ mod tests {
 
     #[test]
     fn redact_path_handles_multiple_occurrences() {
-        let dirty =
-            "first: /bot111:aaa/getMe second: /bot222:bbb/sendMessage";
+        let dirty = "first: /bot111:aaa/getMe second: /bot222:bbb/sendMessage";
         let cleaned = redact_path(dirty);
         assert!(!cleaned.contains("111:aaa"));
         assert!(!cleaned.contains("222:bbb"));

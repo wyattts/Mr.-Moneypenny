@@ -218,14 +218,20 @@ pub fn parse_amount(input: &str) -> Result<(i64, bool)> {
             // e.g., "1.234,56" → "1234.56"
             s.replace('.', "").replace(',', ".")
         }
-        (Some(_), None) if s.matches(',').count() == 1 && {
-            // Single comma + nothing after the dot — could be either
-            // "1234,56" (EU decimal) or "1,234" (US thousands without
-            // decimal). Use the trailing-fragment length: 1-2 digits
-            // after the comma → decimal; 3 digits → thousands.
-            let frag_len = s.split(',').next_back().unwrap_or("").trim_end_matches(|c: char| !c.is_ascii_digit()).len();
-            (1..=2).contains(&frag_len)
-        } =>
+        (Some(_), None)
+            if s.matches(',').count() == 1 && {
+                // Single comma + nothing after the dot — could be either
+                // "1234,56" (EU decimal) or "1,234" (US thousands without
+                // decimal). Use the trailing-fragment length: 1-2 digits
+                // after the comma → decimal; 3 digits → thousands.
+                let frag_len = s
+                    .split(',')
+                    .next_back()
+                    .unwrap_or("")
+                    .trim_end_matches(|c: char| !c.is_ascii_digit())
+                    .len();
+                (1..=2).contains(&frag_len)
+            } =>
         {
             // EU shape: "1234,56"
             s.replace(',', ".")
