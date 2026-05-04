@@ -371,17 +371,27 @@ async fn auto_mode_recurring_inserts_expense_and_reschedules() {
     let fired = tick(&deps, now).await.unwrap();
     assert_eq!(fired, 1);
 
-    // Expense was inserted.
-    let count: i64 = {
+    // Expense was inserted, stamped at the *job's intended due time*
+    // (2026-04-15 11:00 UTC), not at `now` (12:00 UTC). This matters
+    // most after a multi-day offline period where every catch-up fire
+    // would otherwise collapse onto the same `now` timestamp.
+    let (count, occurred_at): (i64, time::OffsetDateTime) = {
         let c = conn.lock().unwrap();
-        c.query_row(
-            "SELECT COUNT(*) FROM expenses WHERE category_id = ?1",
-            [cid],
-            |r| r.get(0),
-        )
-        .unwrap()
+        let row = c
+            .query_row(
+                "SELECT COUNT(*), MIN(occurred_at) FROM expenses WHERE category_id = ?1",
+                [cid],
+                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, time::OffsetDateTime>(1)?)),
+            )
+            .unwrap();
+        row
     };
     assert_eq!(count, 1, "auto rule must insert an expense on fire");
+    assert_eq!(
+        occurred_at,
+        datetime!(2026-04-15 11:00:00 UTC),
+        "occurred_at must match job.next_due_at, not the wall-clock now"
+    );
 
     // Job rescheduled to next month (May 15).
     let next: time::OffsetDateTime = {

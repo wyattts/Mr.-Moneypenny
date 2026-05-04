@@ -75,7 +75,13 @@ pub async fn handle(deps: &RouterDeps, job: &Job, now: OffsetDateTime) -> Result
         return Ok(JobOutcome::Reschedule(next));
     }
 
-    let occurred_at = now;
+    // Stamp the expense at the rule's *intended* due time, not now.
+    // After a multi-day offline period, catch-up may fire several due
+    // jobs in a single tick; with `occurred_at = now` they all
+    // collapse to one timestamp, polluting the spend-by-day chart.
+    // `job.next_due_at` is the moment the scheduler thought this
+    // occurrence should fire — the right timestamp historically.
+    let occurred_at = job.next_due_at;
     let new_expense = NewExpense {
         amount_cents: rule.amount_cents,
         currency: rule.currency.clone(),
