@@ -9,73 +9,104 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use rusqlite::Connection;
 
-const MIGRATIONS: &[(u32, &str, &str)] = &[
-    (1, "0001_init", include_str!("migrations/0001_init.sql")),
-    (
-        2,
-        "0002_seed_categories",
-        include_str!("migrations/0002_seed_categories.sql"),
-    ),
-    (
-        3,
-        "0003_curate_seed_actives",
-        include_str!("migrations/0003_curate_seed_actives.sql"),
-    ),
-    (
-        4,
-        "0004_investing_kind",
-        include_str!("migrations/0004_investing_kind.sql"),
-    ),
-    (
-        5,
-        "0005_seed_electric_water",
-        include_str!("migrations/0005_seed_electric_water.sql"),
-    ),
-    (
-        6,
-        "0006_refunds",
-        include_str!("migrations/0006_refunds.sql"),
-    ),
-    (
-        7,
-        "0007_scheduled_jobs",
-        include_str!("migrations/0007_scheduled_jobs.sql"),
-    ),
-    (
-        8,
-        "0008_recurring_rules",
-        include_str!("migrations/0008_recurring_rules.sql"),
-    ),
-    (
-        9,
-        "0009_budget_alert_state",
-        include_str!("migrations/0009_budget_alert_state.sql"),
-    ),
-    (
-        10,
-        "0010_llm_usage",
-        include_str!("migrations/0010_llm_usage.sql"),
-    ),
-    (
-        11,
-        "0011_investment_balances",
-        include_str!("migrations/0011_investment_balances.sql"),
-    ),
-    (
-        12,
-        "0012_csv_import_profiles",
-        include_str!("migrations/0012_csv_import_profiles.sql"),
-    ),
-    (
-        13,
-        "0013_merchant_rules",
-        include_str!("migrations/0013_merchant_rules.sql"),
-    ),
-    (
-        14,
-        "0014_csv_expense_source",
-        include_str!("migrations/0014_csv_expense_source.sql"),
-    ),
+/// One forward-only migration. `recreate = true` marks migrations whose
+/// SQL performs a table-recreate dance and therefore needs SQLite's
+/// foreign-key enforcement disabled around the swap. The runner manages
+/// the surrounding `PRAGMA foreign_keys` statements so that the schema
+/// changes themselves can be wrapped in a transaction (SQLite forbids
+/// `PRAGMA foreign_keys` inside a transaction).
+struct Migration {
+    version: u32,
+    name: &'static str,
+    sql: &'static str,
+    recreate: bool,
+}
+
+const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        name: "0001_init",
+        sql: include_str!("migrations/0001_init.sql"),
+        recreate: false,
+    },
+    Migration {
+        version: 2,
+        name: "0002_seed_categories",
+        sql: include_str!("migrations/0002_seed_categories.sql"),
+        recreate: false,
+    },
+    Migration {
+        version: 3,
+        name: "0003_curate_seed_actives",
+        sql: include_str!("migrations/0003_curate_seed_actives.sql"),
+        recreate: false,
+    },
+    Migration {
+        version: 4,
+        name: "0004_investing_kind",
+        sql: include_str!("migrations/0004_investing_kind.sql"),
+        recreate: true,
+    },
+    Migration {
+        version: 5,
+        name: "0005_seed_electric_water",
+        sql: include_str!("migrations/0005_seed_electric_water.sql"),
+        recreate: false,
+    },
+    Migration {
+        version: 6,
+        name: "0006_refunds",
+        sql: include_str!("migrations/0006_refunds.sql"),
+        recreate: true,
+    },
+    Migration {
+        version: 7,
+        name: "0007_scheduled_jobs",
+        sql: include_str!("migrations/0007_scheduled_jobs.sql"),
+        recreate: false,
+    },
+    Migration {
+        version: 8,
+        name: "0008_recurring_rules",
+        sql: include_str!("migrations/0008_recurring_rules.sql"),
+        recreate: false,
+    },
+    Migration {
+        version: 9,
+        name: "0009_budget_alert_state",
+        sql: include_str!("migrations/0009_budget_alert_state.sql"),
+        recreate: false,
+    },
+    Migration {
+        version: 10,
+        name: "0010_llm_usage",
+        sql: include_str!("migrations/0010_llm_usage.sql"),
+        recreate: false,
+    },
+    Migration {
+        version: 11,
+        name: "0011_investment_balances",
+        sql: include_str!("migrations/0011_investment_balances.sql"),
+        recreate: false,
+    },
+    Migration {
+        version: 12,
+        name: "0012_csv_import_profiles",
+        sql: include_str!("migrations/0012_csv_import_profiles.sql"),
+        recreate: false,
+    },
+    Migration {
+        version: 13,
+        name: "0013_merchant_rules",
+        sql: include_str!("migrations/0013_merchant_rules.sql"),
+        recreate: false,
+    },
+    Migration {
+        version: 14,
+        name: "0014_csv_expense_source",
+        sql: include_str!("migrations/0014_csv_expense_source.sql"),
+        recreate: true,
+    },
 ];
 
 /// Open a SQLite connection at the given path, creating the file if
@@ -102,15 +133,52 @@ pub fn open_in_memory() -> Result<Connection> {
 
 /// Apply any migrations whose version is greater than the connection's
 /// current `user_version`. Idempotent.
+///
+/// Each migration is wrapped in its own transaction. The migration's
+/// final statement bumps `PRAGMA user_version`, so on partial failure
+/// (disk full, OOM, panic) the rollback is atomic with the schema
+/// rollback — no half-applied schema with unbumped `user_version`,
+/// which would brick subsequent launches.
+///
+/// `recreate: true` migrations need foreign-key enforcement disabled
+/// around the table-recreate swap; SQLite forbids `PRAGMA foreign_keys`
+/// inside a transaction, so the runner toggles the pragma *outside* the
+/// wrapping tx. Any embedded `PRAGMA foreign_keys` statements inside the
+/// SQL files become inert no-ops within the tx.
 pub fn migrate(conn: &Connection) -> Result<()> {
     let current: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-    for (version, name, sql) in MIGRATIONS {
-        if *version > current {
-            tracing::info!(target: "db", "applying migration {} ({})", name, version);
-            conn.execute_batch(sql)
-                .with_context(|| format!("applying migration {name}"))?;
+    for m in MIGRATIONS {
+        if m.version > current {
+            apply_migration(conn, m)?;
         }
     }
+    Ok(())
+}
+
+fn apply_migration(conn: &Connection, m: &Migration) -> Result<()> {
+    tracing::info!(target: "db", "applying migration {} ({})", m.name, m.version);
+    if m.recreate {
+        conn.execute_batch("PRAGMA foreign_keys = OFF;")
+            .with_context(|| format!("disabling FKs for {}", m.name))?;
+        let outcome = run_migration_in_tx(conn, m);
+        // Always restore FK enforcement, even on failure. db::open also
+        // re-asserts foreign_keys=ON on every fresh connection, so a
+        // missed restore here self-heals on the next launch.
+        let _ = conn.execute_batch("PRAGMA foreign_keys = ON;");
+        outcome
+    } else {
+        run_migration_in_tx(conn, m)
+    }
+}
+
+fn run_migration_in_tx(conn: &Connection, m: &Migration) -> Result<()> {
+    let tx = conn
+        .unchecked_transaction()
+        .with_context(|| format!("starting tx for {}", m.name))?;
+    tx.execute_batch(m.sql)
+        .with_context(|| format!("applying migration {}", m.name))?;
+    tx.commit()
+        .with_context(|| format!("committing migration {}", m.name))?;
     Ok(())
 }
 
@@ -132,9 +200,9 @@ mod tests {
     /// Apply migrations 0001 and 0002 only — simulates a database left
     /// behind by v0.1.1, before migration 0003 was introduced.
     fn apply_through_v2(conn: &Connection) -> Result<()> {
-        for (version, _name, sql) in MIGRATIONS {
-            if *version <= 2 {
-                conn.execute_batch(sql)?;
+        for m in MIGRATIONS {
+            if m.version <= 2 {
+                conn.execute_batch(m.sql)?;
             }
         }
         Ok(())
@@ -282,9 +350,9 @@ mod tests {
         // Simulate a v0.1.3 database: apply 0001+0002+0003, add a user
         // category and a couple of expenses, then apply 0004.
         let conn = open_in_memory().unwrap();
-        for (version, _name, sql) in MIGRATIONS {
-            if *version <= 3 {
-                conn.execute_batch(sql).unwrap();
+        for m in MIGRATIONS {
+            if m.version <= 3 {
+                conn.execute_batch(m.sql).unwrap();
             }
         }
         conn.execute(
@@ -343,5 +411,113 @@ mod tests {
         migrate(&conn).unwrap();
         let active_second = collect_active_seed_names(&conn);
         assert_eq!(active_first, active_second);
+    }
+
+    /// A failure inside a wrapped migration must roll back cleanly: the
+    /// schema is unchanged and `user_version` is not advanced, so the
+    /// next migration attempt can re-run from a clean state. This guards
+    /// against the v0.3.7-and-earlier behavior where a partial failure
+    /// in 0004/0006/0011/0014 would orphan a `*_new` table and brick
+    /// every subsequent launch.
+    #[test]
+    fn failed_migration_rolls_back_atomically() {
+        let conn = open_in_memory().unwrap();
+        // Take the DB to a known-good v3 state.
+        for m in MIGRATIONS {
+            if m.version <= 3 {
+                conn.execute_batch(m.sql).unwrap();
+            }
+        }
+        let v3: u32 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v3, 3);
+        let categories_before: i64 = conn
+            .query_row("SELECT COUNT(*) FROM categories", [], |r| r.get(0))
+            .unwrap();
+
+        // Construct a synthetic broken migration that does meaningful
+        // work, then deliberately errors (insert into a non-existent
+        // table). With the wrapping tx, the meaningful work is rolled
+        // back. Without the wrapping tx, the orphan row would persist.
+        let broken = Migration {
+            version: 99,
+            name: "9999_broken_test_migration",
+            sql: "INSERT INTO categories (name, kind, is_recurring, is_active, is_seed) \
+                  VALUES ('OrphanShouldRollback', 'variable', 0, 1, 0); \
+                  INSERT INTO does_not_exist (id) VALUES (1); \
+                  PRAGMA user_version = 99;",
+            recreate: false,
+        };
+        let result = apply_migration(&conn, &broken);
+        assert!(result.is_err(), "broken migration must fail");
+
+        // Schema is unchanged.
+        let v_after: u32 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v_after, 3, "user_version must not advance on failure");
+        let categories_after: i64 = conn
+            .query_row("SELECT COUNT(*) FROM categories", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            categories_after, categories_before,
+            "rolled-back insert must leave row count unchanged"
+        );
+        let orphan_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM categories WHERE name = 'OrphanShouldRollback'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(orphan_count, 0, "first INSERT must roll back with the failure");
+    }
+
+    /// Same guarantee for `recreate: true` migrations: the FK pragma is
+    /// toggled outside the tx, the schema rebuild is inside, and a
+    /// failure rolls back the rebuild cleanly without leaving an orphan
+    /// `*_new` table behind.
+    #[test]
+    fn failed_recreate_migration_rolls_back_without_orphan_table() {
+        let conn = open_in_memory().unwrap();
+        for m in MIGRATIONS {
+            if m.version <= 3 {
+                conn.execute_batch(m.sql).unwrap();
+            }
+        }
+        // Recreate-style broken migration: build a `*_new` table, then
+        // error before the rename. The wrapping tx must drop the new
+        // table on rollback, so subsequent migrations don't hit
+        // "table already exists".
+        let broken = Migration {
+            version: 99,
+            name: "9999_broken_recreate_test",
+            sql: "CREATE TABLE categories_new (id INTEGER PRIMARY KEY, name TEXT); \
+                  INSERT INTO categories_new (id, name) SELECT id, name FROM categories; \
+                  INSERT INTO does_not_exist (id) VALUES (1); \
+                  PRAGMA user_version = 99;",
+            recreate: true,
+        };
+        let result = apply_migration(&conn, &broken);
+        assert!(result.is_err(), "broken recreate migration must fail");
+
+        let new_table_exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master \
+                 WHERE type = 'table' AND name = 'categories_new'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            new_table_exists, 0,
+            "categories_new must not survive the failed recreate"
+        );
+        // FK enforcement is restored even on failure.
+        let fk_on: i64 = conn
+            .query_row("PRAGMA foreign_keys", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(fk_on, 1, "FK enforcement must be re-enabled after failure");
     }
 }
