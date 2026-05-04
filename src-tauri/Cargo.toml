@@ -38,13 +38,15 @@ rand = "0.8"
 chacha20poly1305 = "0.10"
 hkdf = "0.12"
 sha2 = "0.10"
+zeroize = { version = "1", features = ["zeroize_derive"] }
 machine-uid = "0.5"
 base64 = "0.22"
 csv = "1"
 strsim = "0.11"
 # Migration-only: read v0.2.6 secrets from the OS keyring on first launch
-# after upgrade and copy them into the new disk store. Will be dropped in
-# v0.2.7 once the migration window closes.
+# after upgrade and copy them into the new disk store. v0.3.8 added an
+# eager-on-open drain with a per-key sentinel (see secrets/migration.rs);
+# v0.3.9 will delete this dependency entirely.
 keyring = { version = "3", features = ["apple-native", "windows-native", "linux-native"] }
 
 [dev-dependencies]

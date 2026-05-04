@@ -25,6 +25,7 @@
 use anyhow::{Context, Result};
 use hkdf::Hkdf;
 use sha2::Sha256;
+use zeroize::Zeroizing;
 
 /// Length of the symmetric key passed to ChaCha20-Poly1305.
 pub const KEY_LEN: usize = 32;
@@ -39,7 +40,15 @@ const HKDF_INFO: &[u8] = b"master-key";
 ///
 /// `data_dir` is included in the input keying material so that
 /// per-user installations on the same machine get distinct keys.
-pub fn derive_master_key(salt: &[u8; SALT_LEN], data_dir: &str) -> Result<[u8; KEY_LEN]> {
+///
+/// The returned key is wrapped in `Zeroizing` so that when it (and any
+/// owners further down the chain) drop, the bytes are scrubbed from
+/// memory. This shrinks the half-life of the key in RAM and is the
+/// reason `chacha20poly1305` is built with the `zeroize` feature too.
+pub fn derive_master_key(
+    salt: &[u8; SALT_LEN],
+    data_dir: &str,
+) -> Result<Zeroizing<[u8; KEY_LEN]>> {
     let machine = read_machine_uid()?;
     let mut ikm = String::with_capacity(IKM_PREFIX.len() + machine.len() + data_dir.len() + 4);
     ikm.push_str(IKM_PREFIX);
@@ -49,8 +58,8 @@ pub fn derive_master_key(salt: &[u8; SALT_LEN], data_dir: &str) -> Result<[u8; K
     ikm.push_str(data_dir);
 
     let hk = Hkdf::<Sha256>::new(Some(salt), ikm.as_bytes());
-    let mut out = [0u8; KEY_LEN];
-    hk.expand(HKDF_INFO, &mut out)
+    let mut out = Zeroizing::new([0u8; KEY_LEN]);
+    hk.expand(HKDF_INFO, &mut *out)
         .map_err(|e| anyhow::anyhow!("hkdf expand: {e}"))?;
     Ok(out)
 }

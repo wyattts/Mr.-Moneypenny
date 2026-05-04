@@ -31,6 +31,7 @@ use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroizing;
 
 use super::cipher;
 use super::kdf::{self, KEY_LEN, SALT_LEN};
@@ -66,9 +67,13 @@ pub(super) struct OnDiskEntry {
 
 /// In-memory representation of the secrets file with the master key
 /// already derived. Operations modify this and `save_atomic` writes it.
+///
+/// `master_key` is wrapped in `Zeroizing` so it's scrubbed from memory
+/// when this struct (or the global `OnceLock` holding it) drops, which
+/// shrinks the half-life of the key in RAM and in any panic backtrace.
 pub(super) struct SecretsFile {
     path: PathBuf,
-    master_key: [u8; KEY_LEN],
+    master_key: Zeroizing<[u8; KEY_LEN]>,
     salt: [u8; SALT_LEN],
     entries: HashMap<String, OnDiskEntry>,
     migrated_keyring_keys: Vec<String>,
