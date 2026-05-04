@@ -87,6 +87,10 @@ jobs:
             See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for details.
 
             **macOS / Windows builds are unsigned in this release.** You may see a Gatekeeper or SmartScreen warning. See [docs/distribution.md](https://github.com/${{ github.repository }}/blob/main/docs/distribution.md) for verification instructions and how to bypass.
+
+            ---
+
+            Mr. Moneypenny is free software under the **AGPL-3.0-or-later**. Corresponding source code is available at https://github.com/${{ github.repository }} (this repository). See [LICENSE](https://github.com/${{ github.repository }}/blob/main/LICENSE).
           releaseDraft: true
           prerelease: false
 

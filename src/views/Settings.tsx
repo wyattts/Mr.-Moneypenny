@@ -4,6 +4,7 @@ import {
   checkForUpdate,
   clearAuthorizedChats,
   generatePairingCode,
+  getAppVersion,
   getAutostart,
   getBudgetAlertsEnabled,
   getCheckUpdatesOnLaunch,
@@ -206,6 +207,10 @@ export function Settings() {
             }}
             onError={setError}
           />
+        </Section>
+
+        <Section title="About" description="License and source.">
+          <AboutPanel onError={setError} />
         </Section>
       </div>
     </div>
@@ -1172,6 +1177,52 @@ function CsvImportPanel({
           }}
         />
       )}
+    </div>
+  );
+}
+
+function AboutPanel({ onError }: { onError: (msg: string) => void }) {
+  const [version, setVersion] = useState<string | null>(null);
+
+  useEffect(() => {
+    getAppVersion().then(setVersion).catch((e: unknown) => onError(String(e)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const repo = "https://github.com/wyattts/Mr.-Moneypenny";
+  return (
+    <div className="space-y-2 text-sm text-graphite-300">
+      <div>
+        <span className="text-graphite-50">Mr. Moneypenny</span>
+        {version ? <span className="text-graphite-400"> v{version}</span> : null}
+      </div>
+      <div>
+        License:{" "}
+        <a
+          href={`${repo}/blob/main/LICENSE`}
+          target="_blank"
+          rel="noreferrer"
+          className="text-forest-400 hover:underline"
+        >
+          AGPL-3.0-or-later
+        </a>
+      </div>
+      <div>
+        Source:{" "}
+        <a
+          href={repo}
+          target="_blank"
+          rel="noreferrer"
+          className="text-forest-400 hover:underline"
+        >
+          {repo}
+        </a>
+      </div>
+      <div className="text-xs text-graphite-400">
+        This program is free software: you can redistribute it and/or modify it under the terms of
+        the GNU Affero General Public License as published by the Free Software Foundation, either
+        version 3 of the License, or (at your option) any later version.
+      </div>
     </div>
   );
 }

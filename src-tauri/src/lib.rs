@@ -161,6 +161,7 @@ mod app {
                 set_autostart,
                 check_for_update,
                 install_update,
+                get_app_version,
                 get_check_updates_on_launch,
                 set_check_updates_on_launch,
                 get_weekly_summary_enabled,

@@ -692,6 +692,14 @@ pub async fn check_for_update(app: tauri::AppHandle) -> Result<UpdateInfo, Strin
     }
 }
 
+/// Returns the running app version, sourced from the Tauri package info.
+/// Used by the Settings → About section to display "v0.X.Y" alongside the
+/// AGPL source-offer notice.
+#[tauri::command]
+pub fn get_app_version(app: tauri::AppHandle) -> String {
+    app.package_info().version.to_string()
+}
+
 /// Download and install the pending update, then relaunch. Errors if no
 /// update is currently available (call `check_for_update` first).
 #[tauri::command]

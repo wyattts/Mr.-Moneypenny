@@ -286,6 +286,7 @@ export interface UpdateInfo {
 
 export const checkForUpdate = (): Promise<UpdateInfo> => invoke("check_for_update");
 export const installUpdate = (): Promise<void> => invoke("install_update");
+export const getAppVersion = (): Promise<string> => invoke("get_app_version");
 export const getCheckUpdatesOnLaunch = (): Promise<boolean> =>
   invoke("get_check_updates_on_launch");
 export const setCheckUpdatesOnLaunch = (enabled: boolean): Promise<void> =>
