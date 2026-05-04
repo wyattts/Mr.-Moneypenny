@@ -144,3 +144,25 @@ jobs:
             [ -e "$f" ] || continue
             gh release upload "${{ github.ref_name }}" "$f" --clobber
           done
+
+  promote:
+    name: Promote draft to latest
+    # Run only when every matrix leg of `release` succeeded. This is
+    # the gate that replaces the manual `gh release edit --draft=false
+    # --latest` step Wyatt used to run after each tag — forgetting it
+    # silently breaks the auto-updater (the updater fetches
+    # latest/download/latest.json which is gated on the `latest` flag).
+    # See v0.3.4 retraction in the CHANGELOG for prior art.
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Promote
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release edit "${{ github.ref_name }}" \
+            --repo "${{ github.repository }}" \
+            --draft=false \
+            --latest
