@@ -51,6 +51,11 @@ fn default_data_dir() -> Result<String> {
 /// Process-wide handle to the secrets file. Opening is cheap (a single
 /// read + KDF call) but we cache it so callers don't repeatedly do the
 /// HKDF derivation.
+///
+/// The first call after install performs the v0.2.6→v0.3.x keyring
+/// drain (see `migration::eager_drain_keyring`). Subsequent launches
+/// short-circuit because the disk file's `migrated_keyring_keys`
+/// sentinel records every key already considered.
 fn handle() -> Result<&'static Mutex<SecretsFile>> {
     use std::sync::OnceLock;
     static H: OnceLock<Mutex<SecretsFile>> = OnceLock::new();
@@ -60,7 +65,18 @@ fn handle() -> Result<&'static Mutex<SecretsFile>> {
     let path = default_secrets_path()?;
     let data_dir = default_data_dir()?;
     let f = SecretsFile::open(path, &data_dir)?;
-    Ok(H.get_or_init(|| Mutex::new(f)))
+    let m = H.get_or_init(|| Mutex::new(f));
+    // Drain the OS keyring exactly once per process. Best-effort —
+    // failures here mustn't block secret access. The disk file is the
+    // source of truth from here on.
+    if let Err(e) = migration::eager_drain_keyring(m) {
+        tracing::warn!(
+            target: "secrets",
+            error = %e,
+            "keyring drain failed; continuing with disk store only"
+        );
+    }
+    Ok(m)
 }
 
 /// Store a secret. Overwrites any existing entry under the same key.
@@ -72,24 +88,13 @@ pub fn store(key: &str, value: &str) -> Result<()> {
 
 /// Retrieve a secret. Returns `Ok(None)` if no entry exists.
 ///
-/// On first call after upgrading from v0.2.6, this transparently copies
-/// any entries the user previously stored in the OS keyring into the new
-/// disk store, then returns the value from disk. See `migration::run`.
+/// The keyring drain runs eagerly inside `handle()` on first acquisition
+/// per process, so by the time we get here the disk store is the
+/// authoritative source.
 pub fn retrieve(key: &str) -> Result<Option<String>> {
     let h = handle()?;
-    {
-        let f = h.lock().unwrap();
-        if let Some(v) = f.get(key)? {
-            return Ok(Some(v));
-        }
-    }
-    // Disk had no entry — try the migration path. If it succeeds the
-    // entry will exist on disk for the next call.
-    if migration::try_copy_from_keyring(h, key)? {
-        let f = h.lock().unwrap();
-        return f.get(key);
-    }
-    Ok(None)
+    let f = h.lock().unwrap();
+    f.get(key)
 }
 
 /// Delete a secret. Returns true if a row existed.

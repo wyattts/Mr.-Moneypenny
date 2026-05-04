@@ -1,55 +1,73 @@
 //! One-shot transparent migration from the v0.2.6 OS-keyring backend
 //! into the new disk-encrypted store.
 //!
-//! Strategy: on the first `retrieve` call for a given key, if the disk
-//! store has no entry, ask the OS keyring once. If the keyring has it,
-//! copy to disk. From then on the disk store answers; the keyring is
-//! never consulted again for that key.
+//! Strategy: when the secrets handle is first acquired in a process,
+//! eagerly probe the OS keyring once for each known secret key. If the
+//! keyring has the value, copy it to the disk store. Either way, mark
+//! the key as "migrated" inside the disk file so subsequent process
+//! launches don't probe the keyring again — that probe is a dbus call
+//! on Linux and a slow, occasionally-blocking system call elsewhere.
 //!
-//! This is best-effort: any keyring error (no entry, locked collection,
-//! Secret Service unavailable, dbus down) is silently treated as "not
-//! found" — the user can re-enter via Settings, which writes to the
-//! disk store.
+//! This eager-on-open approach replaces the v0.3.7-and-earlier behavior
+//! that probed the keyring on *every* `retrieve` call for a missing
+//! key, forever (the doc-comment promised "first call after upgrade"
+//! but the implementation didn't enforce that).
 //!
-//! v0.2.7 will drop the `keyring` crate dependency entirely. By then
-//! every active user will have either had their secrets migrated or
-//! re-entered them through the disk path.
+//! v0.3.9 will drop the `keyring` crate entirely. By then every active
+//! user has either been migrated (sentinel set) or re-entered their
+//! secrets through Settings (which writes through the disk path).
 
 use std::sync::Mutex;
 
 use anyhow::Result;
 
+use super::keys;
 use super::store::SecretsFile;
 
 const KEYRING_SERVICE: &str = "moneypenny";
 
-/// Attempt to copy `key`'s value from the legacy OS keyring into the
-/// disk store. Returns `Ok(true)` if migration succeeded, `Ok(false)`
-/// otherwise (no entry, or any keyring failure). Never returns `Err`
-/// for keyring-side failures — those are the very thing we're routing
-/// around.
-pub(super) fn try_copy_from_keyring(handle: &Mutex<SecretsFile>, key: &str) -> Result<bool> {
-    let value = match read_keyring(key) {
-        Some(v) => v,
-        None => return Ok(false),
+/// All secret keys that v0.2.6 might have stored in the OS keyring.
+const LEGACY_KEYS: &[&str] = &[keys::ANTHROPIC_API_KEY, keys::TELEGRAM_BOT_TOKEN];
+
+/// Eagerly drain any v0.2.6 keyring entries into the disk store. Runs
+/// once per process, on the first call to `secrets::handle()`. After
+/// this, the disk file's `migrated_keyring_keys` sentinel records each
+/// key we've considered, so future launches skip the probe entirely.
+pub(super) fn eager_drain_keyring(handle: &Mutex<SecretsFile>) -> Result<()> {
+    let already: Vec<String> = {
+        let f = handle.lock().unwrap();
+        f.migrated_keyring_keys()
     };
-    {
-        let mut f = handle.lock().unwrap();
-        // Guard: another thread might have raced and already migrated.
-        if f.contains(key) {
-            return Ok(true);
+    for key in LEGACY_KEYS {
+        if already.iter().any(|m| m == key) {
+            continue;
         }
-        f.put(key, &value)?;
+        // Only attempt the keyring read if we don't already have the
+        // value on disk — avoids a dbus call when the user already
+        // entered the secret through Settings on this device.
+        let need_probe = {
+            let f = handle.lock().unwrap();
+            !f.contains(key)
+        };
+        if need_probe {
+            if let Some(value) = read_keyring(key) {
+                let mut f = handle.lock().unwrap();
+                f.put(key, &value)?;
+                drop(f);
+                tracing::info!(
+                    target: "secrets::migration",
+                    key,
+                    "drained secret from OS keyring → disk store"
+                );
+                let _ = delete_keyring(key);
+            }
+        }
+        // Mark as migrated regardless of whether the keyring had a
+        // value — the contract is "we asked once."
+        let mut f = handle.lock().unwrap();
+        f.mark_migrated(key)?;
     }
-    tracing::info!(
-        target: "secrets::migration",
-        key,
-        "migrated secret from OS keyring → disk store"
-    );
-    // Try to delete from the old keyring to be tidy, but don't sweat
-    // failures — orphaned keyring entries are harmless.
-    let _ = delete_keyring(key);
-    Ok(true)
+    Ok(())
 }
 
 fn read_keyring(key: &str) -> Option<String> {
