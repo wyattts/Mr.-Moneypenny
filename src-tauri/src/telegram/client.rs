@@ -58,17 +58,24 @@ impl TelegramClient {
             .json(&body)
             .send()
             .await
-            .with_context(|| format!("telegram POST {method}"))?;
+            .map_err(|e| anyhow!("telegram POST {method}: {}", scrub_token(e)))?;
         let status = resp.status();
-        let text = resp.text().await.context("reading telegram response")?;
+        let text = resp
+            .text()
+            .await
+            .map_err(|e| anyhow!("reading telegram response: {}", scrub_token(e)))?;
         if !status.is_success() {
             return Err(anyhow!(
                 "telegram {method} HTTP {status}: {}",
-                truncate(&text, 512)
+                redact_path(&truncate(&text, 512))
             ));
         }
-        let parsed: ApiResponse<R> = serde_json::from_str(&text)
-            .with_context(|| format!("parsing telegram {method}: {}", truncate(&text, 256)))?;
+        let parsed: ApiResponse<R> = serde_json::from_str(&text).with_context(|| {
+            format!(
+                "parsing telegram {method}: {}",
+                redact_path(&truncate(&text, 256))
+            )
+        })?;
         if !parsed.ok {
             return Err(anyhow!(
                 "telegram {method}: {}",
@@ -79,6 +86,43 @@ impl TelegramClient {
             .result
             .ok_or_else(|| anyhow!("telegram {method}: missing result"))
     }
+}
+
+/// Format a `reqwest::Error` for logging without leaking the bot token.
+///
+/// The Telegram Bot API embeds the token in the URL path
+/// (`/bot<token>/<method>`), so on transport failures (DNS, TLS, timeout,
+/// redirect) `reqwest::Error::Display` may include the URL — and therefore
+/// the token — in error chains that get logged via `tracing::error/warn!`.
+/// We strip the URL with `Error::without_url()` first, then run a defensive
+/// regex-free scrub on the resulting string in case any nested error type
+/// has already stringified the URL into its own message.
+fn scrub_token(e: reqwest::Error) -> String {
+    redact_path(&e.without_url().to_string())
+}
+
+/// Replace any `/bot<...>/...` segment in `s` with `/bot<REDACTED>/...`.
+/// Used as the inner string scrub for `scrub_token` and applied
+/// defensively to response-body excerpts.
+fn redact_path(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(idx) = rest.find("/bot") {
+        out.push_str(&rest[..idx + 4]);
+        rest = &rest[idx + 4..];
+        match rest.find('/') {
+            Some(end) => {
+                out.push_str("<REDACTED>");
+                rest = &rest[end..];
+            }
+            None => {
+                out.push_str("<REDACTED>");
+                return out;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 #[async_trait]
@@ -237,5 +281,41 @@ mod tests {
         let resp: ApiResponse<User> = serde_json::from_str(raw).unwrap();
         assert!(!resp.ok);
         assert_eq!(resp.description.as_deref(), Some("Unauthorized"));
+    }
+
+    #[test]
+    fn redact_path_strips_telegram_bot_token() {
+        // Single occurrence, full URL.
+        let dirty = "error connecting to https://api.telegram.org/bot12345:ABCDEFG_secret-token/getUpdates: timeout";
+        let cleaned = redact_path(dirty);
+        assert!(!cleaned.contains("12345:ABCDEFG_secret-token"));
+        assert!(cleaned.contains("/bot<REDACTED>/getUpdates"));
+    }
+
+    #[test]
+    fn redact_path_handles_token_at_end_of_string() {
+        let dirty = "/bot12345:secret";
+        let cleaned = redact_path(dirty);
+        assert_eq!(cleaned, "/bot<REDACTED>");
+        assert!(!cleaned.contains("12345:secret"));
+    }
+
+    #[test]
+    fn redact_path_handles_multiple_occurrences() {
+        let dirty =
+            "first: /bot111:aaa/getMe second: /bot222:bbb/sendMessage";
+        let cleaned = redact_path(dirty);
+        assert!(!cleaned.contains("111:aaa"));
+        assert!(!cleaned.contains("222:bbb"));
+        assert_eq!(
+            cleaned,
+            "first: /bot<REDACTED>/getMe second: /bot<REDACTED>/sendMessage"
+        );
+    }
+
+    #[test]
+    fn redact_path_leaves_unrelated_strings_alone() {
+        let s = "this is fine: /api/users/42 and a search for botany";
+        assert_eq!(redact_path(s), s);
     }
 }
