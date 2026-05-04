@@ -1254,6 +1254,12 @@ pub async fn csv_import_commit(
     let currency =
         settings::get_or_default(&conn, settings::keys::DEFAULT_CURRENCY, "USD").map_err(err)?;
 
+    // Wrap the entire commit (expense inserts + merchant-rule writes +
+    // profile touch) in a single transaction so a mid-batch failure
+    // (bogus date parse, FK violation, rusqlite Busy on WAL contention)
+    // rolls back cleanly instead of leaving a partial import on disk.
+    let tx = conn.unchecked_transaction().map_err(err)?;
+
     let mut inserted = 0usize;
     for row in &input.rows {
         let occurred_at = OffsetDateTime::parse(
@@ -1262,7 +1268,7 @@ pub async fn csv_import_commit(
         )
         .map_err(err)?;
         expenses::insert(
-            &conn,
+            &tx,
             &crate::domain::NewExpense {
                 amount_cents: row.amount_cents,
                 currency: currency.clone(),
@@ -1287,7 +1293,7 @@ pub async fn csv_import_commit(
     let mut rules_added = 0usize;
     for rule in &input.rules_to_save {
         merchant_rules::create(
-            &conn,
+            &tx,
             &rule.pattern,
             rule.category_id,
             rule.default_is_refund,
@@ -1299,8 +1305,10 @@ pub async fn csv_import_commit(
     }
 
     if let Some(id) = input.profile_id {
-        let _ = csv_profiles::touch(&conn, id, now);
+        let _ = csv_profiles::touch(&tx, id, now);
     }
+
+    tx.commit().map_err(err)?;
 
     Ok(CommitResult {
         inserted,
