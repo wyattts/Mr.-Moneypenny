@@ -184,19 +184,64 @@ fn parse_split(
 }
 
 /// Parse a bank-style amount string. Returns `(positive_cents,
-/// was_negative)`. Strips `$`, commas; treats parens as negation.
+/// was_negative)`.
+///
+/// Handles:
+/// - US format: `1,234.56` / `$1,234.56` / `-1234.56` / `(1,234.56)`
+/// - European format: `1.234,56` / `1234,56` (comma is decimal,
+///   period is thousands)
+///
+/// Locale heuristic: if a comma appears AFTER the last period, the
+/// comma is the decimal separator (EU). Otherwise the period is decimal
+/// (US). This catches the silent corruption where a German bank's CSV
+/// (`1.234,56` = 123,456 cents) was previously parsed as 12,346 cents
+/// — off by 100×.
+///
+/// Rejects: empty, NaN, infinity, scientific notation that doesn't
+/// look like a real amount.
 pub fn parse_amount(input: &str) -> Result<(i64, bool)> {
     let s = input.trim();
+    if s.is_empty() {
+        anyhow::bail!("empty amount");
+    }
     let (s, neg_paren) = if s.starts_with('(') && s.ends_with(')') {
         (&s[1..s.len() - 1], true)
     } else {
         (s, false)
     };
-    let s = s.trim().trim_start_matches('$').replace(',', "");
-    let f: f64 = s
-        .trim()
+    let s = s.trim().trim_start_matches('$').trim();
+
+    // Locale-detect:
+    let normalized = match (s.rfind(','), s.rfind('.')) {
+        (Some(comma_idx), Some(period_idx)) if comma_idx > period_idx => {
+            // EU format: '.' = thousands, ',' = decimal.
+            // e.g., "1.234,56" → "1234.56"
+            s.replace('.', "").replace(',', ".")
+        }
+        (Some(_), None) if s.matches(',').count() == 1 && {
+            // Single comma + nothing after the dot — could be either
+            // "1234,56" (EU decimal) or "1,234" (US thousands without
+            // decimal). Use the trailing-fragment length: 1-2 digits
+            // after the comma → decimal; 3 digits → thousands.
+            let frag_len = s.split(',').next_back().unwrap_or("").trim_end_matches(|c: char| !c.is_ascii_digit()).len();
+            (1..=2).contains(&frag_len)
+        } =>
+        {
+            // EU shape: "1234,56"
+            s.replace(',', ".")
+        }
+        _ => {
+            // US shape: comma is thousands separator, drop it.
+            s.replace(',', "")
+        }
+    };
+
+    let f: f64 = normalized
         .parse()
         .map_err(|_| anyhow!("not a number: {input}"))?;
+    if !f.is_finite() {
+        anyhow::bail!("amount must be finite: {input}");
+    }
     let neg = neg_paren || f < 0.0;
     let cents = (f.abs() * 100.0).round() as i64;
     Ok((cents, neg))
@@ -250,6 +295,57 @@ mod tests {
     #[test]
     fn parse_amount_rejects_garbage() {
         assert!(parse_amount("oops").is_err());
+    }
+
+    #[test]
+    fn parse_amount_eu_format_with_thousands_dot() {
+        // "1.234,56" — German/French — comma is decimal, dot is thousands.
+        // Pre-fix this returned 12346 cents (10x too small). Must be 123456.
+        let (c, n) = parse_amount("1.234,56").unwrap();
+        assert_eq!(c, 123456);
+        assert!(!n);
+    }
+
+    #[test]
+    fn parse_amount_eu_format_no_thousands() {
+        // "1234,56" — comma is decimal, no thousands separator.
+        let (c, n) = parse_amount("1234,56").unwrap();
+        assert_eq!(c, 123456);
+        assert!(!n);
+    }
+
+    #[test]
+    fn parse_amount_eu_format_with_parens() {
+        let (c, n) = parse_amount("(1.234,56)").unwrap();
+        assert_eq!(c, 123456);
+        assert!(n);
+    }
+
+    #[test]
+    fn parse_amount_us_thousands_without_decimal() {
+        // "1,234" — US thousands, no decimal.
+        let (c, n) = parse_amount("1,234").unwrap();
+        assert_eq!(c, 123400);
+        assert!(!n);
+    }
+
+    #[test]
+    fn parse_amount_rejects_infinity() {
+        assert!(parse_amount("inf").is_err());
+        assert!(parse_amount("infinity").is_err());
+        assert!(parse_amount("-inf").is_err());
+    }
+
+    #[test]
+    fn parse_amount_rejects_nan() {
+        assert!(parse_amount("nan").is_err());
+        assert!(parse_amount("NaN").is_err());
+    }
+
+    #[test]
+    fn parse_amount_rejects_empty() {
+        assert!(parse_amount("").is_err());
+        assert!(parse_amount("   ").is_err());
     }
 
     #[test]
