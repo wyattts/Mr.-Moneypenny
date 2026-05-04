@@ -377,14 +377,12 @@ async fn auto_mode_recurring_inserts_expense_and_reschedules() {
     // would otherwise collapse onto the same `now` timestamp.
     let (count, occurred_at): (i64, time::OffsetDateTime) = {
         let c = conn.lock().unwrap();
-        let row = c
-            .query_row(
-                "SELECT COUNT(*), MIN(occurred_at) FROM expenses WHERE category_id = ?1",
-                [cid],
-                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, time::OffsetDateTime>(1)?)),
-            )
-            .unwrap();
-        row
+        c.query_row(
+            "SELECT COUNT(*), MIN(occurred_at) FROM expenses WHERE category_id = ?1",
+            [cid],
+            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, time::OffsetDateTime>(1)?)),
+        )
+        .unwrap()
     };
     assert_eq!(count, 1, "auto rule must insert an expense on fire");
     assert_eq!(
