@@ -4,6 +4,49 @@ All notable changes to Mr. Moneypenny are documented here. The format roughly fo
 
 ## [Unreleased]
 
+## [0.3.8] - 2026-05-04
+
+Security + correctness patch driven by the v0.3.7 codebase audit (`docs/audit-v0.3.7.md`). All eleven items the audit flagged for v0.3.8 — five Highs and six Mediums covering Telegram pairing hygiene, migration durability, AGPL §6 compliance, accessibility, and crypto defense-in-depth — landed in this release.
+
+### Security
+
+- **[S-2 / High] Bot token no longer leaks into logs.** `reqwest::Error::Display` includes the URL on transport failures (TLS, DNS, timeout, redirect), and the Telegram Bot API embeds the token directly in URL paths (`/bot<token>/<method>`). Stderr / journalctl could capture the token on any connect failure. Fix at the source: in `TelegramClient::invoke`, catch `reqwest::Error`, strip the URL with `.without_url()`, and run a regex-free `redact_path()` pass that replaces any `/bot<...>/` segment with `/bot<REDACTED>/`. Four new unit tests guard the scrub.
+
+### Correctness
+
+- **[D-1 / High] Migrations now run inside transactions.** Migrations 0004 / 0006 / 0011 / 0014 (the table-recreate dance and the two-`ALTER` 0011) previously ran via `execute_batch` with autocommit per statement. A mid-batch failure (disk full, OOM, panic) left a half-applied schema with `user_version` unchanged — and on the next launch the migration retried and immediately crashed on "table categories_new already exists" or "duplicate column". App bricked, every startup. Each migration now runs inside `unchecked_transaction()`; for the four `recreate: true` migrations the runner toggles `PRAGMA foreign_keys` outside the wrapping tx (SQLite forbids the pragma inside one). Two new tests confirm partial-failure rollback for both recreate and non-recreate paths.
+- **[D-2 / High] CSV bulk import is now atomic.** `csv_import_commit` looped `expenses::insert` per row with autocommit; row 387 of a 500-row batch failing left 386 rows on disk with no clean retry. Wrapped in `conn.unchecked_transaction()`.
+- **[M-1 / Medium] CSV amount parser handles European locale.** `parse_amount("1.234,56")` previously stripped commas and parsed `1.23456`, returning 12,346 cents — off by 100×. Anyone with a German / French / Italian bank silently logged every transaction at 1% of its real value. New locale heuristic: if a comma appears AFTER the last period, treat the comma as decimal (EU); ambiguous single-comma inputs use trailing-fragment length (1–2 digits = decimal, 3 = thousands). Also rejects `inf` / `nan` / empty (was returning `i64::MAX` / `0` / silent surprise).
+- **[CC-3 / Medium] Recurring catch-up stamps `occurred_at = job.next_due_at`** instead of `now`. After a multi-day offline period, every catch-up insert previously collapsed onto the same wall-clock timestamp, polluting the spend-by-day chart. Each fire now gets its historically-correct timestamp.
+
+### Crypto / privacy
+
+- **[C-1 / Medium] Master ChaCha20-Poly1305 key is zeroized on drop.** The 32-byte key lived in the global `OnceLock` for the process lifetime with no Drop scrub — recoverable from swap or core dumps. Added `zeroize = "1"` and wrapped `SecretsFile.master_key` + the intermediate KDF buffer in `Zeroizing<[u8; 32]>`. Rust deref coercion keeps cipher.rs call sites unchanged.
+- **[C-2 / Medium] Secrets file save is durable across crashes.** `save_atomic()` previously called `f.sync_all().ok()` (errors silently swallowed) and never `fsync`ed the parent directory after `rename`. Disk-full / read-only / hardware errors during the temp write could place a corrupted file; a power loss between rename and journal commit could leave the old file alongside a stray `.tmp`. Now propagates `sync_all` errors and fsyncs the parent dir on Unix (no-op on Windows where NTFS metadata journals differently).
+- **[R-1 / Medium] Keyring migration is now eager-on-open with a sentinel.** The on-demand `try_copy_from_keyring` path probed the OS keyring on every `retrieve()` for a missing key, forever — a dbus call per probe on Linux, blocking on any slow keyring agent. Replaced with a one-shot eager drain inside `secrets::handle()`: walk the known legacy keys, copy any present values to disk, mark each with a `migrated_keyring_keys` sentinel persisted in the secrets file. Subsequent launches skip the probe entirely. New on-disk field is `#[serde(default)]` so v0.3.7-and-earlier files deserialize without a schema bump. Sets up clean removal of the `keyring` crate in v0.3.9.
+
+### Accessibility
+
+- **[F-1 / High] Sliders announce labels and values.** Every `<input type="range">` in the Forecast / Simulator / Debt / Scenario views — eight via `NumberSlider`, plus the bespoke Confidence slider and the per-category ScenarioTool sliders — was previously announced as "slider, 30" with no unit context, making the entire view unusable with a screen reader. Added `aria-label` and `aria-valuetext` on all of them.
+
+### Compliance
+
+- **[Co-1 / High] AGPL §6 source-offer in shipped binaries.** Bundles previously identified themselves as AGPL but didn't tell the user where to obtain the source — the §6 obligation. Three layers of fix: `tauri.conf.json` `bundle.copyright` appends the source URL; `bundle.resources` ships `LICENSE` inside every AppImage / `.app` / NSIS / MSI / DMG; the GitHub release body template appends a short "this is AGPL-3.0, source at https://github.com/wyattts/Mr.-Moneypenny" paragraph. New Settings → About section in the app shows version + license (linked) + source URL + the standard AGPL §6 user-facing paragraph, sourced via a new `get_app_version` Tauri command.
+
+### Build / release
+
+- **[B-1 / Medium] Releases auto-promote to `--latest`.** The Release workflow created a draft release and required a manual `gh release edit "$TAG" --draft=false --latest` afterwards — forgetting it silently broke the auto-updater (which fetches `releases/latest/download/latest.json` gated on the `latest` flag). v0.3.4 had to be retracted for exactly this reason. New `promote` job depends on the matrix `release` job (preserves the all-platforms-built gate) and runs the `gh release edit` step automatically.
+
+### Internal
+
+- New `Migration` struct in `src-tauri/src/db/mod.rs` with a `recreate: bool` flag. The runner manages `PRAGMA foreign_keys` toggling outside the wrapping tx; embedded `PRAGMA foreign_keys = OFF/ON` statements inside the four recreate-flagged `.sql` files become inert no-ops within the tx (harmless, self-documenting in the SQL).
+- `chacha20poly1305 0.10.1` doesn't expose a `zeroize` feature flag — its zeroize behavior is internal to the crate at this version. Our `Zeroizing` wrapper of `master_key` is the user-visible defense.
+- New unit tests: 4 in `telegram::client` (token scrub), 2 in `db::tests` (partial-migration rollback), 7 in `csv_import::parser` (EU locale + non-finite rejection), 3 in `secrets::store` (sentinel persistence + serde-default forward-compat). All 281 prior tests still pass.
+
+### Audit
+
+- New `docs/audit-v0.3.7.md` — full read-only audit of the v0.3.7 codebase: 130 findings across 12 categories (0 Critical, 6 High, 33 Medium, 47 Low, 44 Info). Recommended remediation roadmap for v0.3.8 (this release), v0.3.9, and v0.4.0.
+
 ## [0.3.7] - 2026-05-03
 
 Debt Manager — pure-deterministic debt amortization tool inside the Forecast view, with goal seek, lump sums, portfolio mode (snowball vs. avalanche), inflation-adjusted today's-dollars cost, and a one-click hand-off to the investment Simulator for "after payoff, where do these dollars go?" planning.
