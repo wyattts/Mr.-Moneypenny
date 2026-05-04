@@ -197,7 +197,8 @@ impl SecretsFile {
         };
         let bytes = serde_json::to_vec_pretty(&on_disk).context("serializing secrets file")?;
 
-        if let Some(parent) = self.path.parent() {
+        let parent = self.path.parent();
+        if let Some(parent) = parent {
             fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
         }
 
@@ -207,16 +208,47 @@ impl SecretsFile {
                 fs::File::create(&tmp).with_context(|| format!("creating {}", tmp.display()))?;
             f.write_all(&bytes)
                 .with_context(|| format!("writing {}", tmp.display()))?;
-            f.sync_all().ok();
+            // Propagate sync_all errors instead of swallowing them. On
+            // disk-full, read-only-FS, or hardware errors during the
+            // temp write, the rename below would otherwise place a
+            // corrupted file. The doc-comment on this struct promises
+            // atomicity that requires this fsync to succeed.
+            f.sync_all()
+                .with_context(|| format!("fsyncing {}", tmp.display()))?;
         }
         set_owner_only(&tmp)?;
         fs::rename(&tmp, &self.path)
             .with_context(|| format!("renaming {} → {}", tmp.display(), self.path.display()))?;
+        // POSIX `rename` is atomic w.r.t. concurrent readers, but
+        // *durability* — the rename surviving a power loss — requires
+        // fsyncing the parent directory. Without this, a crash between
+        // rename and the next FS journal commit can leave us with the
+        // old `secrets.bin` and a stray `secrets.bin.tmp` (or, on some
+        // filesystems, a zero-length new `secrets.bin`).
+        if let Some(parent) = parent {
+            fsync_dir(parent)?;
+        }
         // Re-apply mode on the final path defensively, in case the rename
         // didn't preserve it on some filesystems.
         set_owner_only(&self.path)?;
         Ok(())
     }
+}
+
+/// fsync the directory `path` so a recent rename is durable across
+/// crashes. POSIX-only; on Windows directory fsync isn't a meaningful
+/// operation (NTFS journals metadata differently) so we skip it.
+#[cfg(unix)]
+fn fsync_dir(path: &Path) -> Result<()> {
+    let dir = fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
+    dir.sync_all()
+        .with_context(|| format!("fsyncing dir {}", path.display()))?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn fsync_dir(_path: &Path) -> Result<()> {
+    Ok(())
 }
 
 #[cfg(unix)]
