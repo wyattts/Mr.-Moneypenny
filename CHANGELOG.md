@@ -4,6 +4,26 @@ All notable changes to Mr. Moneypenny are documented here. The format roughly fo
 
 ## [Unreleased]
 
+## [0.3.11] - 2026-05-07
+
+Trims the spot SWR feature shipped in v0.3.10 down to the deterministic layer only — the closed-form, instant-feedback PMT formula proved to be the right call all along, and the heavier probabilistic pass added confusion without enough additional signal.
+
+### Changed
+
+- **Spot SWR is now deterministic-only.** Mouse over the projection chart to see the safe withdrawal rate at any point along the horizon, computed live via the PMT formula on real return. The "Compute probabilistic SWR" button + the second tooltip row that v0.3.10 introduced are gone — the chart's bands already communicate the volatility story, and the deterministic answer is the one users actually act on.
+
+### Removed
+
+- `compute_probabilistic_swr` function in `src-tauri/src/insights/simulator.rs` (and its `ProbabilisticSwrInput` / `ProbabilisticSwrResult` / `SwrPoint` types).
+- `simulator_probabilistic_swr` Tauri command + invoke_handler entry.
+- Frontend `simulatorProbabilisticSwr` binding + cached-result state + cache-invalidation effect + the per-datum probabilistic SWR fields + the tooltip's probabilistic Row + the Compute/Recompute button.
+- Two simulator unit tests that exercised the removed function.
+
+### Internal
+
+- The `swr_deterministic_pct` helper in `monte_carlo.rs` stays put. The frontend mirrors its math in JS for the live tooltip; the Rust helper keeps its 5 unit tests as the spec the JS implementation tracks.
+- Net change: 343 deletions, 4 insertions.
+
 ## [0.3.10] - 2026-05-07
 
 Recurring withdrawals + spot safe-withdrawal-rate (SWR) on the Investment Simulator. Mouse over the projection chart to see the safe withdrawal rate at any point along the horizon, and type a withdrawal rate of your own to see how it reshapes the trajectory.
