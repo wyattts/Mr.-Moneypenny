@@ -70,10 +70,14 @@ interface ProjectionDatum {
   Contributions: number;
   pLo: number;
   pHi: number;
-  /** Deterministic SWR at this month — annual % of nominal balance. */
-  swrDetPct: number;
-  /** Deterministic SWR at this month — annual $/year. */
-  swrDetAnnual: number;
+  /** Perpetual SWR — annual % of current balance the user could pull
+   *  while preserving the portfolio's real value. Constant across the
+   *  chart (depends only on return − inflation), but ships per-datum
+   *  for tooltip parity with `swrPerpAnnual`. */
+  swrPerpPct: number;
+  /** Perpetual SWR at this month's nominal balance, $/year. Varies
+   *  along the chart because the balance varies. */
+  swrPerpAnnual: number;
 }
 
 // Custom Recharts tooltip content. We read pLo / pHi straight from
@@ -108,13 +112,13 @@ function ProjectionTooltipContent(props: {
       )}
       <div className="mt-1.5 border-t border-graphite-700 pt-1.5">
         <div className="text-[10px] uppercase tracking-wide text-graphite-500">
-          Safe withdrawal at this point
+          If you stopped investing here, you could pull
         </div>
         <Row
-          label="Deterministic (PMT)"
+          label="Sustainable (real value held)"
           color="#fb923c"
-          value={d.swrDetAnnual}
-          suffix={`/yr  ·  ${d.swrDetPct.toFixed(2)}%`}
+          value={d.swrPerpAnnual}
+          suffix={`/yr  ·  ${d.swrPerpPct.toFixed(2)}%`}
         />
       </div>
     </div>
@@ -151,21 +155,18 @@ function Row({
   );
 }
 
-/// Closed-form deterministic SWR (annual %, PMT formula on real return).
-/// Mirrors the Rust `swr_deterministic_pct`. Frontend calls it for the
-/// live tooltip display; for a probabilistic answer the user clicks
-/// "Recompute" which fires the Tauri command.
-function swrDeterministicPct(
+/// Perpetual SWR — annual % of current balance you could withdraw
+/// while preserving the portfolio's real (inflation-adjusted) value
+/// indefinitely. Equals the real return, clamped at zero.
+///
+/// Mirrors the Rust `swr_perpetual_pct`. Frontend calls it once per
+/// chart point (multiplies by that point's nominal balance for the
+/// $/yr tooltip number).
+function swrPerpetualPct(
   annualReturnPct: number,
   annualInflationPct: number,
-  remainingMonths: number,
 ): number {
-  if (remainingMonths <= 0) return 0;
-  const realMonthly = (annualReturnPct - annualInflationPct) / 100 / 12;
-  const n = remainingMonths;
-  if (Math.abs(realMonthly) < 1e-12) return (12 / n) * 100;
-  const denom = 1 - Math.pow(1 + realMonthly, -n);
-  return (realMonthly * 100 * 12) / denom;
+  return Math.max(0, annualReturnPct - annualInflationPct);
 }
 
 // Hand-off payload from the Debt Manager into the Simulator. Carries
@@ -461,13 +462,18 @@ function Simulator({
     return probability?.band_pct ?? probability?.probability ?? 0.8;
   }, [mode, required, probability, confidence]);
 
-  const horizonMonths = horizon * 12;
+  // Perpetual SWR is constant across the chart (depends only on return
+  // − inflation, not on remaining horizon), so we compute it once and
+  // reuse for every datum. The $/yr value still varies because we
+  // multiply by each point's nominal balance.
+  const swrPerpPct = useMemo(
+    () => swrPerpetualPct(returnPct, inflationPct),
+    [returnPct, inflationPct],
+  );
 
   const chartData: ProjectionDatum[] = useMemo(() => {
     return trajectory.map((p) => {
-      const remainingMonths = Math.max(0, horizonMonths - p.month);
-      const swrDetPct = swrDeterministicPct(returnPct, inflationPct, remainingMonths);
-      const swrDetAnnual = (p.nominal_cents / 100) * (swrDetPct / 100);
+      const swrPerpAnnual = (p.nominal_cents / 100) * (swrPerpPct / 100);
       return {
         year: +(p.month / 12).toFixed(2),
         Nominal: p.nominal_cents / 100,
@@ -479,11 +485,11 @@ function Simulator({
         // band_offset is the invisible base; band_span sits on top.
         band_offset: p.p_lo_cents / 100,
         band_span: (p.p_hi_cents - p.p_lo_cents) / 100,
-        swrDetPct,
-        swrDetAnnual,
+        swrPerpPct,
+        swrPerpAnnual,
       };
     });
-  }, [trajectory, horizonMonths, returnPct, inflationPct]);
+  }, [trajectory, swrPerpPct]);
 
   // Percentile labels for the tooltip, derived from the active band.
   const loPctLabel = useMemo(
@@ -785,11 +791,13 @@ function Simulator({
 
           <div className="space-y-2">
             <div className="text-xs uppercase tracking-wide text-graphite-400">
-              Spot SWR
+              Spot sustainable withdrawal
             </div>
             <p className="text-[11px] text-graphite-500">
-              Mouse over the chart to see the deterministic safe-withdrawal
-              rate at that moment (PMT formula on real return).
+              Mouse over the chart to see what you could pull each year
+              from that portfolio size while keeping its real value flat
+              forever. Equals real return (annual return − inflation),
+              applied to that month&apos;s balance.
             </p>
           </div>
         </div>

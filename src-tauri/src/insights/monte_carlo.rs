@@ -228,45 +228,25 @@ pub fn goal_probability(input: &PathInput, target_cents: i64) -> f64 {
     hits as f64 / n_paths as f64
 }
 
-/// Deterministic safe withdrawal rate (annual, % of current balance)
-/// using the standard PMT annuity formula on the *real* (inflation-
-/// adjusted) return. The result is the constant annual percentage of
-/// current balance that, if withdrawn from `remaining_months` from
-/// today onwards while the portfolio earns exactly the expected real
-/// return, drains the balance to zero precisely at the horizon.
+/// Perpetual safe-withdrawal-rate (annual, % of current balance) — the
+/// rate at which withdrawals exactly equal real growth, so the
+/// portfolio's purchasing power stays constant indefinitely. Equals
+/// the real return, clamped at zero.
 ///
-/// Notes:
-/// - Independent of the absolute balance — same answer at any month
-///   given the same `remaining_months`. The frontend multiplies by the
-///   hovered point's balance to get a dollar amount.
-/// - Returns 0 for `remaining_months <= 0` (already at horizon — no
-///   future withdrawals to plan).
-/// - Real return is `annual_return - annual_inflation`, computed as
-///   monthly via division by 12. This matches the rest of the
-///   simulator's arithmetic-monthly convention; the small geometric
-///   drift is consistent with how the chart's Real trace is built.
-/// - Negative real return: the formula is still well-defined and
-///   returns the rate that exactly drains the portfolio (lower than
-///   the real return because compounding works against you).
-pub fn swr_deterministic_pct(
-    annual_return_pct: f64,
-    annual_inflation_pct: f64,
-    remaining_months: i64,
-) -> f64 {
-    if remaining_months <= 0 {
-        return 0.0;
-    }
-    let real_monthly = (annual_return_pct - annual_inflation_pct) / 100.0 / 12.0;
-    // PMT = balance × r / (1 − (1+r)^(−n)). Convert monthly PMT to
-    // annual percentage of balance: ×12 ×100 / balance.
-    let n = remaining_months as f64;
-    if real_monthly.abs() < 1e-12 {
-        // Zero real return → linear drawdown: pmt_monthly = balance/n.
-        // Annual % = 12/n × 100.
-        return 12.0 / n * 100.0;
-    }
-    let denom = 1.0 - (1.0 + real_monthly).powf(-n);
-    real_monthly * 100.0 * 12.0 / denom
+/// Use this for a "if you stopped investing now, this is what you
+/// could pull each year and have the portfolio (in real terms) keep
+/// up forever" framing — it pairs naturally with the chart's Real
+/// trace and doesn't depend on a remaining horizon (which is what
+/// caused the v0.3.10/v0.3.11 PMT-drain formula to balloon past 100%
+/// near horizon end).
+///
+/// Mechanics: in steady state, withdraw `(annual_return -
+/// annual_inflation) × balance` per year. The nominal balance grows
+/// by `annual_inflation × balance` per year; real value stays flat.
+/// Negative real return → returns 0 (you cannot sustainably withdraw
+/// from a portfolio whose returns don't outpace inflation).
+pub fn swr_perpetual_pct(annual_return_pct: f64, annual_inflation_pct: f64) -> f64 {
+    (annual_return_pct - annual_inflation_pct).max(0.0)
 }
 
 /// Coalesce lump sums into a per-month total, indexed `[0..=n_months]`.
@@ -655,49 +635,40 @@ mod tests {
     }
 
     #[test]
-    fn swr_deterministic_pmt_drains_balance_in_remaining_months() {
-        // Sanity: the SWR returned should be exactly the rate that, when
-        // applied as a constant nominal $/year (annuity), drains a
-        // $100k balance to zero in 30 years at 7% real return.
-        let pct = swr_deterministic_pct(7.0, 0.0, 360);
-        // Standard PMT for 7%/12 monthly over 360 months on $1 PV gives
-        // monthly = $0.006653; annual ≈ $0.07984; so swr ≈ 7.984%.
-        assert!((pct - 7.984).abs() < 0.01, "expected ≈ 7.984%, got {pct}");
+    fn swr_perpetual_equals_real_return() {
+        // 7% nominal − 2.5% inflation = 4.5% real → withdraw 4.5% of
+        // current balance per year, portfolio's real value stays flat.
+        assert!((swr_perpetual_pct(7.0, 2.5) - 4.5).abs() < 1e-9);
+        // Pure return, no inflation: withdraw the full nominal return.
+        assert!((swr_perpetual_pct(7.0, 0.0) - 7.0).abs() < 1e-9);
     }
 
     #[test]
-    fn swr_deterministic_uses_real_return() {
-        // 7% nominal − 2.5% inflation = 4.5% real → SWR ≈ 6.07% over 30y.
-        let pct = swr_deterministic_pct(7.0, 2.5, 360);
-        assert!(
-            (pct - 6.07).abs() < 0.05,
-            "expected ≈ 6.07% (PMT at 4.5% real over 30y), got {pct}"
-        );
+    fn swr_perpetual_zero_when_return_matches_inflation() {
+        // Real return = 0 → no sustainable withdrawal; portfolio just
+        // tracks inflation.
+        assert_eq!(swr_perpetual_pct(2.5, 2.5), 0.0);
+        assert_eq!(swr_perpetual_pct(0.0, 0.0), 0.0);
     }
 
     #[test]
-    fn swr_deterministic_zero_return_is_linear() {
-        // r = 0 → SWR = 12 / n × 100. For n=120 (10 years), SWR = 10.0%.
-        assert!((swr_deterministic_pct(0.0, 0.0, 120) - 10.0).abs() < 1e-9);
-        // Equal-real-return = 0 (return matches inflation): same shape.
-        assert!((swr_deterministic_pct(2.5, 2.5, 60) - 20.0).abs() < 1e-9);
+    fn swr_perpetual_clamps_at_zero_for_negative_real_return() {
+        // Inflation higher than return → mathematically negative real
+        // return, but no negative withdrawal makes sense. Return 0.
+        assert_eq!(swr_perpetual_pct(3.0, 5.0), 0.0);
+        assert_eq!(swr_perpetual_pct(0.0, 2.5), 0.0);
     }
 
     #[test]
-    fn swr_deterministic_zero_at_horizon_end() {
-        assert_eq!(swr_deterministic_pct(7.0, 2.5, 0), 0.0);
-        assert_eq!(swr_deterministic_pct(7.0, 2.5, -5), 0.0);
-    }
-
-    #[test]
-    fn swr_rises_as_remaining_horizon_shrinks() {
-        // Mechanically: less time horizon means a higher annuity rate
-        // can be sustained.
-        let s_30y = swr_deterministic_pct(7.0, 0.0, 360);
-        let s_15y = swr_deterministic_pct(7.0, 0.0, 180);
-        let s_5y = swr_deterministic_pct(7.0, 0.0, 60);
-        assert!(s_5y > s_15y);
-        assert!(s_15y > s_30y);
+    fn swr_perpetual_independent_of_remaining_horizon() {
+        // The whole point of the redesign — perpetual SWR has no
+        // horizon dependency, so two different "moments" with the
+        // same return + inflation get the same answer. (No remaining-
+        // months parameter even exists; this test documents the
+        // intent.)
+        let early = swr_perpetual_pct(7.0, 2.5);
+        let late = swr_perpetual_pct(7.0, 2.5);
+        assert_eq!(early, late);
     }
 
     #[test]
