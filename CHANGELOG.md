@@ -4,6 +4,25 @@ All notable changes to Mr. Moneypenny are documented here. The format roughly fo
 
 ## [Unreleased]
 
+## [0.3.9] - 2026-05-07
+
+Lump sums in the Investment Simulator — schedule one-time deposits (bonus, tax refund, sale of an asset) or planned withdrawals (wedding, down-payment, tuition) at any month within the horizon, and watch the math reflow in both modes.
+
+### Added
+
+- **Lump sums in the Simulator panel.** Mirrors the Debt Manager's affordance: "+ Add lump sum" button creates rows of `month-offset + amount`, with a remove button per row. The amount field accepts negative values to model planned withdrawals — a `-20000` entry at month 18 drags the trajectory down by exactly that much (compounded by the lost growth on the withdrawn capital). Both calculator modes integrate:
+  - **Find required:** the bisection over monthly contribution treats the lump schedule as fixed scheduled cash flows. A $50k bonus at year 5 visibly reduces the monthly required to hit the same target.
+  - **Show probability:** the lumps deterministically apply at their `month_offset` on every Monte Carlo path. The chart's Nominal trace and the Contributions trace both reflect the signed lumps.
+- **Broke-clamp on the trajectory.** A withdrawal that exceeds the path's balance leaves it at zero rather than going negative — the chart shows the path bottoming out at $0, which matches what a real broke account would do.
+
+### Internal
+
+- New `LumpSum { month_offset: u32, amount_cents: i64 }` in `src-tauri/src/insights/monte_carlo.rs`. Threaded through `PathInput`, `simulate()`, `goal_probability()`, and `simulator::CommonInputs`. Marked `#[serde(default)]` everywhere so callers that omit the field still deserialize.
+- `bucket_lumps()` helper coalesces same-month lumps and silently drops out-of-range entries. Same-month lumps sum together so users can paste multiple flows on the same date without accidentally cancelling them.
+- `build_trajectory` switches from closed-form FV (`p × (1+r)^m + c × ((1+r)^m − 1) / r`) to a month-by-month step. Closed-form can't accommodate scheduled cash flows; stepping costs one tight loop of `n_months` iterations per simulator call (negligible at desktop scale) and keeps the deterministic Nominal trace consistent with the Monte Carlo paths.
+- Frontend reuses the existing `LumpSum` TypeScript interface (wire format identical to Debt Manager's). The Simulator does not carry lumps over the Debt Manager hand-off — payoff-side lumps belong to a debt mental model, investment-side lumps belong to the Simulator.
+- Eight new unit tests: zero-vol with positive lump matches closed-form-with-FV-of-injection; negative lump drags result by FV-of-withdrawal; broke-trajectory clamps at zero; out-of-range `month_offset` silently ignored; duplicate-month lumps sum; `goal_probability` monotonic in lump value; `trajectory.contributions` includes signed lumps; goal-seek `required_monthly_cents` strictly decreases when a lump is added.
+
 ## [0.3.8] - 2026-05-04
 
 Security + correctness patch driven by the v0.3.7 codebase audit (`docs/audit-v0.3.7.md`). All eleven items the audit flagged for v0.3.8 — five Highs and six Mediums covering Telegram pairing hygiene, migration durability, AGPL §6 compliance, accessibility, and crypto defense-in-depth — landed in this release.
