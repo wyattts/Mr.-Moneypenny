@@ -410,6 +410,14 @@ export interface SimulatorCommonInputs {
   target_mode: TargetMode;
   n_paths: number;
   seed?: number | null;
+  /**
+   * Scheduled one-time deposits (positive `amount_cents`) or withdrawals
+   * (negative). `month_offset` is 1-indexed; lumps with offset outside
+   * `[1, horizon_years * 12]` are silently ignored. Reuses the same
+   * `LumpSum` shape as the Debt Manager since the wire format is
+   * identical, but the Simulator interprets the amount as signed.
+   */
+  lump_sums: LumpSum[];
 }
 
 export interface TrajectoryPoint {

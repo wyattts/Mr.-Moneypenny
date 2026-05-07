@@ -26,6 +26,22 @@ use rand::distributions::{Distribution, Uniform};
 use rand::SeedableRng;
 use serde::{Deserialize, Serialize};
 
+/// One scheduled cash flow into (or out of) the investment account at a
+/// specific month of the simulation. `amount_cents` is signed: positive
+/// = deposit (tax refund, bonus, gift), negative = withdrawal (planned
+/// large expense). `month_offset` is 1-indexed and matches `m` in the
+/// per-path loop, so a lump with `month_offset = 12` is applied at the
+/// end of month 12 — *after* that month's GBM growth and monthly
+/// contribution.
+///
+/// Lumps with `month_offset` outside `[1, horizon_months]` are silently
+/// ignored. Multiple lumps at the same month sum together.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct LumpSum {
+    pub month_offset: u32,
+    pub amount_cents: i64,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct PathInput {
     pub starting_balance_cents: i64,
@@ -45,6 +61,10 @@ pub struct PathInput {
     pub band_pct: f64,
     /// Optional fixed RNG seed for reproducibility (tests + replays).
     pub seed: Option<u64>,
+    /// Scheduled one-time cash flows (positive = deposit, negative =
+    /// withdrawal). See [`LumpSum`] for semantics.
+    #[serde(default)]
+    pub lump_sums: Vec<LumpSum>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -92,6 +112,7 @@ pub fn simulate(input: &PathInput) -> PathBands {
     let sigma_monthly = (input.annual_volatility_pct / 100.0) / 12_f64.sqrt();
 
     let snapshot_months = even_grid(n_months, time_points);
+    let lump_at = bucket_lumps(&input.lump_sums, n_months);
 
     let mut grid: Vec<Vec<i64>> = (0..snapshot_months.len())
         .map(|_| Vec::with_capacity(n_paths))
@@ -112,6 +133,13 @@ pub fn simulate(input: &PathInput) -> PathBands {
         for m in 1..=n_months {
             let r = sample_normal(&mut rng, mu_monthly, sigma_monthly);
             value = value * (1.0 + r) + input.monthly_contribution_cents as f64;
+            value += lump_at[m as usize] as f64;
+            // A withdrawal can drive a path negative; clamp at zero so
+            // the broke-trajectory shows as flat-zero rather than
+            // negative wealth (which the user would interpret as debt).
+            if value < 0.0 {
+                value = 0.0;
+            }
             if next_snap_idx < snapshot_months.len() && snapshot_months[next_snap_idx] == m {
                 grid[next_snap_idx].push(value as i64);
                 next_snap_idx += 1;
@@ -157,6 +185,7 @@ pub fn goal_probability(input: &PathInput, target_cents: i64) -> f64 {
     let n_months = (input.horizon_years as i64) * 12;
     let mu_monthly = input.annual_return_pct / 100.0 / 12.0;
     let sigma_monthly = (input.annual_volatility_pct / 100.0) / 12_f64.sqrt();
+    let lump_at = bucket_lumps(&input.lump_sums, n_months);
     let mut hits = 0usize;
     let mut rng = match input.seed {
         Some(s) => rand::rngs::StdRng::seed_from_u64(s),
@@ -164,15 +193,35 @@ pub fn goal_probability(input: &PathInput, target_cents: i64) -> f64 {
     };
     for _ in 0..n_paths {
         let mut value = input.starting_balance_cents as f64;
-        for _ in 1..=n_months {
+        for m in 1..=n_months {
             let r = sample_normal(&mut rng, mu_monthly, sigma_monthly);
             value = value * (1.0 + r) + input.monthly_contribution_cents as f64;
+            value += lump_at[m as usize] as f64;
+            if value < 0.0 {
+                value = 0.0;
+            }
         }
         if value as i64 >= target_cents {
             hits += 1;
         }
     }
     hits as f64 / n_paths as f64
+}
+
+/// Coalesce lump sums into a per-month total, indexed `[0..=n_months]`.
+/// `month_offset` values outside `[1, n_months]` are silently dropped so
+/// the simulator doesn't have to validate inputs at every call site.
+/// Returns a Vec of length `n_months + 1` (so index 0..=n_months is
+/// valid); index 0 is always zero.
+pub(super) fn bucket_lumps(lumps: &[LumpSum], n_months: i64) -> Vec<i64> {
+    let mut out = vec![0i64; (n_months as usize) + 1];
+    for l in lumps {
+        let m = l.month_offset as i64;
+        if (1..=n_months).contains(&m) {
+            out[m as usize] = out[m as usize].saturating_add(l.amount_cents);
+        }
+    }
+    out
 }
 
 /// Box-Muller transform: turn two uniforms into one Normal sample.
@@ -246,6 +295,7 @@ mod tests {
             time_points: 30,
             band_pct: 0.80,
             seed: Some(42),
+            lump_sums: vec![],
         }
     }
 
@@ -348,6 +398,129 @@ mod tests {
         assert_eq!(percentile_f(&s, 100.0), 50);
         assert_eq!(percentile_f(&s, 50.0), 30);
         assert_eq!(percentile_f(&s, 25.0), 20);
+    }
+
+    #[test]
+    fn zero_vol_with_positive_lump_matches_closed_form() {
+        // 30y, 7% return, $500/mo, no vol → P50 = $609,985.71. Now add a
+        // $10,000 deposit at month 12. The lump grows for the remaining
+        // 348 months at 0.5833%/mo → final lump_value = 10000 * (1.005833)^348.
+        let mut input = defaults();
+        input.lump_sums = vec![LumpSum {
+            month_offset: 12,
+            amount_cents: 1_000_000, // $10k
+        }];
+        let r = simulate(&input);
+        let p50 = r.final_p50_cents;
+        // Expected: 60_998_571 + 1_000_000 * (1.0058333)^348
+        let r_m = 0.07_f64 / 12.0;
+        let expected_lump_fv = 1_000_000.0_f64 * (1.0_f64 + r_m).powi(348);
+        let expected = 60_998_571.0_f64 + expected_lump_fv;
+        let diff = (p50 as f64 - expected).abs();
+        assert!(
+            diff / expected < 0.001,
+            "zero-vol P50 with $10k lump at m=12 was {p50}, expected ~{expected:.0}"
+        );
+    }
+
+    #[test]
+    fn negative_lump_subtracts_from_balance() {
+        // 30y, 7%, $500/mo, no vol → $609,985 normally. Withdraw $20k
+        // at month 240 (year 20) and the result drops by the FV of $20k
+        // compounded at 7%/mo for the remaining 120 months.
+        let mut input = defaults();
+        input.lump_sums = vec![LumpSum {
+            month_offset: 240,
+            amount_cents: -2_000_000, // -$20k
+        }];
+        let r = simulate(&input);
+        let r_m = 0.07_f64 / 12.0;
+        let expected_drag = 2_000_000.0_f64 * (1.0_f64 + r_m).powi(120);
+        let expected = 60_998_571.0_f64 - expected_drag;
+        let diff = (r.final_p50_cents as f64 - expected).abs();
+        assert!(
+            diff / expected.abs() < 0.001,
+            "P50 with -$20k at m=240 was {}, expected ~{:.0}",
+            r.final_p50_cents,
+            expected
+        );
+    }
+
+    #[test]
+    fn withdrawal_exceeding_balance_clamps_at_zero() {
+        // 1y horizon, $100/mo, no growth → balance ~$1,200 at month 12.
+        // Then withdraw $5,000 at month 12 — balance would go to -$3,800,
+        // but the simulator clamps at zero.
+        let mut input = defaults();
+        input.starting_balance_cents = 0;
+        input.monthly_contribution_cents = 10_000; // $100/mo
+        input.annual_return_pct = 0.0;
+        input.horizon_years = 1;
+        input.lump_sums = vec![LumpSum {
+            month_offset: 12,
+            amount_cents: -500_000, // -$5k
+        }];
+        let r = simulate(&input);
+        assert_eq!(
+            r.final_p50_cents, 0,
+            "huge withdrawal should clamp the path at zero"
+        );
+    }
+
+    #[test]
+    fn lump_at_month_offset_zero_is_silently_ignored() {
+        // month_offset = 0 is out of [1, n_months], so the lump is dropped.
+        // Result should match the no-lump case exactly.
+        let baseline = simulate(&defaults());
+        let mut input = defaults();
+        input.lump_sums = vec![LumpSum {
+            month_offset: 0,
+            amount_cents: 9_999_999_999,
+        }];
+        let with_oob = simulate(&input);
+        assert_eq!(baseline.final_p50_cents, with_oob.final_p50_cents);
+    }
+
+    #[test]
+    fn duplicate_month_offset_lumps_sum() {
+        // Two $5k lumps at the same month should equal one $10k lump.
+        let mut a = defaults();
+        a.lump_sums = vec![
+            LumpSum {
+                month_offset: 36,
+                amount_cents: 500_000,
+            },
+            LumpSum {
+                month_offset: 36,
+                amount_cents: 500_000,
+            },
+        ];
+        let mut b = defaults();
+        b.lump_sums = vec![LumpSum {
+            month_offset: 36,
+            amount_cents: 1_000_000,
+        }];
+        let ra = simulate(&a);
+        let rb = simulate(&b);
+        assert_eq!(ra.final_p50_cents, rb.final_p50_cents);
+    }
+
+    #[test]
+    fn goal_probability_responds_to_lump_sums() {
+        // Adding a big lump should monotonically increase goal probability.
+        let mut input = defaults();
+        input.annual_volatility_pct = 12.0;
+        input.n_paths = 1000;
+        let p_no_lump = goal_probability(&input, 70_000_000);
+        input.lump_sums = vec![LumpSum {
+            month_offset: 6,
+            amount_cents: 5_000_000, // $50k
+        }];
+        let p_with_lump = goal_probability(&input, 70_000_000);
+        assert!(
+            p_with_lump > p_no_lump,
+            "p_no_lump={p_no_lump}, p_with_lump={p_with_lump} — should be strictly higher"
+        );
     }
 
     #[test]

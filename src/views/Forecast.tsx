@@ -211,10 +211,40 @@ function Simulator({
 
   const [showContributions, setShowContributions] = useState(false);
 
+  // Scheduled one-time deposits (positive amount) or withdrawals
+  // (negative). Same row shape as the Debt Manager's lump-sum list, but
+  // the Simulator interprets the amount as signed — a negative entry
+  // models a planned withdrawal (down-payment, wedding, tuition).
+  const [lumpSumRows, setLumpSumRows] = useState<LumpSumRow[]>([]);
+
   const sigma = sigmaOverride ?? volatilityForReturn(returnPct);
   const targetCents = Math.round((parseFloat(targetDollars) || 0) * 100);
   const startingCents = Math.round((parseFloat(startingDollars) || 0) * 100);
   const contribCents = Math.round((parseFloat(contributionDollars) || 0) * 100);
+
+  const lumpSumsPayload: LumpSum[] = useMemo(
+    () =>
+      lumpSumRows
+        .map((l) => ({
+          month_offset: Math.max(0, parseInt(l.month, 10) || 0),
+          amount_cents: Math.round((parseFloat(l.amount) || 0) * 100),
+        }))
+        // Drop empty rows; keep negatives (withdrawals are valid).
+        .filter((l) => l.amount_cents !== 0),
+    [lumpSumRows],
+  );
+
+  const addSimLumpSum = () =>
+    setLumpSumRows((rows) => [
+      ...rows,
+      { id: newId(), month: "12", amount: "5000.00" },
+    ]);
+  const removeSimLumpSum = (id: number) =>
+    setLumpSumRows((rows) => rows.filter((r) => r.id !== id));
+  const updateSimLumpSum = (id: number, patch: Partial<LumpSumRow>) =>
+    setLumpSumRows((rows) =>
+      rows.map((r) => (r.id === id ? { ...r, ...patch } : r)),
+    );
 
   // Load saved investing accounts once for the prefill dropdown.
   useEffect(() => {
@@ -292,8 +322,18 @@ function Simulator({
       target_mode: targetMode,
       n_paths: 1000,
       seed: null as number | null,
+      lump_sums: lumpSumsPayload,
     }),
-    [targetCents, horizon, startingCents, returnPct, sigma, inflationPct, targetMode],
+    [
+      targetCents,
+      horizon,
+      startingCents,
+      returnPct,
+      sigma,
+      inflationPct,
+      targetMode,
+      lumpSumsPayload,
+    ],
   );
 
   // Recompute the active solver + heatmap when inputs change.
@@ -594,6 +634,60 @@ function Simulator({
                 )}
               </div>
             )}
+          </div>
+
+          <div className="space-y-2">
+            <div className="text-xs uppercase tracking-wide text-graphite-400">
+              Lump sums
+            </div>
+            {lumpSumRows.length === 0 && (
+              <div className="text-xs text-graphite-500">
+                None — add scheduled deposits (bonus, tax refund) or
+                withdrawals (use a negative amount for a planned spend
+                like a wedding or down-payment).
+              </div>
+            )}
+            {lumpSumRows.map((l) => (
+              <div key={l.id} className="flex items-center gap-2 text-xs">
+                <span className="text-graphite-400">At month</span>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  value={l.month}
+                  onChange={(e) =>
+                    updateSimLumpSum(l.id, { month: e.target.value })
+                  }
+                  className="w-14 rounded border border-graphite-700 bg-graphite-800 px-2 py-1 text-graphite-100"
+                  aria-label={`Lump sum month offset (entry ${l.id})`}
+                />
+                <span className="text-graphite-400">$</span>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={l.amount}
+                  onChange={(e) =>
+                    updateSimLumpSum(l.id, { amount: e.target.value })
+                  }
+                  placeholder="5000.00 or -20000"
+                  className="w-28 rounded border border-graphite-700 bg-graphite-800 px-2 py-1 text-graphite-100"
+                  aria-label={`Lump sum amount in dollars (entry ${l.id}); negative for a withdrawal`}
+                />
+                <button
+                  onClick={() => removeSimLumpSum(l.id)}
+                  className="text-graphite-500 hover:text-red-300"
+                  title="Remove lump sum"
+                  aria-label="Remove lump sum"
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+            <button
+              onClick={addSimLumpSum}
+              className="rounded-md border border-graphite-700 px-2 py-1 text-xs text-graphite-300 hover:border-graphite-500"
+            >
+              + Add lump sum
+            </button>
           </div>
         </div>
 

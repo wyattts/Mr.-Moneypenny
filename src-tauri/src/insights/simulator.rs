@@ -30,7 +30,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::monte_carlo::{goal_probability, simulate, PathInput};
+use super::monte_carlo::{goal_probability, simulate, LumpSum, PathInput};
 
 /// Target dollar interpretation. Mirror of the UI toggle.
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
@@ -55,6 +55,11 @@ pub struct CommonInputs {
     /// 1000 by default; lower for faster heatmap cells.
     pub n_paths: u32,
     pub seed: Option<u64>,
+    /// Scheduled one-time deposits (positive `amount_cents`) or
+    /// withdrawals (negative). See [`crate::insights::monte_carlo::LumpSum`]
+    /// for semantics. Defaults to empty.
+    #[serde(default)]
+    pub lump_sums: Vec<LumpSum>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -211,6 +216,7 @@ pub fn solve_required_contribution(
         time_points: 30,
         band_pct: input.confidence,
         seed: input.common.seed,
+        lump_sums: input.common.lump_sums.clone(),
     });
 
     let trajectory = build_trajectory(&input.common, last_required, &bands);
@@ -250,6 +256,7 @@ pub fn compute_probability(input: &ProbabilityInput) -> ProbabilityResult {
         time_points: 30,
         band_pct,
         seed: input.common.seed,
+        lump_sums: input.common.lump_sums.clone(),
     });
     let trajectory = build_trajectory(&input.common, input.monthly_contribution_cents, &bands);
     ProbabilityResult {
@@ -315,12 +322,19 @@ fn mc_input(common: &CommonInputs, monthly_contribution_cents: i64) -> PathInput
         time_points: 2,
         band_pct: 0.80,
         seed: common.seed,
+        lump_sums: common.lump_sums.clone(),
     }
 }
 
 /// Build a per-month trajectory with deterministic nominal + real +
 /// contributions traces alongside the Monte Carlo bands. Lengths align
 /// 1:1 by month with the bands snapshot grid.
+///
+/// Stepping month-by-month is required when lump sums are present
+/// (closed-form FV doesn't accommodate scheduled cash flows). For
+/// continuity, we step in both cases — the cost is one tight loop of
+/// `n_months` iterations per call, negligible at desktop scale, and the
+/// code is simpler than branching on whether lumps exist.
 fn build_trajectory(
     common: &CommonInputs,
     monthly_contribution_cents: i64,
@@ -328,26 +342,49 @@ fn build_trajectory(
 ) -> Vec<TrajectoryPoint> {
     let r_monthly = common.annual_return_pct / 100.0 / 12.0;
     let infl_monthly = common.annual_inflation_pct / 100.0 / 12.0;
-    let p = common.starting_balance_cents as f64;
+    let n_months = (common.horizon_years as i64).max(1) * 12;
+    let lump_at = super::monte_carlo::bucket_lumps(&common.lump_sums, n_months);
+
+    // Step the deterministic Nominal trajectory and a parallel
+    // "net contributions" trajectory month-by-month. Lumps add to both:
+    // a +$5k tax refund counts as both money put in and money in the
+    // account; a -$20k withdrawal counts as both money taken out (net
+    // contributions decreases) and money out of the account.
+    let mut nominal = common.starting_balance_cents as f64;
+    let mut contributions = common.starting_balance_cents as f64;
+    let mut nominal_by_month: Vec<f64> = Vec::with_capacity((n_months + 1) as usize);
+    let mut contrib_by_month: Vec<f64> = Vec::with_capacity((n_months + 1) as usize);
+    nominal_by_month.push(nominal);
+    contrib_by_month.push(contributions);
     let c = monthly_contribution_cents as f64;
+    for m in 1..=n_months {
+        nominal = nominal * (1.0 + r_monthly) + c;
+        contributions += c;
+        let lump = lump_at[m as usize] as f64;
+        nominal += lump;
+        contributions += lump;
+        // The Monte Carlo paths clamp at zero on broke; do the same on
+        // the deterministic trace for consistency in the chart.
+        if nominal < 0.0 {
+            nominal = 0.0;
+        }
+        nominal_by_month.push(nominal);
+        contrib_by_month.push(contributions);
+    }
 
     bands
         .points
         .iter()
         .map(|b| {
             let m = b.month as i64;
-            let nominal = if r_monthly.abs() < 1e-12 {
-                p + c * m as f64
-            } else {
-                let g = (1.0 + r_monthly).powi(m as i32);
-                p * g + c * (g - 1.0) / r_monthly
-            };
+            let idx = m.clamp(0, n_months) as usize;
+            let nominal = nominal_by_month[idx];
             let real = if infl_monthly.abs() < 1e-12 {
                 nominal
             } else {
                 nominal / (1.0 + infl_monthly).powi(m as i32)
             };
-            let contributions = p + c * m as f64;
+            let contributions = contrib_by_month[idx];
             TrajectoryPoint {
                 month: b.month,
                 nominal_cents: nominal.round() as i64,
@@ -376,6 +413,7 @@ mod tests {
             target_mode: TargetMode::NominalFuture,
             n_paths: 1000,
             seed: Some(42),
+            lump_sums: vec![],
         }
     }
 
@@ -507,6 +545,58 @@ mod tests {
         // skew can put nominal outside the band on heavy-tail draws).
         assert!(last.p_lo_cents <= last.p50_cents);
         assert!(last.p50_cents <= last.p_hi_cents);
+    }
+
+    #[test]
+    fn trajectory_contributions_includes_signed_lump_sums() {
+        // $5k lump deposit at month 12, -$10k withdrawal at month 240.
+        // The deterministic Contributions trace is "money you've put in
+        // minus money you've taken out" — so over a 30y window with
+        // $1k/mo and these two lumps, the final value should be:
+        //   1000 * 360 + 5000 - 10000 = 355,000 dollars  =  35,500,000 cents.
+        let mut c = common(100_000_000, 30);
+        c.lump_sums = vec![
+            LumpSum {
+                month_offset: 12,
+                amount_cents: 500_000, // +$5k
+            },
+            LumpSum {
+                month_offset: 240,
+                amount_cents: -1_000_000, // -$10k
+            },
+        ];
+        let prob = compute_probability(&ProbabilityInput {
+            common: c,
+            monthly_contribution_cents: 100_000, // $1k/mo
+        });
+        let last = prob.trajectory.last().unwrap();
+        // $1k × 360 = $360,000 + $5k − $10k = $355,000 = 35_500_000 cents.
+        assert_eq!(last.contributions_cents, 36_000_000 + 500_000 - 1_000_000);
+    }
+
+    #[test]
+    fn higher_lump_means_lower_required_contribution() {
+        // Adding scheduled deposits should make the goal-seek answer go
+        // down (less monthly required to hit the same target).
+        let req_no_lump = solve_required_contribution(&RequiredContributionInput {
+            common: common(100_000_000, 30),
+            confidence: 0.80,
+        });
+        let mut c_with = common(100_000_000, 30);
+        c_with.lump_sums = vec![LumpSum {
+            month_offset: 60,
+            amount_cents: 5_000_000, // $50k at year 5
+        }];
+        let req_with_lump = solve_required_contribution(&RequiredContributionInput {
+            common: c_with,
+            confidence: 0.80,
+        });
+        assert!(
+            req_with_lump.required_monthly_cents < req_no_lump.required_monthly_cents,
+            "with lump {} should be < without {}",
+            req_with_lump.required_monthly_cents,
+            req_no_lump.required_monthly_cents
+        );
     }
 
     #[test]
