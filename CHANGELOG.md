@@ -4,6 +4,26 @@ All notable changes to Mr. Moneypenny are documented here. The format roughly fo
 
 ## [Unreleased]
 
+## [0.3.10] - 2026-05-07
+
+Recurring withdrawals + spot safe-withdrawal-rate (SWR) on the Investment Simulator. Mouse over the projection chart to see the safe withdrawal rate at any point along the horizon, and type a withdrawal rate of your own to see how it reshapes the trajectory.
+
+### Added
+
+- **Recurring withdrawal box.** Type an annual percentage; the Simulator subtracts that fraction of the *current* balance every month, spread evenly across the year. Constant-percent semantics — withdrawals fluctuate with the market (smaller in down years, larger in up years), and a moderate rate against a positive real return asymptotes rather than ever fully depleting. The "≈ $X/yr at today's balance" hint makes the implied dollar amount visible the moment you type. Withdrawals integrate with both Simulator modes and with the lump-sum scaffolding from v0.3.9.
+- **Spot SWR on the projection tooltip.** Two layers, both keyed to the moused-over month:
+  - **Deterministic (PMT).** Closed-form PMT formula on the real return: `swr_pct = 12 × r_real / (1 − (1 + r_real)^−n_remaining)`. Updates instantly with the user's return, inflation, and horizon inputs — frontend mirrors the Rust helper for parity.
+  - **Probabilistic.** Click "Compute probabilistic SWR" to run a backend bisection at 10 evenly-spaced months: at each point, find the largest withdrawal rate where ≥ confidence% of paths still have a positive balance at horizon end. Confidence tracks the simulator's existing slider — match the rest of the panel. Result caches in component state and invalidates whenever any sim input changes, so the tooltip never shows a stale answer.
+
+### Internal
+
+- New `monte_carlo::swr_deterministic_pct(annual_return, annual_inflation, n_remaining_months)` closed-form helper. Handles the zero-real-return linear-drawdown special case and the at-horizon-end zero case.
+- New `simulator::compute_probabilistic_swr` + `ProbabilisticSwrInput` / `ProbabilisticSwrResult` / `SwrPoint` types. Reuses an unconditional `simulate` run for balance seeding, then bisects rate ∈ [0, 30] at each point with 200 paths × 10 iterations.
+- New Tauri command `simulator_probabilistic_swr` and TS binding.
+- `PathInput` and `CommonInputs` gain `#[serde(default)] withdrawal_rate_pct: f64`. Threaded through `simulate`, `goal_probability`, `mc_input`, `build_trajectory`. Per path: `value -= value × rate / 100 / 12` after growth + monthly contribution + this month's lump, with the existing zero-clamp inherited.
+- Frontend `ProjectionDatum` extended with `swrDetPct`, `swrDetAnnual`, `swrProbPct`, `swrProbAnnual`. `chartData` populates them per point — deterministic via JS-side closed-form, probabilistic via nearest-month lookup (±6mo tolerance) into the cached result.
+- Eleven new unit tests across `monte_carlo` (withdrawal monotonicity, broke-clamp, asymptote behavior at modest rates, PMT formula correctness for known horizons, real-return convention, zero-return linear special case, monotonicity in remaining horizon) and `simulator` (probabilistic SWR returns points within bisection bounds; lower confidence ≥ higher confidence at the same point).
+
 ## [0.3.9] - 2026-05-07
 
 Lump sums in the Investment Simulator — schedule one-time deposits (bonus, tax refund, sale of an asset) or planned withdrawals (wedding, down-payment, tuition) at any month within the horizon, and watch the math reflow in both modes.
