@@ -4,6 +4,26 @@ All notable changes to Mr. Moneypenny are documented here. The format roughly fo
 
 ## [Unreleased]
 
+## [0.3.12] - 2026-05-07
+
+Reframes the spot SWR shown on the projection chart from a PMT-drain calculation to a **perpetual sustainable withdrawal** — the rate at which withdrawals exactly offset real growth, so the portfolio's purchasing power stays flat forever. Fixes the v0.3.10/v0.3.11 bug where SWR values shown in the tooltip exceeded 100% of the portfolio near the horizon end.
+
+### Fixed
+
+- **SWR no longer reports values larger than the portfolio.** The previous PMT-drain formula returned the *annualized* constant withdrawal that would drain the balance in `remaining_months` from the hover point to horizon end. As `remaining_months` shrank toward zero (mousing rightward across the chart), the annualized rate exploded past 100% and the $/yr line in the tooltip exceeded the portfolio itself — at year 29 of a 30y horizon at 4.5% real return the formula returned ~102%, at year 29.9 it returned ~1,203%. The new framing is conceptually independent of remaining horizon: at any chart point, the SWR equals the real return (annual return − inflation), clamped at zero. Stable at ~4.5% across the chart for the default 7% return / 2.5% inflation assumptions; the displayed $/yr varies because the balance varies. Matches the "at this portfolio size if I stopped investing I could withdraw X/yr and maintain the portfolio" framing the chart is supposed to communicate.
+
+### Changed
+
+- Tooltip header on the projection chart: "Safe withdrawal at this point" → "If you stopped investing here, you could pull". Row label: "Deterministic (PMT)" → "Sustainable (real value held)".
+- Sidebar section header: "Spot SWR" → "Spot sustainable withdrawal". Blurb rewritten in plain language ("equals real return — annual return minus inflation — applied to that month's balance").
+
+### Internal
+
+- `monte_carlo::swr_deterministic_pct(annual_return, annual_inflation, remaining_months)` → `monte_carlo::swr_perpetual_pct(annual_return, annual_inflation)`. Body collapses to `(annual_return − annual_inflation).max(0.0)` — no horizon parameter at all.
+- Frontend `swrDeterministicPct` → `swrPerpetualPct` mirrors the new Rust math.
+- `ProjectionDatum.swrDetPct/swrDetAnnual` renamed to `swrPerpPct/swrPerpAnnual`. The percentage is computed once via `useMemo` (constant across the chart) and the $/yr derives per-datum from `nominal_cents`.
+- 5 PMT-formula unit tests retired; 4 perpetual-SWR tests added (equals real return; zero when return matches inflation; clamps at zero for negative real return; documents horizon-independence).
+
 ## [0.3.11] - 2026-05-07
 
 Trims the spot SWR feature shipped in v0.3.10 down to the deterministic layer only — the closed-form, instant-feedback PMT formula proved to be the right call all along, and the heavier probabilistic pass added confusion without enough additional signal.
