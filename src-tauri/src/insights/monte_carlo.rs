@@ -65,6 +65,18 @@ pub struct PathInput {
     /// withdrawal). See [`LumpSum`] for semantics.
     #[serde(default)]
     pub lump_sums: Vec<LumpSum>,
+    /// Annual withdrawal rate as a percentage of *current* balance,
+    /// spread evenly across 12 months. e.g. `4.0` means each month the
+    /// path subtracts `balance × 4 / 100 / 12` after growth, monthly
+    /// contribution, and any lump sum at this month. Negative values
+    /// are clamped to zero — withdrawals only.
+    ///
+    /// Constant-percent semantics mean the withdrawal fluctuates with
+    /// the market: smaller in down years, larger in up years. The
+    /// portfolio asymptotes rather than ever fully depleting at a
+    /// modest rate.
+    #[serde(default)]
+    pub withdrawal_rate_pct: f64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -113,6 +125,7 @@ pub fn simulate(input: &PathInput) -> PathBands {
 
     let snapshot_months = even_grid(n_months, time_points);
     let lump_at = bucket_lumps(&input.lump_sums, n_months);
+    let withdraw_monthly_factor = input.withdrawal_rate_pct.max(0.0) / 100.0 / 12.0;
 
     let mut grid: Vec<Vec<i64>> = (0..snapshot_months.len())
         .map(|_| Vec::with_capacity(n_paths))
@@ -134,9 +147,12 @@ pub fn simulate(input: &PathInput) -> PathBands {
             let r = sample_normal(&mut rng, mu_monthly, sigma_monthly);
             value = value * (1.0 + r) + input.monthly_contribution_cents as f64;
             value += lump_at[m as usize] as f64;
-            // A withdrawal can drive a path negative; clamp at zero so
-            // the broke-trajectory shows as flat-zero rather than
-            // negative wealth (which the user would interpret as debt).
+            if value > 0.0 && withdraw_monthly_factor > 0.0 {
+                value -= value * withdraw_monthly_factor;
+            }
+            // A negative-amount lump or a stray rounding tick can drive
+            // the path below zero; clamp so the broke-trajectory shows
+            // as flat-zero rather than negative wealth.
             if value < 0.0 {
                 value = 0.0;
             }
@@ -186,6 +202,7 @@ pub fn goal_probability(input: &PathInput, target_cents: i64) -> f64 {
     let mu_monthly = input.annual_return_pct / 100.0 / 12.0;
     let sigma_monthly = (input.annual_volatility_pct / 100.0) / 12_f64.sqrt();
     let lump_at = bucket_lumps(&input.lump_sums, n_months);
+    let withdraw_monthly_factor = input.withdrawal_rate_pct.max(0.0) / 100.0 / 12.0;
     let mut hits = 0usize;
     let mut rng = match input.seed {
         Some(s) => rand::rngs::StdRng::seed_from_u64(s),
@@ -197,6 +214,9 @@ pub fn goal_probability(input: &PathInput, target_cents: i64) -> f64 {
             let r = sample_normal(&mut rng, mu_monthly, sigma_monthly);
             value = value * (1.0 + r) + input.monthly_contribution_cents as f64;
             value += lump_at[m as usize] as f64;
+            if value > 0.0 && withdraw_monthly_factor > 0.0 {
+                value -= value * withdraw_monthly_factor;
+            }
             if value < 0.0 {
                 value = 0.0;
             }
@@ -206,6 +226,47 @@ pub fn goal_probability(input: &PathInput, target_cents: i64) -> f64 {
         }
     }
     hits as f64 / n_paths as f64
+}
+
+/// Deterministic safe withdrawal rate (annual, % of current balance)
+/// using the standard PMT annuity formula on the *real* (inflation-
+/// adjusted) return. The result is the constant annual percentage of
+/// current balance that, if withdrawn from `remaining_months` from
+/// today onwards while the portfolio earns exactly the expected real
+/// return, drains the balance to zero precisely at the horizon.
+///
+/// Notes:
+/// - Independent of the absolute balance — same answer at any month
+///   given the same `remaining_months`. The frontend multiplies by the
+///   hovered point's balance to get a dollar amount.
+/// - Returns 0 for `remaining_months <= 0` (already at horizon — no
+///   future withdrawals to plan).
+/// - Real return is `annual_return - annual_inflation`, computed as
+///   monthly via division by 12. This matches the rest of the
+///   simulator's arithmetic-monthly convention; the small geometric
+///   drift is consistent with how the chart's Real trace is built.
+/// - Negative real return: the formula is still well-defined and
+///   returns the rate that exactly drains the portfolio (lower than
+///   the real return because compounding works against you).
+pub fn swr_deterministic_pct(
+    annual_return_pct: f64,
+    annual_inflation_pct: f64,
+    remaining_months: i64,
+) -> f64 {
+    if remaining_months <= 0 {
+        return 0.0;
+    }
+    let real_monthly = (annual_return_pct - annual_inflation_pct) / 100.0 / 12.0;
+    // PMT = balance × r / (1 − (1+r)^(−n)). Convert monthly PMT to
+    // annual percentage of balance: ×12 ×100 / balance.
+    let n = remaining_months as f64;
+    if real_monthly.abs() < 1e-12 {
+        // Zero real return → linear drawdown: pmt_monthly = balance/n.
+        // Annual % = 12/n × 100.
+        return 12.0 / n * 100.0;
+    }
+    let denom = 1.0 - (1.0 + real_monthly).powf(-n);
+    real_monthly * 100.0 * 12.0 / denom
 }
 
 /// Coalesce lump sums into a per-month total, indexed `[0..=n_months]`.
@@ -296,6 +357,7 @@ mod tests {
             band_pct: 0.80,
             seed: Some(42),
             lump_sums: vec![],
+            withdrawal_rate_pct: 0.0,
         }
     }
 
@@ -521,6 +583,121 @@ mod tests {
             p_with_lump > p_no_lump,
             "p_no_lump={p_no_lump}, p_with_lump={p_with_lump} — should be strictly higher"
         );
+    }
+
+    #[test]
+    fn zero_withdrawal_rate_matches_baseline() {
+        // withdrawal_rate_pct = 0 must be byte-identical to the
+        // pre-feature baseline. Same seed + n_paths must give same P50.
+        let baseline = simulate(&defaults());
+        let mut input = defaults();
+        input.withdrawal_rate_pct = 0.0;
+        let with = simulate(&input);
+        assert_eq!(baseline.final_p50_cents, with.final_p50_cents);
+    }
+
+    #[test]
+    fn higher_withdrawal_monotonically_reduces_final_balance() {
+        let mut input = defaults();
+        input.starting_balance_cents = 100_000_000; // $1M start
+        input.monthly_contribution_cents = 0;
+        input.annual_volatility_pct = 0.0; // deterministic for test stability
+        let mut last = i64::MAX;
+        for rate in [0.0, 2.0, 4.0, 6.0, 8.0] {
+            input.withdrawal_rate_pct = rate;
+            let r = simulate(&input);
+            assert!(
+                r.final_p50_cents < last,
+                "rate {rate}: balance {} not strictly less than prior {last}",
+                r.final_p50_cents
+            );
+            last = r.final_p50_cents;
+        }
+    }
+
+    #[test]
+    fn constant_pct_withdrawal_asymptotes_does_not_deplete() {
+        // Constant-percent-of-current-balance withdrawal should drive
+        // the balance toward an asymptote (or to zero with negative
+        // real return), but never to a hard zero in finite time at
+        // moderate rates. With 7% return and 4% withdrawal there's
+        // 3% real growth left, so balance should *grow*.
+        let mut input = defaults();
+        input.starting_balance_cents = 100_000_000;
+        input.monthly_contribution_cents = 0;
+        input.annual_volatility_pct = 0.0;
+        input.withdrawal_rate_pct = 4.0;
+        let r = simulate(&input);
+        assert!(
+            r.final_p50_cents > 50_000_000,
+            "30y of 7% return − 4% withdrawal should still leave > half the principal; got {}",
+            r.final_p50_cents
+        );
+    }
+
+    #[test]
+    fn excessive_withdrawal_drains_to_near_zero() {
+        // Withdrawing more than the real return per year drains the
+        // portfolio asymptotically. At 7% return, 15% withdrawal is
+        // -8%/yr real, so over 30 years the balance shrinks to a small
+        // fraction of starting.
+        let mut input = defaults();
+        input.starting_balance_cents = 100_000_000;
+        input.monthly_contribution_cents = 0;
+        input.annual_volatility_pct = 0.0;
+        input.withdrawal_rate_pct = 15.0;
+        let r = simulate(&input);
+        assert!(
+            r.final_p50_cents < 10_000_000,
+            "30y of 7% return − 15% withdrawal should leave well under 10% of principal; got {}",
+            r.final_p50_cents
+        );
+    }
+
+    #[test]
+    fn swr_deterministic_pmt_drains_balance_in_remaining_months() {
+        // Sanity: the SWR returned should be exactly the rate that, when
+        // applied as a constant nominal $/year (annuity), drains a
+        // $100k balance to zero in 30 years at 7% real return.
+        let pct = swr_deterministic_pct(7.0, 0.0, 360);
+        // Standard PMT for 7%/12 monthly over 360 months on $1 PV gives
+        // monthly = $0.006653; annual ≈ $0.07984; so swr ≈ 7.984%.
+        assert!((pct - 7.984).abs() < 0.01, "expected ≈ 7.984%, got {pct}");
+    }
+
+    #[test]
+    fn swr_deterministic_uses_real_return() {
+        // 7% nominal − 2.5% inflation = 4.5% real → SWR ≈ 6.07% over 30y.
+        let pct = swr_deterministic_pct(7.0, 2.5, 360);
+        assert!(
+            (pct - 6.07).abs() < 0.05,
+            "expected ≈ 6.07% (PMT at 4.5% real over 30y), got {pct}"
+        );
+    }
+
+    #[test]
+    fn swr_deterministic_zero_return_is_linear() {
+        // r = 0 → SWR = 12 / n × 100. For n=120 (10 years), SWR = 10.0%.
+        assert!((swr_deterministic_pct(0.0, 0.0, 120) - 10.0).abs() < 1e-9);
+        // Equal-real-return = 0 (return matches inflation): same shape.
+        assert!((swr_deterministic_pct(2.5, 2.5, 60) - 20.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn swr_deterministic_zero_at_horizon_end() {
+        assert_eq!(swr_deterministic_pct(7.0, 2.5, 0), 0.0);
+        assert_eq!(swr_deterministic_pct(7.0, 2.5, -5), 0.0);
+    }
+
+    #[test]
+    fn swr_rises_as_remaining_horizon_shrinks() {
+        // Mechanically: less time horizon means a higher annuity rate
+        // can be sustained.
+        let s_30y = swr_deterministic_pct(7.0, 0.0, 360);
+        let s_15y = swr_deterministic_pct(7.0, 0.0, 180);
+        let s_5y = swr_deterministic_pct(7.0, 0.0, 60);
+        assert!(s_5y > s_15y);
+        assert!(s_15y > s_30y);
     }
 
     #[test]

@@ -418,6 +418,15 @@ export interface SimulatorCommonInputs {
    * identical, but the Simulator interprets the amount as signed.
    */
   lump_sums: LumpSum[];
+  /**
+   * Annual recurring withdrawal as a percentage of *current* balance,
+   * spread evenly across 12 months. e.g. `4.0` means each month the
+   * portfolio loses balance × 4 / 100 / 12 after growth + monthly
+   * contribution + any lump that month. Negative values are clamped to
+   * zero — the Simulator only models positive withdrawals here. Set 0
+   * for no recurring withdrawal.
+   */
+  withdrawal_rate_pct: number;
 }
 
 export interface TrajectoryPoint {
@@ -490,6 +499,30 @@ export interface HeatmapResult {
 
 export const simulatorHeatmap = (input: HeatmapInput): Promise<HeatmapResult> =>
   invoke("simulator_heatmap", { input });
+
+export interface ProbabilisticSwrInput extends SimulatorCommonInputs {
+  /** 0..1; matches the simulator's confidence slider. */
+  confidence: number;
+  /** Number of evenly-spaced months to compute SWR at. Default 10. */
+  n_points: number;
+}
+
+export interface SwrPoint {
+  month: number;
+  swr_pct: number;
+  swr_annual_cents: number;
+  balance_cents: number;
+}
+
+export interface ProbabilisticSwrResult {
+  points: SwrPoint[];
+  confidence: number;
+}
+
+export const simulatorProbabilisticSwr = (
+  input: ProbabilisticSwrInput,
+): Promise<ProbabilisticSwrResult> =>
+  invoke("simulator_probabilistic_swr", { input });
 
 export type AnalysisWindow =
   | "two_weeks"

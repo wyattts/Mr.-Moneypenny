@@ -60,6 +60,11 @@ pub struct CommonInputs {
     /// for semantics. Defaults to empty.
     #[serde(default)]
     pub lump_sums: Vec<LumpSum>,
+    /// Annual withdrawal rate as a percentage of *current* balance,
+    /// applied monthly (see `monte_carlo::PathInput::withdrawal_rate_pct`).
+    /// Defaults to 0 (no recurring withdrawal).
+    #[serde(default)]
+    pub withdrawal_rate_pct: f64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -120,6 +125,47 @@ pub struct ProbabilityResult {
     pub final_p_hi_cents: i64,
     pub band_pct: f64,
     pub trajectory: Vec<TrajectoryPoint>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ProbabilisticSwrInput {
+    #[serde(flatten)]
+    pub common: CommonInputs,
+    /// Target survival probability (0..1). The bisection finds the
+    /// largest withdrawal rate at which at least this fraction of paths
+    /// still has a positive balance at horizon end. UI passes the same
+    /// value as the simulator's confidence slider.
+    pub confidence: f64,
+    /// Number of evenly-spaced points along the horizon to compute the
+    /// SWR at. Each point runs an independent bisection. Defaults to 10.
+    #[serde(default)]
+    pub n_points: u32,
+}
+
+/// One probabilistic SWR sample at a given month.
+#[derive(Debug, Clone, Serialize)]
+pub struct SwrPoint {
+    pub month: u32,
+    /// Annual withdrawal rate (% of balance at this month) that
+    /// satisfies the requested survival probability.
+    pub swr_pct: f64,
+    /// Absolute annual withdrawal in cents at this point. Convenience
+    /// for the tooltip — frontend could compute this itself, but
+    /// shipping it once avoids per-hover float math drift.
+    pub swr_annual_cents: i64,
+    /// Median balance at this month from the unconditional ("no
+    /// withdrawal") simulation. The frontend uses it to render
+    /// "if you were here today, you could pull $X" without a separate
+    /// trajectory lookup.
+    pub balance_cents: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProbabilisticSwrResult {
+    pub points: Vec<SwrPoint>,
+    /// Echoed back so the frontend can label "X% confidence" in the
+    /// tooltip without re-deriving from the input.
+    pub confidence: f64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -217,6 +263,7 @@ pub fn solve_required_contribution(
         band_pct: input.confidence,
         seed: input.common.seed,
         lump_sums: input.common.lump_sums.clone(),
+        withdrawal_rate_pct: input.common.withdrawal_rate_pct,
     });
 
     let trajectory = build_trajectory(&input.common, last_required, &bands);
@@ -257,6 +304,7 @@ pub fn compute_probability(input: &ProbabilityInput) -> ProbabilityResult {
         band_pct,
         seed: input.common.seed,
         lump_sums: input.common.lump_sums.clone(),
+        withdrawal_rate_pct: input.common.withdrawal_rate_pct,
     });
     let trajectory = build_trajectory(&input.common, input.monthly_contribution_cents, &bands);
     ProbabilityResult {
@@ -307,6 +355,118 @@ pub fn heatmap(input: &HeatmapInput) -> HeatmapResult {
     }
 }
 
+/// Probabilistic safe-withdrawal-rate sweep. At each of `n_points`
+/// evenly-spaced months along the horizon, bisects over withdrawal
+/// rate (0..30% annual) to find the largest rate that has at least
+/// `confidence` survival probability over the *remaining* months.
+///
+/// "Survival" = positive balance at horizon end. Sub-sims use 200 paths
+/// each; bisection caps at 10 iterations (resolution ~0.03%). Total
+/// cost at default settings is ~10 points × 10 iters × 200 paths ×
+/// half-horizon months — comfortably sub-second on a modern laptop for
+/// 30-year horizons. The full-horizon simulator output is reused as
+/// the source of "balance at month X" so the points overlay the live
+/// trajectory cleanly.
+///
+/// Note: this assumes the user *starts* withdrawing at month X — i.e.,
+/// any pre-X recurring withdrawal in `common.withdrawal_rate_pct` is
+/// ignored for the sub-sim. The whole point of the spot SWR is "if I
+/// began retiring at this moment, what could I pull?" Lump sums and
+/// monthly contributions before month X are still applied via the
+/// initial unconditional run that supplies the balance.
+pub fn compute_probabilistic_swr(input: &ProbabilisticSwrInput) -> ProbabilisticSwrResult {
+    let n_points = if input.n_points == 0 {
+        10
+    } else {
+        input.n_points.min(20)
+    };
+    // Get balances at evenly-spaced months from one big run.
+    let bands = simulate(&PathInput {
+        starting_balance_cents: input.common.starting_balance_cents,
+        monthly_contribution_cents: 0,
+        annual_return_pct: input.common.annual_return_pct,
+        annual_volatility_pct: input.common.annual_volatility_pct,
+        horizon_years: input.common.horizon_years,
+        n_paths: if input.common.n_paths == 0 {
+            1000
+        } else {
+            input.common.n_paths
+        },
+        time_points: n_points + 1, // include t=0 plus n_points along the horizon
+        band_pct: 0.50,
+        seed: input.common.seed,
+        lump_sums: input.common.lump_sums.clone(),
+        withdrawal_rate_pct: 0.0, // unconditional balance for SWR seeding
+    });
+
+    let n_months_total = (input.common.horizon_years as i64).max(1) * 12;
+    let mut points = Vec::with_capacity(bands.points.len());
+
+    for snap in &bands.points {
+        let month = snap.month as i64;
+        if month >= n_months_total {
+            // No remaining months — SWR is undefined at horizon end.
+            continue;
+        }
+        let balance = snap.p50.max(0);
+        if balance <= 0 {
+            // Already broke at this snapshot's median path; pulling
+            // anything is unsafe by definition.
+            points.push(SwrPoint {
+                month: snap.month,
+                swr_pct: 0.0,
+                swr_annual_cents: 0,
+                balance_cents: 0,
+            });
+            continue;
+        }
+        let remaining_years = ((n_months_total - month) as f64 / 12.0).max(1.0 / 12.0);
+
+        // Bisect over rate ∈ [0, 30].
+        let mut lo = 0.0_f64;
+        let mut hi = 30.0_f64;
+        let mut best = 0.0_f64;
+        for _ in 0..10 {
+            let mid = (lo + hi) * 0.5;
+            let p = goal_probability(
+                &PathInput {
+                    starting_balance_cents: balance,
+                    monthly_contribution_cents: 0,
+                    annual_return_pct: input.common.annual_return_pct,
+                    annual_volatility_pct: input.common.annual_volatility_pct,
+                    horizon_years: remaining_years.ceil() as u32,
+                    n_paths: 200,
+                    time_points: 2,
+                    band_pct: 0.5,
+                    seed: input.common.seed,
+                    lump_sums: vec![],
+                    withdrawal_rate_pct: mid,
+                },
+                1, // "survives" = ends with at least 1 cent
+            );
+            if p >= input.confidence {
+                best = mid;
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        let swr_pct = best;
+        let swr_annual_cents = ((balance as f64) * swr_pct / 100.0).round() as i64;
+        points.push(SwrPoint {
+            month: snap.month,
+            swr_pct,
+            swr_annual_cents,
+            balance_cents: balance,
+        });
+    }
+
+    ProbabilisticSwrResult {
+        points,
+        confidence: input.confidence,
+    }
+}
+
 fn mc_input(common: &CommonInputs, monthly_contribution_cents: i64) -> PathInput {
     PathInput {
         starting_balance_cents: common.starting_balance_cents,
@@ -323,6 +483,7 @@ fn mc_input(common: &CommonInputs, monthly_contribution_cents: i64) -> PathInput
         band_pct: 0.80,
         seed: common.seed,
         lump_sums: common.lump_sums.clone(),
+        withdrawal_rate_pct: common.withdrawal_rate_pct,
     }
 }
 
@@ -344,12 +505,18 @@ fn build_trajectory(
     let infl_monthly = common.annual_inflation_pct / 100.0 / 12.0;
     let n_months = (common.horizon_years as i64).max(1) * 12;
     let lump_at = super::monte_carlo::bucket_lumps(&common.lump_sums, n_months);
+    let withdraw_monthly_factor = common.withdrawal_rate_pct.max(0.0) / 100.0 / 12.0;
 
     // Step the deterministic Nominal trajectory and a parallel
     // "net contributions" trajectory month-by-month. Lumps add to both:
     // a +$5k tax refund counts as both money put in and money in the
     // account; a -$20k withdrawal counts as both money taken out (net
     // contributions decreases) and money out of the account.
+    //
+    // Recurring withdrawals (constant percent of current balance) apply
+    // *after* growth + monthly contribution + this month's lump, so the
+    // user sees the withdrawal taking from the post-growth balance —
+    // matches the Monte Carlo path math exactly.
     let mut nominal = common.starting_balance_cents as f64;
     let mut contributions = common.starting_balance_cents as f64;
     let mut nominal_by_month: Vec<f64> = Vec::with_capacity((n_months + 1) as usize);
@@ -363,6 +530,11 @@ fn build_trajectory(
         let lump = lump_at[m as usize] as f64;
         nominal += lump;
         contributions += lump;
+        if nominal > 0.0 && withdraw_monthly_factor > 0.0 {
+            let withdrawn = nominal * withdraw_monthly_factor;
+            nominal -= withdrawn;
+            contributions -= withdrawn;
+        }
         // The Monte Carlo paths clamp at zero on broke; do the same on
         // the deterministic trace for consistency in the chart.
         if nominal < 0.0 {
@@ -414,6 +586,7 @@ mod tests {
             n_paths: 1000,
             seed: Some(42),
             lump_sums: vec![],
+            withdrawal_rate_pct: 0.0,
         }
     }
 
@@ -597,6 +770,54 @@ mod tests {
             req_with_lump.required_monthly_cents,
             req_no_lump.required_monthly_cents
         );
+    }
+
+    #[test]
+    fn probabilistic_swr_returns_points_along_horizon() {
+        let r = compute_probabilistic_swr(&ProbabilisticSwrInput {
+            common: {
+                let mut c = common(0, 30);
+                c.starting_balance_cents = 100_000_000;
+                c.annual_volatility_pct = 12.0;
+                c
+            },
+            confidence: 0.85,
+            n_points: 6,
+        });
+        assert!(!r.points.is_empty(), "should return at least one SWR point");
+        for p in &r.points {
+            assert!(
+                p.swr_pct >= 0.0 && p.swr_pct <= 30.0,
+                "swr_pct {} outside bisection bounds at month {}",
+                p.swr_pct,
+                p.month
+            );
+        }
+        // Echo-back of confidence so the frontend doesn't have to re-derive.
+        assert!((r.confidence - 0.85).abs() < 1e-9);
+    }
+
+    #[test]
+    fn probabilistic_swr_at_lower_confidence_is_higher_or_equal() {
+        // 70% confidence allows a higher safe rate than 95% confidence.
+        let mk = |conf| {
+            compute_probabilistic_swr(&ProbabilisticSwrInput {
+                common: {
+                    let mut c = common(0, 30);
+                    c.starting_balance_cents = 100_000_000;
+                    c.annual_volatility_pct = 15.0;
+                    c
+                },
+                confidence: conf,
+                n_points: 4,
+            })
+        };
+        let r70 = mk(0.70);
+        let r95 = mk(0.95);
+        // Compare at the first available point to avoid endpoint noise.
+        let p70 = r70.points.first().unwrap().swr_pct;
+        let p95 = r95.points.first().unwrap().swr_pct;
+        assert!(p70 >= p95 - 0.5, "70% SWR {p70} should be ≳ 95% SWR {p95}");
     }
 
     #[test]

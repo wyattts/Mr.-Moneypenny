@@ -176,6 +176,7 @@ mod app {
                 simulator_solve_required_contribution,
                 simulator_compute_probability,
                 simulator_heatmap,
+                simulator_probabilistic_swr,
                 analyze_category,
                 debt_simulate_schedule,
                 debt_goal_seek,
