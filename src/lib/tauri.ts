@@ -500,30 +500,6 @@ export interface HeatmapResult {
 export const simulatorHeatmap = (input: HeatmapInput): Promise<HeatmapResult> =>
   invoke("simulator_heatmap", { input });
 
-export interface ProbabilisticSwrInput extends SimulatorCommonInputs {
-  /** 0..1; matches the simulator's confidence slider. */
-  confidence: number;
-  /** Number of evenly-spaced months to compute SWR at. Default 10. */
-  n_points: number;
-}
-
-export interface SwrPoint {
-  month: number;
-  swr_pct: number;
-  swr_annual_cents: number;
-  balance_cents: number;
-}
-
-export interface ProbabilisticSwrResult {
-  points: SwrPoint[];
-  confidence: number;
-}
-
-export const simulatorProbabilisticSwr = (
-  input: ProbabilisticSwrInput,
-): Promise<ProbabilisticSwrResult> =>
-  invoke("simulator_probabilistic_swr", { input });
-
 export type AnalysisWindow =
   | "two_weeks"
   | "month"

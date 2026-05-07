@@ -956,9 +956,8 @@ use crate::insights::category_analyzer::{
     self as cat_analyzer_mod, AnalysisWindow, CategoryAnalysis,
 };
 use crate::insights::simulator::{
-    self as simulator_mod, HeatmapInput, HeatmapResult, ProbabilisticSwrInput,
-    ProbabilisticSwrResult, ProbabilityInput, ProbabilityResult, RequiredContributionInput,
-    RequiredContributionResult,
+    self as simulator_mod, HeatmapInput, HeatmapResult, ProbabilityInput, ProbabilityResult,
+    RequiredContributionInput, RequiredContributionResult,
 };
 
 #[tauri::command]
@@ -978,13 +977,6 @@ pub async fn simulator_compute_probability(
 #[tauri::command]
 pub async fn simulator_heatmap(input: HeatmapInput) -> Result<HeatmapResult, String> {
     Ok(simulator_mod::heatmap(&input))
-}
-
-#[tauri::command]
-pub async fn simulator_probabilistic_swr(
-    input: ProbabilisticSwrInput,
-) -> Result<ProbabilisticSwrResult, String> {
-    Ok(simulator_mod::compute_probabilistic_swr(&input))
 }
 
 #[tauri::command]

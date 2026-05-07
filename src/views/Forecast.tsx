@@ -21,7 +21,6 @@ import {
   runScenario,
   simulatorComputeProbability,
   simulatorHeatmap,
-  simulatorProbabilisticSwr,
   simulatorSolveRequired,
 } from "@/lib/tauri";
 import type {
@@ -37,11 +36,9 @@ import type {
   LumpSum,
   PortfolioResult,
   PortfolioStrategy,
-  ProbabilisticSwrResult,
   ProbabilityResult,
   RequiredContributionResult,
   ScenarioResult,
-  SwrPoint,
   TargetMode,
   TrajectoryPoint,
 } from "@/lib/tauri";
@@ -77,10 +74,6 @@ interface ProjectionDatum {
   swrDetPct: number;
   /** Deterministic SWR at this month — annual $/year. */
   swrDetAnnual: number;
-  /** Probabilistic SWR (annual %) — only set after the user runs the
-   *  recompute pass; null until then. */
-  swrProbPct: number | null;
-  swrProbAnnual: number | null;
 }
 
 // Custom Recharts tooltip content. We read pLo / pHi straight from
@@ -95,18 +88,8 @@ function ProjectionTooltipContent(props: {
   hiPctLabel: string;
   showContributions: boolean;
   showReal: boolean;
-  swrConfidencePct: number | null;
 }) {
-  const {
-    active,
-    payload,
-    label,
-    loPctLabel,
-    hiPctLabel,
-    showContributions,
-    showReal,
-    swrConfidencePct,
-  } = props;
+  const { active, payload, label, loPctLabel, hiPctLabel, showContributions, showReal } = props;
   if (!active || !payload || payload.length === 0) return null;
   const d = payload[0]?.payload;
   if (!d) return null;
@@ -133,18 +116,6 @@ function ProjectionTooltipContent(props: {
           value={d.swrDetAnnual}
           suffix={`/yr  ·  ${d.swrDetPct.toFixed(2)}%`}
         />
-        {d.swrProbPct !== null && d.swrProbAnnual !== null && (
-          <Row
-            label={
-              swrConfidencePct !== null
-                ? `Probabilistic (${swrConfidencePct.toFixed(0)}% conf)`
-                : "Probabilistic"
-            }
-            color="#a855f7"
-            value={d.swrProbAnnual}
-            suffix={`/yr  ·  ${d.swrProbPct.toFixed(2)}%`}
-          />
-        )}
       </div>
     </div>
   );
@@ -296,12 +267,6 @@ function Simulator({
   // it 1/12 per month. Cached as a string for input flexibility.
   const [withdrawalRateStr, setWithdrawalRateStr] = useState("0.00");
 
-  // Probabilistic SWR result, populated only when the user clicks
-  // "Recompute". Cleared whenever any sim-input changes so we don't
-  // show a stale answer.
-  const [probSwr, setProbSwr] = useState<ProbabilisticSwrResult | null>(null);
-  const [computingProbSwr, setComputingProbSwr] = useState(false);
-
   const sigma = sigmaOverride ?? volatilityForReturn(returnPct);
   const targetCents = Math.round((parseFloat(targetDollars) || 0) * 100);
   const startingCents = Math.round((parseFloat(startingDollars) || 0) * 100);
@@ -429,12 +394,6 @@ function Simulator({
     ],
   );
 
-  // Invalidate any cached probabilistic SWR whenever the inputs change.
-  // The cached result is conditioned on the exact common payload, and a
-  // stale display would mislead the user.
-  useEffect(() => {
-    setProbSwr(null);
-  }, [common, confidence]);
 
   // Recompute the active solver + heatmap when inputs change.
   useEffect(() => {
@@ -502,16 +461,6 @@ function Simulator({
     return probability?.band_pct ?? probability?.probability ?? 0.8;
   }, [mode, required, probability, confidence]);
 
-  // Probabilistic SWR points keyed by month for fast lookup at chart
-  // time. Null entries (NaN-ish or out-of-range) are filtered.
-  const probSwrByMonth: Map<number, SwrPoint> = useMemo(() => {
-    const m = new Map<number, SwrPoint>();
-    if (probSwr) {
-      for (const p of probSwr.points) m.set(p.month, p);
-    }
-    return m;
-  }, [probSwr]);
-
   const horizonMonths = horizon * 12;
 
   const chartData: ProjectionDatum[] = useMemo(() => {
@@ -519,27 +468,6 @@ function Simulator({
       const remainingMonths = Math.max(0, horizonMonths - p.month);
       const swrDetPct = swrDeterministicPct(returnPct, inflationPct, remainingMonths);
       const swrDetAnnual = (p.nominal_cents / 100) * (swrDetPct / 100);
-      // Match the probabilistic point by nearest month — the backend
-      // returns a small set of evenly-spaced months, so we look up the
-      // closest one within ±6 months (half a year). Outside that
-      // window we leave the field null and the tooltip skips the row.
-      let swrProbPct: number | null = null;
-      let swrProbAnnual: number | null = null;
-      if (probSwrByMonth.size > 0) {
-        let best: SwrPoint | null = null;
-        let bestDist = Infinity;
-        for (const sp of probSwrByMonth.values()) {
-          const d = Math.abs(sp.month - p.month);
-          if (d < bestDist) {
-            best = sp;
-            bestDist = d;
-          }
-        }
-        if (best && bestDist <= 6) {
-          swrProbPct = best.swr_pct;
-          swrProbAnnual = best.swr_annual_cents / 100;
-        }
-      }
       return {
         year: +(p.month / 12).toFixed(2),
         Nominal: p.nominal_cents / 100,
@@ -553,11 +481,9 @@ function Simulator({
         band_span: (p.p_hi_cents - p.p_lo_cents) / 100,
         swrDetPct,
         swrDetAnnual,
-        swrProbPct,
-        swrProbAnnual,
       };
     });
-  }, [trajectory, horizonMonths, returnPct, inflationPct, probSwrByMonth]);
+  }, [trajectory, horizonMonths, returnPct, inflationPct]);
 
   // Percentile labels for the tooltip, derived from the active band.
   const loPctLabel = useMemo(
@@ -864,35 +790,7 @@ function Simulator({
             <p className="text-[11px] text-graphite-500">
               Mouse over the chart to see the deterministic safe-withdrawal
               rate at that moment (PMT formula on real return).
-              {probSwr === null
-                ? " Click the button for a probabilistic answer matched to your confidence."
-                : ` Probabilistic answer cached at ${(probSwr.confidence * 100).toFixed(0)}% confidence — clear by changing any input.`}
             </p>
-            <button
-              onClick={async () => {
-                setComputingProbSwr(true);
-                try {
-                  const r = await simulatorProbabilisticSwr({
-                    ...common,
-                    confidence,
-                    n_points: 10,
-                  });
-                  setProbSwr(r);
-                } catch (e) {
-                  onError(String(e));
-                } finally {
-                  setComputingProbSwr(false);
-                }
-              }}
-              disabled={computingProbSwr}
-              className="rounded-md border border-graphite-700 px-2 py-1 text-xs text-graphite-300 hover:border-graphite-500 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {computingProbSwr
-                ? "Computing…"
-                : probSwr
-                  ? "Recompute probabilistic SWR"
-                  : "Compute probabilistic SWR"}
-            </button>
           </div>
         </div>
 
@@ -989,9 +887,6 @@ function Simulator({
                         hiPctLabel={hiPctLabel}
                         showContributions={showContributions}
                         showReal={inflationPct > 0}
-                        swrConfidencePct={
-                          probSwr ? probSwr.confidence * 100 : null
-                        }
                       />
                     )}
                   />
