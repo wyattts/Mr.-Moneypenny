@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Wyatt Smith and contributors
 //! Parameterized SQLite CRUD for domain entities. The LLM never sees or
 //! generates SQL; every database mutation is bound through these
 //! parameterized statements.

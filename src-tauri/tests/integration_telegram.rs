@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Wyatt Smith and contributors
 //! Integration tests for the Telegram router and the agentic LLM loop.
 //!
 //! Uses stub implementations of `TelegramApi` and `LLMProvider` so no

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Wyatt Smith and contributors
 //! In-memory bot state: per-chat conversation history.
 //!
 //! History is kept bounded (last `MAX_TURNS` messages, dropping anything

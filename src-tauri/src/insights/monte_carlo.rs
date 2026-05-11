@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Wyatt Smith and contributors
 //! Monte Carlo investment-path simulation.
 //!
 //! Runs N paths (default 1,000) where each month's return is drawn

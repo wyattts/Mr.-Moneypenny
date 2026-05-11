@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Wyatt Smith and contributors
 //! Long-poll loop. Spawns one tokio task that drains `getUpdates` from
 //! Telegram and dispatches each update through the router.
 //!

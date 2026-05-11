@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Wyatt Smith and contributors
 //! Tool dispatcher — the safety boundary between the LLM and SQLite.
 //!
 //! Every tool call from the LLM is:

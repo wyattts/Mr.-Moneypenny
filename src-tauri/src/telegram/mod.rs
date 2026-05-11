@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Wyatt Smith and contributors
 //! Telegram bot integration: typed API client, long-poll loop, message
 //! router with the LLM agentic loop, and chat-pairing authentication.
 

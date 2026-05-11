@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Wyatt Smith and contributors
 //! Update router. Maps incoming Telegram messages to:
 //!   - slash commands (`/start`, `/help`, `/undo`, `/cancel`)
 //!   - the LLM agentic loop for free-text messages.

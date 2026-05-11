@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Wyatt Smith and contributors
 /**
  * Curated list of major currencies offered in Settings + the setup
  * wizard. Code is the ISO-4217 string we store; label is what the

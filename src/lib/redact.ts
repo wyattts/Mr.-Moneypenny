@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Wyatt Smith and contributors
 // Strip likely-secret tokens from strings before showing them in UI
 // banners or copying them to clipboard. Conservative — favors
 // over-redaction (false positives that look like "[redacted-x]") over

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Wyatt Smith and contributors
 //! CSV import pipeline. v0.3.2.
 //!
 //! Bulk-imports bank/credit-card CSV exports into the local expense

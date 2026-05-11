@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Wyatt Smith and contributors
 //! Per-category analyzer (opt-in tool, not auto-rendered).
 //!
 //! Replaces the v0.3.0 single-purpose Trend Analyzer with a richer

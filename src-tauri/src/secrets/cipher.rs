@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Wyatt Smith and contributors
 //! Authenticated encryption: ChaCha20-Poly1305.
 //!
 //! Each stored secret has its own random 12-byte nonce. The Poly1305 tag

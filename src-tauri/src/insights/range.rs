@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Wyatt Smith and contributors
 //! Date range selection for the insights dashboard.
 //!
 //! All ranges resolve to a half-open interval `[start, end)` in the same

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Wyatt Smith and contributors
 //! LLM provider abstraction.
 //!
 //! The LLM never sees or generates SQL. It emits **tool calls**, which

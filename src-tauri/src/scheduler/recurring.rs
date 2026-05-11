@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Wyatt Smith and contributors
 //! Recurring-expense job handler.
 //!
 //! Each row in `recurring_rules` has a corresponding row in

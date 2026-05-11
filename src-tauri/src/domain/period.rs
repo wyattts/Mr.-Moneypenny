@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Wyatt Smith and contributors
 //! Period pacing math — the "don't say terrible on the 2nd" logic.
 //!
 //! This module is shared between the LLM `summarize_period` tool and the

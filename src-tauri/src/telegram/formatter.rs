@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Wyatt Smith and contributors
 //! Message formatting helpers for Telegram.
 //!
 //! By default we send plain text. `escape_md_v2` is here for the day we

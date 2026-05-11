@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Wyatt Smith and contributors
 //! LLM API usage log: insert + summary aggregations.
 //!
 //! Each successful chat() response gets one row. The router calls

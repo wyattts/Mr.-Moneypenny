@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Wyatt Smith and contributors
 //! CSV parsing — wrap the `csv` crate with bank-export friendly
 //! defaults, then project rows through a `ColumnMapping`.
 //!

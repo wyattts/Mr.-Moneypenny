@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Wyatt Smith and contributors
 //! Descriptive statistics over a series of i64 cents.
 //!
 //! Powers the per-category "what does my spending look like" panel in

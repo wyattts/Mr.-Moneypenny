@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Wyatt Smith and contributors
 //! Domain types: the in-memory shape of expenses, categories, budgets,
 //! and the period-pacing snapshot the LLM and dashboard share.
 

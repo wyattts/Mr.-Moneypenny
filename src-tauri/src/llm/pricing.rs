@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Wyatt Smith and contributors
 //! Hardcoded model price table for cost computation.
 //!
 //! Anthropic publishes prices in USD per million tokens. This module

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Wyatt Smith and contributors
 import { setSetupStep } from "@/lib/tauri";
 import { useWizard } from "@/lib/store";
 import { StepLayout } from "../components/Layout";

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Wyatt Smith and contributors
 //! Ollama `/api/chat` adapter for local LLMs.
 //!
 //! Ollama supports tool-use via the `tools` field on `/api/chat` (Ollama

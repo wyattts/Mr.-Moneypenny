@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Wyatt Smith and contributors
 //! Bidirectional Monte Carlo simulator.
 //!
 //! Wraps `monte_carlo` to answer two complementary questions:

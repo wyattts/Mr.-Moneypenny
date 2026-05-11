@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Wyatt Smith and contributors
 //! System-prompt assembly.
 //!
 //! The prompt is split into a **stable** portion (rarely changes — eligible

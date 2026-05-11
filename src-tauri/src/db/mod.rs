@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Wyatt Smith and contributors
 //! Database connection and forward-only migrations.
 //!
 //! Migrations are SQL files embedded at compile time. Each file's last
@@ -111,6 +113,12 @@ const MIGRATIONS: &[Migration] = &[
         version: 15,
         name: "0015_telegram_hardening",
         sql: include_str!("migrations/0015_telegram_hardening.sql"),
+        recreate: false,
+    },
+    Migration {
+        version: 16,
+        name: "0016_expenses_category_occurred_index",
+        sql: include_str!("migrations/0016_expenses_category_occurred_index.sql"),
         recreate: false,
     },
 ];
@@ -244,6 +252,28 @@ mod tests {
     ];
 
     #[test]
+    fn category_occurred_index_chosen_by_planner() {
+        // Audit D-4: confirm SQLite picks `idx_expenses_category_occurred`
+        // for the Category Analyzer's hot-path query rather than scanning
+        // `idx_expenses_category_id` and post-filtering on date.
+        let conn = open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let plan: String = conn
+            .query_row(
+                "EXPLAIN QUERY PLAN \
+                 SELECT id FROM expenses \
+                 WHERE category_id = 1 AND occurred_at >= '2026-01-01' AND occurred_at < '2026-02-01'",
+                [],
+                |r| r.get(3),
+            )
+            .unwrap();
+        assert!(
+            plan.contains("idx_expenses_category_occurred"),
+            "expected composite index in plan; got: {plan}",
+        );
+    }
+
+    #[test]
     fn fresh_install_has_curated_default_actives() {
         let conn = open_in_memory().unwrap();
         migrate(&conn).unwrap();
@@ -289,7 +319,7 @@ mod tests {
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 15);
+        assert_eq!(v, 16);
 
         let active = collect_active_seed_names(&conn);
         let mut expected: Vec<String> = EXPECTED_DEFAULT_ACTIVE

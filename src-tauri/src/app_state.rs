@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Wyatt Smith and contributors
 //! Tauri-side application state. Holds:
 //!   - The shared SQLite connection (single-writer, mutex-guarded).
 //!   - The in-memory bot state (conversation history per chat).

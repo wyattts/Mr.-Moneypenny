@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Wyatt Smith and contributors
 /**
  * Main application shell shown after setup completes. Persistent sidebar
  * + Outlet for the current view.

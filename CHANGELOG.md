@@ -4,6 +4,21 @@ All notable changes to Mr. Moneypenny are documented here. The format roughly fo
 
 ## [Unreleased]
 
+## [0.3.16] - 2026-05-11
+
+Two small v0.4.0-roadmap items lifted forward: composite expense index (D-4) and SPDX file headers across the source tree (Co-3). No user-visible behavior changes.
+
+### Added
+
+- **Migration 0016** creates `idx_expenses_category_occurred ON expenses(category_id, occurred_at)`. Targets `expenses::list_in_range_by_category` and `monthly_totals_for_category` (Category Analyzer hot path), which previously picked `idx_expenses_category_id` and post-filtered by date. Pre-existing single-column indexes are left in place so the planner can still pick them for non-category-scoped queries.
+- **SPDX license headers** on every `.rs`, `.ts`, and `.tsx` source file under `src/`, `src-tauri/src/`, and `src-tauri/tests/` — 93 files. Two-line block: `SPDX-License-Identifier: AGPL-3.0-or-later` + `Copyright (C) 2026 Wyatt Smith and contributors`. Helps downstream forks and matters when files are vendored without the repo LICENSE.
+- **`scripts/add-spdx-headers.sh`** runs the header insertion idempotently — skips files that already have `SPDX-License-Identifier`. Safe to re-run on every new source file going forward; could be wired into CI later if drift becomes a concern.
+
+### Internal
+
+- `db::tests::category_occurred_index_chosen_by_planner` pins the planner choice via `EXPLAIN QUERY PLAN`. If a future migration accidentally drops the composite index, the test fails and surfaces the regression before users feel it.
+- `integration_db::migrations_are_idempotent` + `db::tests::upgrade_migration_preserves_engaged_categories` now expect `user_version = 16`.
+
 ## [0.3.15] - 2026-05-11
 
 Closes the last two open audit items from the v0.3.9 defense-in-depth batch: prompt-injection mitigations on the LLM tool-result echo-back path (LLM-1) and cost-guardrails on the agentic loop (Pf-6). With this release the entire v0.3.9 audit batch from `docs/audit-v0.3.7.md` is shipped.

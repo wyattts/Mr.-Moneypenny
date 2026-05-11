@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Wyatt Smith and contributors
 //! Forward-looking forecast tools for the v0.3.0 power-user view.
 //!
 //! All deterministic — Monte Carlo / bootstrap variants land in v0.3.1.

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Wyatt Smith and contributors
 //! Key derivation: machine-bound, deterministic.
 //!
 //! The master key is derived from a stable per-installation identifier so

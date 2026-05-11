@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Wyatt Smith and contributors
 //! Budget threshold alerts.
 //!
 //! Singleton job that wakes hourly and evaluates each active variable

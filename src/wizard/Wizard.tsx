@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Wyatt Smith and contributors
 import { useWizard } from "@/lib/store";
 import { WelcomeStep } from "./steps/Welcome";
 import { ChooseLLMStep } from "./steps/ChooseLLM";

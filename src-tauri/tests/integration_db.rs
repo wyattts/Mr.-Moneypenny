@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Wyatt Smith and contributors
 //! Integration tests for the database layer: migrations, seed data, CRUD,
 //! and foreign-key enforcement.
 
@@ -23,7 +25,7 @@ fn migrations_are_idempotent() {
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 15, "after migrations, user_version should be 15");
+    assert_eq!(version, 16, "after migrations, user_version should be 16");
 }
 
 #[test]

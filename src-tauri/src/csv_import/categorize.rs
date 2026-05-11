@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Wyatt Smith and contributors
 //! Categorization pipeline.
 //!
 //! Three layers, applied in order to each parsed row:

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Wyatt Smith and contributors
 //! Anthropic Messages API adapter.
 //!
 //! Uses tool-use mode and applies prompt caching to the stable portion of

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Wyatt Smith and contributors
 //! Recurring expense rules.
 //!
 //! Each rule is a user spec like "Netflix $15.49 monthly on the 7th" or

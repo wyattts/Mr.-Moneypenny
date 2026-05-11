@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Wyatt Smith and contributors
 /**
  * Theme management. Pure-frontend: persists in localStorage, listens to
  * the OS `prefers-color-scheme` media query when on `auto`. The first
