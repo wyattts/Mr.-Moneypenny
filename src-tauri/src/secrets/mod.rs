@@ -13,13 +13,15 @@
 //! keyring on a single-user laptop — but reliable across all the
 //! environments the keyring fails in.
 //!
-//! See `kdf.rs`, `cipher.rs`, `store.rs` for the building blocks and
-//! `migration.rs` for the one-shot transparent copy from the old
-//! keyring backend on first launch after upgrade.
+//! See `kdf.rs`, `cipher.rs`, `store.rs` for the building blocks.
+//!
+//! The v0.2.6 → disk-store one-shot keyring drain shipped in v0.3.8
+//! and ran through v0.3.12. v0.3.13 retires it: anyone still on v0.2.6
+//! must update via an interim release or re-enter their secrets in
+//! Settings.
 
 mod cipher;
 mod kdf;
-mod migration;
 mod store;
 
 use std::path::PathBuf;
@@ -51,11 +53,6 @@ fn default_data_dir() -> Result<String> {
 /// Process-wide handle to the secrets file. Opening is cheap (a single
 /// read + KDF call) but we cache it so callers don't repeatedly do the
 /// HKDF derivation.
-///
-/// The first call after install performs the v0.2.6→v0.3.x keyring
-/// drain (see `migration::eager_drain_keyring`). Subsequent launches
-/// short-circuit because the disk file's `migrated_keyring_keys`
-/// sentinel records every key already considered.
 fn handle() -> Result<&'static Mutex<SecretsFile>> {
     use std::sync::OnceLock;
     static H: OnceLock<Mutex<SecretsFile>> = OnceLock::new();
@@ -65,18 +62,7 @@ fn handle() -> Result<&'static Mutex<SecretsFile>> {
     let path = default_secrets_path()?;
     let data_dir = default_data_dir()?;
     let f = SecretsFile::open(path, &data_dir)?;
-    let m = H.get_or_init(|| Mutex::new(f));
-    // Drain the OS keyring exactly once per process. Best-effort —
-    // failures here mustn't block secret access. The disk file is the
-    // source of truth from here on.
-    if let Err(e) = migration::eager_drain_keyring(m) {
-        tracing::warn!(
-            target: "secrets",
-            error = %e,
-            "keyring drain failed; continuing with disk store only"
-        );
-    }
-    Ok(m)
+    Ok(H.get_or_init(|| Mutex::new(f)))
 }
 
 /// Store a secret. Overwrites any existing entry under the same key.
@@ -87,10 +73,6 @@ pub fn store(key: &str, value: &str) -> Result<()> {
 }
 
 /// Retrieve a secret. Returns `Ok(None)` if no entry exists.
-///
-/// The keyring drain runs eagerly inside `handle()` on first acquisition
-/// per process, so by the time we get here the disk store is the
-/// authoritative source.
 pub fn retrieve(key: &str) -> Result<Option<String>> {
     let h = handle()?;
     let f = h.lock().unwrap();

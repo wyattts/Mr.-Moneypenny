@@ -48,14 +48,11 @@ pub(super) struct OnDiskFile {
     /// Base64-encoded 16-byte salt (created on first save).
     pub salt: String,
     pub entries: HashMap<String, OnDiskEntry>,
-    /// Keys that have already been considered for one-shot migration
-    /// from the v0.2.6 OS keyring. The presence of a key here means
-    /// "we asked the keyring once for this key; don't ask again."
-    /// `#[serde(default)]` keeps v0.3.7-and-earlier files (which
-    /// lacked this field) deserializable without a schema bump.
-    #[serde(default)]
-    pub migrated_keyring_keys: Vec<String>,
 }
+// NOTE: v0.3.8–v0.3.12 files carry an additional `migrated_keyring_keys`
+// field tracking the one-shot OS-keyring drain. serde silently ignores
+// unknown fields on deserialize, so those files load fine here; the
+// field is dropped the next time we re-save.
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct OnDiskEntry {
@@ -76,7 +73,6 @@ pub(super) struct SecretsFile {
     master_key: Zeroizing<[u8; KEY_LEN]>,
     salt: [u8; SALT_LEN],
     entries: HashMap<String, OnDiskEntry>,
-    migrated_keyring_keys: Vec<String>,
 }
 
 impl SecretsFile {
@@ -87,7 +83,7 @@ impl SecretsFile {
     /// `data_dir` is included in the master-key derivation so two users
     /// on the same machine get different keys.
     pub fn open(path: PathBuf, data_dir: &str) -> Result<Self> {
-        let (salt, entries, migrated_keyring_keys) = if path.exists() {
+        let (salt, entries) = if path.exists() {
             let raw =
                 fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
             let file: OnDiskFile = serde_json::from_str(&raw)
@@ -112,13 +108,13 @@ impl SecretsFile {
             }
             let mut salt = [0u8; SALT_LEN];
             salt.copy_from_slice(&salt_bytes);
-            (salt, file.entries, file.migrated_keyring_keys)
+            (salt, file.entries)
         } else {
             // New file — generate a fresh salt. It only persists once we
             // actually write something via `save_atomic`.
             let mut salt = [0u8; SALT_LEN];
             rand::thread_rng().fill_bytes(&mut salt);
-            (salt, HashMap::new(), Vec::new())
+            (salt, HashMap::new())
         };
 
         let master_key = kdf::derive_master_key(&salt, data_dir)?;
@@ -127,25 +123,7 @@ impl SecretsFile {
             master_key,
             salt,
             entries,
-            migrated_keyring_keys,
         })
-    }
-
-    /// Snapshot of the keys this file has already considered for the
-    /// one-shot v0.2.6 keyring migration.
-    pub fn migrated_keyring_keys(&self) -> Vec<String> {
-        self.migrated_keyring_keys.clone()
-    }
-
-    /// Record that `key` has been considered for keyring migration so
-    /// future opens skip the (slow, dbus-blocking) keyring probe.
-    /// Persists to disk.
-    pub fn mark_migrated(&mut self, key: &str) -> Result<()> {
-        if self.migrated_keyring_keys.iter().any(|k| k == key) {
-            return Ok(());
-        }
-        self.migrated_keyring_keys.push(key.to_string());
-        self.save_atomic()
     }
 
     pub fn get(&self, key: &str) -> Result<Option<String>> {
@@ -184,6 +162,7 @@ impl SecretsFile {
         Ok(removed)
     }
 
+    #[cfg(test)]
     pub fn contains(&self, key: &str) -> bool {
         self.entries.contains_key(key)
     }
@@ -193,7 +172,6 @@ impl SecretsFile {
             version: CURRENT_VERSION,
             salt: B64.encode(self.salt),
             entries: self.entries.clone(),
-            migrated_keyring_keys: self.migrated_keyring_keys.clone(),
         };
         let bytes = serde_json::to_vec_pretty(&on_disk).context("serializing secrets file")?;
 
@@ -400,47 +378,21 @@ mod tests {
     }
 
     #[test]
-    fn migrated_keyring_keys_persist_across_reopens() {
+    fn v0_3_8_files_with_extra_migrated_field_open_cleanly() {
+        // Backward-compat: files written by v0.3.8–v0.3.12 carry an
+        // extra `migrated_keyring_keys` field that v0.3.13+ no longer
+        // knows about. serde silently ignores unknown fields, so the
+        // file loads fine; the next save drops the field.
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join(SECRETS_FILENAME);
         let dd = tmp.path().to_str().unwrap();
-        {
-            let mut f = SecretsFile::open(path.clone(), dd).unwrap();
-            f.mark_migrated("anthropic_api_key").unwrap();
-            f.mark_migrated("telegram_bot_token").unwrap();
-        }
-        let f2 = SecretsFile::open(path, dd).unwrap();
-        let migrated = f2.migrated_keyring_keys();
-        assert!(migrated.iter().any(|k| k == "anthropic_api_key"));
-        assert!(migrated.iter().any(|k| k == "telegram_bot_token"));
-    }
-
-    #[test]
-    fn mark_migrated_is_idempotent() {
-        let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join(SECRETS_FILENAME);
-        let dd = tmp.path().to_str().unwrap();
-        let mut f = SecretsFile::open(path, dd).unwrap();
-        f.mark_migrated("x").unwrap();
-        f.mark_migrated("x").unwrap();
-        f.mark_migrated("x").unwrap();
-        let migrated = f.migrated_keyring_keys();
-        assert_eq!(migrated.iter().filter(|k| *k == "x").count(), 1);
-    }
-
-    #[test]
-    fn old_v1_files_without_migrated_field_open_cleanly() {
-        // Forward-compat: v0.3.7-and-earlier files lack the
-        // `migrated_keyring_keys` field. Ensure we deserialize them as
-        // an empty Vec via `#[serde(default)]`.
-        let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join(SECRETS_FILENAME);
-        let dd = tmp.path().to_str().unwrap();
-        // Write a v0.3.7-shaped JSON manually (no migrated_keyring_keys).
-        let raw = r#"{"version":1,"salt":"AAAAAAAAAAAAAAAAAAAAAA==","entries":{}}"#;
+        let raw = r#"{"version":1,"salt":"AAAAAAAAAAAAAAAAAAAAAA==","entries":{},"migrated_keyring_keys":["anthropic_api_key","telegram_bot_token"]}"#;
         std::fs::write(&path, raw).unwrap();
-        let f = SecretsFile::open(path, dd).unwrap();
-        assert!(f.migrated_keyring_keys().is_empty());
+        let mut f = SecretsFile::open(path.clone(), dd).unwrap();
+        // Round-trips and a fresh write drop the stale field.
+        f.put("k", "v").unwrap();
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert!(!after.contains("migrated_keyring_keys"));
     }
 
     #[cfg(unix)]

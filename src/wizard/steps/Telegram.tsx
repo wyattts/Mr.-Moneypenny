@@ -8,6 +8,7 @@ import {
 } from "@/lib/tauri";
 import type { AuthorizedChat, TelegramBotInfo } from "@/lib/tauri";
 import { useWizard } from "@/lib/store";
+import { redactSecrets } from "@/lib/redact";
 import { StepLayout, ErrorBanner, InfoBanner } from "../components/Layout";
 import { PrimaryButton, GhostButton, SecondaryButton } from "../components/Buttons";
 
@@ -61,14 +62,20 @@ export function TelegramStep() {
     };
   }, [stage]);
 
+  // Clear the token from React state on unmount so it doesn't outlive
+  // the wizard step in memory.
+  useEffect(() => () => setToken(""), []);
+
   async function submitToken() {
     setBusy(true);
     setError(null);
     try {
       const info: TelegramBotInfo = await saveTelegramToken(token);
       setBotInfo(info);
+      setToken("");
     } catch (e) {
-      setError(String(e));
+      setError(redactSecrets(String(e)));
+      setToken("");
     } finally {
       setBusy(false);
     }
@@ -85,7 +92,7 @@ export function TelegramStep() {
       const code = await generatePairingCode(displayName.trim());
       setPairing(code, displayName.trim());
     } catch (e) {
-      setError(String(e));
+      setError(redactSecrets(String(e)));
     } finally {
       setBusy(false);
     }

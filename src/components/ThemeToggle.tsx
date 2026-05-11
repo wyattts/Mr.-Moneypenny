@@ -13,12 +13,17 @@ const OPTIONS: { value: Theme; label: string }[] = [
 export function ThemeToggle() {
   const { theme, setTheme } = useTheme();
   return (
-    <div className="inline-flex rounded-md border border-graphite-700 bg-graphite-800 p-0.5">
+    <div
+      className="inline-flex rounded-md border border-graphite-700 bg-graphite-800 p-0.5"
+      role="group"
+      aria-label="Theme"
+    >
       {OPTIONS.map((o) => (
         <button
           key={o.value}
           type="button"
           onClick={() => setTheme(o.value)}
+          aria-pressed={theme === o.value}
           className={`rounded-sm px-3 py-1 text-xs font-medium transition ${
             theme === o.value
               ? "bg-forest-600 text-white"

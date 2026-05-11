@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { saveAnthropicKey, setSetupStep, testAnthropic } from "@/lib/tauri";
 import { useWizard } from "@/lib/store";
+import { redactSecrets } from "@/lib/redact";
 import { StepLayout, ErrorBanner, InfoBanner } from "../components/Layout";
 import { PrimaryButton, GhostButton } from "../components/Buttons";
 
@@ -12,6 +13,10 @@ export function AnthropicConfigStep() {
   const [verifiedModel, setVerifiedModel] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // Clear the key from React state on unmount so it doesn't outlive
+  // the wizard step in memory.
+  useEffect(() => () => setKey(""), []);
+
   async function saveAndTest() {
     setBusy(true);
     setError(null);
@@ -20,8 +25,10 @@ export function AnthropicConfigStep() {
       await saveAnthropicKey(key);
       const model = await testAnthropic();
       setVerifiedModel(model);
+      setKey("");
     } catch (e) {
-      setError(String(e));
+      setError(redactSecrets(String(e)));
+      setKey("");
     } finally {
       setBusy(false);
     }

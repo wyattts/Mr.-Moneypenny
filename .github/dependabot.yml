@@ -1,0 +1,76 @@
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: "/src-tauri"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: "Etc/UTC"
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - rust
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      tauri:
+        patterns:
+          - "tauri*"
+      tokio:
+        patterns:
+          - "tokio*"
+          - "async-trait"
+      tracing:
+        patterns:
+          - "tracing*"
+      crypto:
+        patterns:
+          - "chacha20poly1305"
+          - "hkdf"
+          - "sha2"
+          - "zeroize"
+
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: "Etc/UTC"
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - javascript
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      react:
+        patterns:
+          - "react"
+          - "react-dom"
+          - "@types/react"
+          - "@types/react-dom"
+          - "eslint-plugin-react*"
+      typescript:
+        patterns:
+          - "typescript"
+          - "@typescript-eslint/*"
+          - "typescript-eslint"
+      tauri-js:
+        patterns:
+          - "@tauri-apps/*"
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: "Etc/UTC"
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - ci
+    commit-message:
+      prefix: "chore(ci)"

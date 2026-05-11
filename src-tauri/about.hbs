@@ -1,0 +1,26 @@
+# Third-party Rust dependencies
+
+Mr. Moneypenny embeds the following open-source Rust crates, grouped
+by their SPDX license. Full license texts follow.
+
+{{#each overview}}
+- **{{name}}** — {{count}} crate(s)
+{{/each}}
+
+---
+
+## License texts
+
+{{#each licenses}}
+### {{name}}
+
+Used by:
+{{#each used_by}}
+- {{crate.name}} {{crate.version}}
+{{/each}}
+
+```
+{{{text}}}
+```
+
+{{/each}}

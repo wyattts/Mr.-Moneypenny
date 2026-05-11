@@ -1,0 +1,27 @@
+# cargo-about config — generates THIRD_PARTY_LICENSES.md from the Rust
+# dependency tree. Run from src-tauri:
+#   cargo about generate -c about.toml about.hbs > THIRD_PARTY_LICENSES.md
+
+# License whitelist — what we accept in dependencies. Anything not on
+# this list trips a hard error so we notice copyleft drift before it
+# ships in a release bundle.
+accepted = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "MPL-2.0",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Unlicense",
+    "0BSD",
+    "BSL-1.0",
+    "OpenSSL",
+    "AGPL-3.0-or-later",
+]
+

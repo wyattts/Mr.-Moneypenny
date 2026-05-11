@@ -42,6 +42,7 @@ import {
 import type { CsvImportProfile, MerchantRule } from "@/lib/tauri";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { CURRENCIES } from "@/lib/currencies";
+import { redactSecrets } from "@/lib/redact";
 import { CsvImportWizard } from "./CsvImport";
 import { ViewHeader } from "./ViewHeader";
 import { ErrorBanner, InfoBanner } from "@/wizard/components/Layout";
@@ -343,6 +344,9 @@ function RotateAnthropicKey({
   const [val, setVal] = useState("");
   const [busy, setBusy] = useState(false);
 
+  // Drop the secret from state when the component unmounts.
+  useEffect(() => () => setVal(""), []);
+
   async function save() {
     setBusy(true);
     try {
@@ -352,10 +356,16 @@ function RotateAnthropicKey({
       setEditing(false);
       setVal("");
     } catch (e) {
-      onError(String(e));
+      onError(redactSecrets(String(e)));
+      setVal("");
     } finally {
       setBusy(false);
     }
+  }
+
+  function cancel() {
+    setEditing(false);
+    setVal("");
   }
 
   if (!editing) {
@@ -384,7 +394,7 @@ function RotateAnthropicKey({
       <PrimaryButton onClick={save} disabled={!val.trim() || busy}>
         {busy ? "…" : "Save & verify"}
       </PrimaryButton>
-      <GhostButton onClick={() => setEditing(false)}>Cancel</GhostButton>
+      <GhostButton onClick={cancel}>Cancel</GhostButton>
     </div>
   );
 }
@@ -430,6 +440,9 @@ function RotateTelegramToken({
       pollRef.current = null;
     }
   }
+
+  // Drop the bot token from state on unmount.
+  useEffect(() => () => setVal(""), []);
 
   // Poll list_authorized_chats while we're waiting for /start <code> to land.
   useEffect(() => {
@@ -481,7 +494,8 @@ function RotateTelegramToken({
           : `Connected to @${info.username ?? info.first_name}.`,
       );
     } catch (e) {
-      onError(String(e));
+      onError(redactSecrets(String(e)));
+      setVal("");
     } finally {
       setBusy(false);
     }
@@ -500,7 +514,7 @@ function RotateTelegramToken({
       const code = await generatePairingCode(displayName.trim());
       setPairingCode(code);
     } catch (e) {
-      onError(String(e));
+      onError(redactSecrets(String(e)));
     } finally {
       setBusy(false);
     }
@@ -1216,6 +1230,17 @@ function AboutPanel({ onError }: { onError: (msg: string) => void }) {
           className="text-forest-400 hover:underline"
         >
           {repo}
+        </a>
+      </div>
+      <div>
+        Third-party notices:{" "}
+        <a
+          href={`${repo}/tree/main/src-tauri/notices`}
+          target="_blank"
+          rel="noreferrer"
+          className="text-forest-400 hover:underline"
+        >
+          src-tauri/notices/
         </a>
       </div>
       <div className="text-xs text-graphite-400">

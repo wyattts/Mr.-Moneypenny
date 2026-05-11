@@ -514,9 +514,14 @@ function Simulator({
       </p>
 
       <div className="mb-4 flex flex-wrap items-center gap-3">
-        <div className="inline-flex rounded-md border border-graphite-700 bg-graphite-800 p-0.5 text-sm">
+        <div
+          className="inline-flex rounded-md border border-graphite-700 bg-graphite-800 p-0.5 text-sm"
+          role="group"
+          aria-label="Simulator mode"
+        >
           <button
             onClick={() => setMode("required")}
+            aria-pressed={mode === "required"}
             className={`rounded px-3 py-1 transition ${
               mode === "required"
                 ? "bg-forest-600 text-graphite-50"
@@ -527,6 +532,7 @@ function Simulator({
           </button>
           <button
             onClick={() => setMode("probability")}
+            aria-pressed={mode === "probability"}
             className={`rounded px-3 py-1 transition ${
               mode === "probability"
                 ? "bg-forest-600 text-graphite-50"
@@ -599,11 +605,16 @@ function Simulator({
                 aria-label={`Confidence: ${(confidence * 100).toFixed(2)}%`}
                 aria-valuetext={`${(confidence * 100).toFixed(0)} percent`}
               />
-              <div className="mt-1 flex gap-2">
+              <div
+                className="mt-1 flex gap-2"
+                role="group"
+                aria-label="Confidence preset"
+              >
                 {[0.7, 0.8, 0.9].map((v) => (
                   <button
                     key={v}
                     onClick={() => setConfidence(v)}
+                    aria-pressed={Math.abs(confidence - v) < 0.005}
                     className={`rounded-md border px-2 py-0.5 text-xs ${
                       Math.abs(confidence - v) < 0.005
                         ? "border-forest-500 bg-forest-700/30 text-forest-100"
@@ -631,11 +642,16 @@ function Simulator({
             value={returnPct}
             onChange={setReturnPct}
           />
-          <div className="flex flex-wrap gap-2">
+          <div
+            className="flex flex-wrap gap-2"
+            role="group"
+            aria-label="Annual return preset"
+          >
             {RETURN_PRESETS.map((p) => (
               <button
                 key={p.rate}
                 onClick={() => setReturnPct(p.rate)}
+                aria-pressed={Math.abs(returnPct - p.rate) < 0.05}
                 className={`rounded-md border px-2 py-1 text-xs transition ${
                   Math.abs(returnPct - p.rate) < 0.05
                     ? "border-forest-500 bg-forest-700/30 text-forest-100"
@@ -658,9 +674,14 @@ function Simulator({
             <span className="text-xs uppercase tracking-wide text-graphite-400">
               Target is in
             </span>
-            <div className="mt-1 inline-flex rounded-md border border-graphite-700 bg-graphite-800 p-0.5 text-xs">
+            <div
+              className="mt-1 inline-flex rounded-md border border-graphite-700 bg-graphite-800 p-0.5 text-xs"
+              role="group"
+              aria-label="Target dollar interpretation"
+            >
               <button
                 onClick={() => setTargetMode("todays_dollars")}
+                aria-pressed={targetMode === "todays_dollars"}
                 className={`rounded px-2 py-0.5 ${
                   targetMode === "todays_dollars"
                     ? "bg-forest-600 text-graphite-50"
@@ -671,6 +692,7 @@ function Simulator({
               </button>
               <button
                 onClick={() => setTargetMode("nominal_future")}
+                aria-pressed={targetMode === "nominal_future"}
                 className={`rounded px-2 py-0.5 ${
                   targetMode === "nominal_future"
                     ? "bg-forest-600 text-graphite-50"
@@ -1326,9 +1348,14 @@ function DebtManager({
 
       <div className="mb-4 flex flex-wrap items-center gap-3">
         {!portfolioMode && (
-          <div className="inline-flex rounded-md border border-graphite-700 bg-graphite-800 p-0.5 text-sm">
+          <div
+            className="inline-flex rounded-md border border-graphite-700 bg-graphite-800 p-0.5 text-sm"
+            role="group"
+            aria-label="Debt mode"
+          >
             <button
               onClick={() => setMode("forward")}
+              aria-pressed={mode === "forward"}
               className={`rounded px-3 py-1 transition ${
                 mode === "forward"
                   ? "bg-forest-600 text-graphite-50"
@@ -1339,6 +1366,7 @@ function DebtManager({
             </button>
             <button
               onClick={() => setMode("goal")}
+              aria-pressed={mode === "goal"}
               className={`rounded px-3 py-1 transition ${
                 mode === "goal"
                   ? "bg-forest-600 text-graphite-50"
@@ -1418,9 +1446,14 @@ function DebtManager({
                 <span className="text-xs uppercase tracking-wide text-graphite-400">
                   Strategy
                 </span>
-                <div className="mt-1 inline-flex rounded-md border border-graphite-700 bg-graphite-800 p-0.5 text-xs">
+                <div
+                  className="mt-1 inline-flex rounded-md border border-graphite-700 bg-graphite-800 p-0.5 text-xs"
+                  role="group"
+                  aria-label="Payoff strategy"
+                >
                   <button
                     onClick={() => setStrategy("avalanche")}
+                    aria-pressed={strategy === "avalanche"}
                     className={`rounded px-2 py-0.5 ${
                       strategy === "avalanche"
                         ? "bg-forest-600 text-graphite-50"
@@ -1431,6 +1464,7 @@ function DebtManager({
                   </button>
                   <button
                     onClick={() => setStrategy("snowball")}
+                    aria-pressed={strategy === "snowball"}
                     className={`rounded px-2 py-0.5 ${
                       strategy === "snowball"
                         ? "bg-forest-600 text-graphite-50"
