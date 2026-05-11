@@ -17,7 +17,7 @@ use crate::llm::dispatcher::{self, CallContext};
 use crate::llm::system_prompt::{build_system_prompt, SystemPromptInput};
 use crate::llm::tools::all_tools;
 use crate::llm::{ChatRequest, ContentBlock, LLMProvider, Message, Role, StopReason};
-use crate::repository::{categories, expenses, llm_usage, recurring_rules};
+use crate::repository::{categories, expenses, llm_usage, recurring_rules, settings};
 
 use super::auth::{self, AuthorizedChat};
 use super::client::{TelegramApi, Update};
@@ -25,9 +25,24 @@ use super::formatter;
 use super::state::BotState;
 
 /// Hard cap on the LLM⇄dispatcher loop. Beyond this we refuse to keep
-/// going and surface a polite "I'm stuck" reply.
-const MAX_AGENT_ITERATIONS: usize = 5;
+/// going and surface a polite "I'm stuck" reply. Bumped from 5 in
+/// v0.3.15 (audit Pf-6) because legitimate multi-tool flows
+/// ("how am I doing this month, and oh also log $5 coffee") tripped the
+/// 5-iter ceiling more than the audit's threat model called for.
+const MAX_AGENT_ITERATIONS: usize = 8;
 const MAX_TOKENS_PER_TURN: u32 = 1024;
+
+/// Reject incoming Telegram free-text longer than this. Inputs longer
+/// than ~2 KB are almost never legitimate "log this expense" content;
+/// they're either a pasted prompt-injection attempt or a runaway typo
+/// loop. The cap is per-message, applied before we even append to
+/// conversation history. (Audit Pf-6.)
+const MAX_INCOMING_TEXT_BYTES: usize = 2_000;
+
+/// Default daily Anthropic-spend ceiling in micros (1e-6 USD). The
+/// `LLM_DAILY_COST_CAP_MICROS` setting overrides this. Set to a
+/// non-positive value to disable the cap.
+const DEFAULT_DAILY_COST_CAP_MICROS: i64 = 1_000_000; // $1.00
 
 #[derive(Clone)]
 pub struct RouterDeps {
@@ -47,6 +62,28 @@ pub async fn handle_update(deps: &RouterDeps, update: &Update, now: OffsetDateTi
     let text = message.text.as_deref().unwrap_or("").trim().to_string();
     if text.is_empty() {
         return Ok(()); // photo / sticker / etc. — ignore for now
+    }
+    // Per-message length cap (audit Pf-6). Slash commands are
+    // intentionally exempt — `/start <code>` carries an 8-digit code
+    // and a couple of words; even worst-case it's well under the cap,
+    // and gating slash commands here would surprise users mid-flow.
+    if !text.starts_with('/') && text.len() > MAX_INCOMING_TEXT_BYTES {
+        tracing::warn!(
+            target: "telegram::router",
+            chat_id,
+            bytes = text.len(),
+            cap = MAX_INCOMING_TEXT_BYTES,
+            "rejecting oversized incoming text",
+        );
+        return reply(
+            deps,
+            chat_id,
+            format!(
+                "That message is over the {} KB limit — please summarize and try again.",
+                MAX_INCOMING_TEXT_BYTES / 1000,
+            ),
+        )
+        .await;
     }
 
     // ------------------------------------------------------------------
@@ -196,6 +233,15 @@ async fn handle_free_text(
     text: &str,
     now: OffsetDateTime,
 ) -> Result<()> {
+    // Cost-cap check (audit Pf-6). Runs once per incoming message, not
+    // per iteration — once the cap is hit, even mid-message tool loops
+    // are allowed to finish so the user gets a complete reply for the
+    // turn they already paid for. Ollama rows cost zero, so this is a
+    // no-op for local-only setups.
+    if let Some(refusal) = daily_cap_refusal_text(deps, now) {
+        return reply(deps, chat_id, refusal).await;
+    }
+
     // Build the system prompt once per turn (categories don't change mid-turn).
     let (system_prompt, members) = {
         let conn = deps.conn.lock().unwrap();
@@ -451,4 +497,41 @@ async fn reply(deps: &RouterDeps, chat_id: i64, text: String) -> Result<()> {
         .await
         .map(|_| ())
         .map_err(|e| anyhow!("send_message failed: {e}"))
+}
+
+/// If the daily LLM cost cap is enabled and today's spend has met or
+/// exceeded it, return the refusal message to send back to the user.
+/// Returns `None` to mean "let the call proceed."
+///
+/// Best-effort: any DB error here logs and lets the call through —
+/// failing the cost cap closed would silently lock the user out of the
+/// bot.
+fn daily_cap_refusal_text(deps: &RouterDeps, now: OffsetDateTime) -> Option<String> {
+    let conn = deps.conn.lock().unwrap();
+    let cap_micros: i64 = match settings::get(&conn, settings::keys::LLM_DAILY_COST_CAP_MICROS) {
+        Ok(Some(s)) => s.parse().unwrap_or(DEFAULT_DAILY_COST_CAP_MICROS),
+        Ok(None) => DEFAULT_DAILY_COST_CAP_MICROS,
+        Err(e) => {
+            tracing::warn!(target: "telegram::router", error = %e, "could not read llm_daily_cost_cap_micros");
+            return None;
+        }
+    };
+    if cap_micros <= 0 {
+        return None; // explicit disable
+    }
+    let today_micros = match llm_usage::today_cost_micros(&conn, now) {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::warn!(target: "telegram::router", error = %e, "could not compute today's llm cost");
+            return None;
+        }
+    };
+    if today_micros < cap_micros {
+        return None;
+    }
+    Some(format!(
+        "You've hit today's LLM budget (${:.2} of ${:.2}). Bump the cap in Settings → API usage when you're ready to keep going.",
+        today_micros as f64 / 1_000_000.0,
+        cap_micros as f64 / 1_000_000.0,
+    ))
 }

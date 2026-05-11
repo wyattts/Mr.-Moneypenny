@@ -102,6 +102,17 @@ pub fn summary(conn: &Connection, now: OffsetDateTime) -> Result<UsageSummary> {
     })
 }
 
+/// Sum of `cost_micros` for the calendar day containing `now`. Cheap
+/// — backed by `idx_llm_usage_occurred_at`. Used by the LLM agent loop
+/// before each turn to enforce `llm_daily_cost_cap_micros`.
+pub fn today_cost_micros(conn: &Connection, now: OffsetDateTime) -> Result<i64> {
+    let offset = now.offset();
+    let today_start = now.date().with_time(Time::MIDNIGHT).assume_offset(offset);
+    let next_day = today_start + Duration::days(1);
+    let (micros, _calls) = sum_window(conn, today_start, next_day)?;
+    Ok(micros)
+}
+
 fn sum_window(conn: &Connection, start: OffsetDateTime, end: OffsetDateTime) -> Result<(i64, i64)> {
     let mut stmt = conn.prepare_cached(
         "SELECT COALESCE(SUM(cost_micros), 0), COUNT(*)

@@ -8,6 +8,7 @@ import {
   getAutostart,
   getBudgetAlertsEnabled,
   getCheckUpdatesOnLaunch,
+  getLlmDailyCostCapMicros,
   getLlmUsageSummary,
   getOllamaAllowRemote,
   getRunInBackground,
@@ -22,6 +23,7 @@ import {
   setAutostart,
   setBudgetAlertsEnabled,
   setCheckUpdatesOnLaunch,
+  setLlmDailyCostCapMicros,
   setOllamaAllowRemote,
   setRunInBackground,
   setStartingBalance,
@@ -189,6 +191,7 @@ export function Settings() {
           description="What you've spent on Anthropic API calls. Ollama runs locally and is free."
         >
           <UsageStats onError={setError} />
+          <DailyCostCapControl onError={setError} onSaved={setInfo} />
         </Section>
 
         <Section
@@ -873,6 +876,81 @@ function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
   return n.toString();
+}
+
+function DailyCostCapControl({
+  onError,
+  onSaved,
+}: {
+  onError: (msg: string) => void;
+  onSaved: (msg: string) => void;
+}) {
+  const [dollars, setDollars] = useState<string>("");
+  const [loaded, setLoaded] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const micros = await getLlmDailyCostCapMicros();
+        setDollars(micros <= 0 ? "0" : (micros / 1_000_000).toFixed(2));
+      } catch (e) {
+        onError(String(e));
+      } finally {
+        setLoaded(true);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function save() {
+    setBusy(true);
+    try {
+      const parsed = Number.parseFloat(dollars);
+      if (!Number.isFinite(parsed) || parsed < 0) {
+        onError("Enter a non-negative dollar amount (or 0 to disable).");
+        return;
+      }
+      const micros = Math.round(parsed * 1_000_000);
+      await setLlmDailyCostCapMicros(micros);
+      onSaved(
+        micros <= 0
+          ? "Daily LLM budget disabled."
+          : `Daily LLM budget set to $${parsed.toFixed(2)}.`,
+      );
+    } catch (e) {
+      onError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!loaded) return null;
+  return (
+    <div className="mt-4 border-t border-graphite-700 pt-3">
+      <div className="text-sm text-graphite-100">Daily LLM budget</div>
+      <p className="mb-2 text-xs text-graphite-400">
+        When today&apos;s Anthropic spend hits this, the bot politely
+        refuses new turns and points the user back here. Set to 0 to
+        disable. Ollama is free either way.
+      </p>
+      <div className="flex items-center gap-2">
+        <span className="text-graphite-400">$</span>
+        <input
+          type="text"
+          inputMode="decimal"
+          value={dollars}
+          onChange={(e) => setDollars(e.target.value)}
+          className="w-24 rounded-md border border-graphite-600 bg-graphite-800 px-2 py-1 text-right font-mono text-sm text-graphite-50"
+          aria-label="Daily LLM budget in dollars"
+        />
+        <span className="text-graphite-400">/ day</span>
+        <PrimaryButton onClick={save} disabled={busy}>
+          {busy ? "…" : "Save"}
+        </PrimaryButton>
+      </div>
+    </div>
+  );
 }
 
 function UsageStats({ onError }: { onError: (msg: string) => void }) {

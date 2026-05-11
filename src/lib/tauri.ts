@@ -71,6 +71,15 @@ export const getOllamaAllowRemote = (): Promise<boolean> =>
 export const setOllamaAllowRemote = (enabled: boolean): Promise<void> =>
   invoke("set_ollama_allow_remote", { enabled });
 
+/** Soft daily LLM-spend ceiling. Returned/stored in micros (1e-6 USD).
+ * The Telegram bot loop refuses new turns once today's usage hits this.
+ * Non-positive value disables the cap. */
+export const getLlmDailyCostCapMicros = (): Promise<number> =>
+  invoke("get_llm_daily_cost_cap_micros");
+
+export const setLlmDailyCostCapMicros = (capMicros: number): Promise<void> =>
+  invoke("set_llm_daily_cost_cap_micros", { capMicros });
+
 export const saveTelegramToken = (token: string): Promise<TelegramBotInfo> =>
   invoke("save_telegram_token", { token });
 

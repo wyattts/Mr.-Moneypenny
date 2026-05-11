@@ -636,6 +636,72 @@ async fn cancel_clears_pending_confirmation() {
 }
 
 #[tokio::test]
+async fn oversize_text_message_refused_without_llm_call() {
+    // Audit Pf-6: messages over 2 KB get a friendly refusal and never
+    // reach the LLM. Slash commands are exempt; we test a non-slash
+    // free-text input.
+    let conn = fresh();
+    let now = datetime!(2026-04-15 12:00:00 UTC);
+    let llm = Arc::new(StubLlm::default());
+    let tg = Arc::new(StubTelegram::default());
+    let (deps, conn_arc) = make_deps(conn, llm.clone(), tg.clone());
+    pair_owner(&conn_arc, 111, "Wyatt", now);
+
+    let huge = "x".repeat(3_000);
+    handle_update(&deps, &message_update(1, 111, &huge), now)
+        .await
+        .unwrap();
+
+    let sent = tg.sent_to(111);
+    assert_eq!(sent.len(), 1);
+    assert!(sent[0].contains("limit"));
+    assert!(
+        llm.requests.lock().unwrap().is_empty(),
+        "LLM must not be called for oversized input"
+    );
+}
+
+#[tokio::test]
+async fn daily_cost_cap_refuses_with_friendly_message() {
+    // Audit Pf-6: once today's llm_usage cost exceeds the cap, the next
+    // free-text turn is refused with a Settings pointer and the LLM is
+    // never called. Slash commands keep working (covered elsewhere).
+    let conn = fresh();
+    let now = datetime!(2026-04-15 12:00:00 UTC);
+    let llm = Arc::new(StubLlm::default());
+    let tg = Arc::new(StubTelegram::default());
+    let (deps, conn_arc) = make_deps(conn, llm.clone(), tg.clone());
+    pair_owner(&conn_arc, 111, "Wyatt", now);
+
+    // Seed an llm_usage row that meets the default $1.00 cap.
+    {
+        let c = conn_arc.lock().unwrap();
+        c.execute(
+            "INSERT INTO llm_usage (provider, model, input_tokens, output_tokens, cost_micros, occurred_at)
+             VALUES ('anthropic', 'claude-opus-4-7', 1000, 200, 1100000, ?1)",
+            rusqlite::params![now],
+        )
+        .unwrap();
+    }
+
+    handle_update(&deps, &message_update(1, 111, "log $5 coffee"), now)
+        .await
+        .unwrap();
+
+    let sent = tg.sent_to(111);
+    assert_eq!(sent.len(), 1);
+    assert!(
+        sent[0].contains("today's LLM budget") || sent[0].contains("Settings"),
+        "expected cap refusal, got: {}",
+        sent[0]
+    );
+    assert!(
+        llm.requests.lock().unwrap().is_empty(),
+        "LLM must not be called when the daily cap is hit"
+    );
+}
+
+#[tokio::test]
 async fn empty_text_message_ignored() {
     let conn = fresh();
     let now = datetime!(2026-04-15 12:00:00 UTC);

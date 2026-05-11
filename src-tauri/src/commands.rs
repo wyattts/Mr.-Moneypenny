@@ -648,6 +648,40 @@ pub async fn set_run_in_background(
     .map_err(err)
 }
 
+/// Default in micros (1e-6 USD) — keep in sync with
+/// `telegram/router.rs::DEFAULT_DAILY_COST_CAP_MICROS`. The setting is
+/// stored as the raw integer; the UI talks dollars.
+const DEFAULT_DAILY_COST_CAP_MICROS: i64 = 1_000_000;
+
+#[tauri::command]
+pub async fn get_llm_daily_cost_cap_micros(state: State<'_, AppState>) -> Result<i64, String> {
+    let conn = state.db.lock().unwrap();
+    let raw = settings::get(&conn, settings::keys::LLM_DAILY_COST_CAP_MICROS).map_err(err)?;
+    Ok(raw
+        .and_then(|s| s.parse::<i64>().ok())
+        .unwrap_or(DEFAULT_DAILY_COST_CAP_MICROS))
+}
+
+#[tauri::command]
+pub async fn set_llm_daily_cost_cap_micros(
+    cap_micros: i64,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    // Negative caps are accepted and mean "disabled"; storing them as-is
+    // keeps the disable semantics observable in the DB. We DO reject
+    // absurd positive values to catch obvious UI input mistakes.
+    if cap_micros > 10_000_000_000 {
+        return Err("Cap is unreasonably large (max $10,000/day)".into());
+    }
+    let conn = state.db.lock().unwrap();
+    settings::set(
+        &conn,
+        settings::keys::LLM_DAILY_COST_CAP_MICROS,
+        &cap_micros.to_string(),
+    )
+    .map_err(err)
+}
+
 #[tauri::command]
 pub async fn get_ollama_allow_remote(state: State<'_, AppState>) -> Result<bool, String> {
     let conn = state.db.lock().unwrap();

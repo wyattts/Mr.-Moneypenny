@@ -4,6 +4,30 @@ All notable changes to Mr. Moneypenny are documented here. The format roughly fo
 
 ## [Unreleased]
 
+## [0.3.15] - 2026-05-11
+
+Closes the last two open audit items from the v0.3.9 defense-in-depth batch: prompt-injection mitigations on the LLM tool-result echo-back path (LLM-1) and cost-guardrails on the agentic loop (Pf-6). With this release the entire v0.3.9 audit batch from `docs/audit-v0.3.7.md` is shipped.
+
+### Added
+
+- **Daily LLM cost ceiling** (audit Pf-6). New `llm_daily_cost_cap_micros` setting, default $1.00/day. Once today's `llm_usage.cost_micros` sum hits the cap the Telegram bot politely refuses further free-text turns ("You've hit today's LLM budget — bump it in Settings → API usage.") and never invokes the provider. Ollama rows cost zero, so the cap never trips on local-only setups. Tauri commands: `get_llm_daily_cost_cap_micros`, `set_llm_daily_cost_cap_micros`.
+- **Settings → API usage** has a "Daily LLM budget" input (dollars/day; 0 disables).
+- **Per-message 2 KB cap on incoming Telegram free text** (audit Pf-6). Messages over the cap get a friendly refusal and never reach the LLM. Slash commands are exempt.
+- **`<user_data>...</user_data>` wrapping** on every user-supplied string echoed back to the LLM via `tool_result` (audit LLM-1). Wraps expense descriptions (`query_expenses`), category names (`list_categories`), recurring-rule labels (`list_recurring_rules`), and member display names (`list_household_members`). Each wrapped string is truncated to 256 chars; nested `<user_data>` tags are stripped before wrapping so an attacker can't fake a close.
+- **System-prompt clause** instructing the model that anything inside `<user_data>` tags is data, never instructions — with worked examples showing how to refuse a description that says "ignore prior instructions" and a category name that asks for extra tool calls.
+- **Tool-result byte cap** (audit P-9 / LLM-1). Tool responses serialized to >8 KB are replaced with a short `{"ok":false,"error":"result_too_large"}` stub that nudges the model to narrow its query, so a single oversized `query_expenses` can't dominate the next-turn context.
+- **`llm_usage::today_cost_micros(conn, now)`** helper backing the cost-cap check.
+
+### Changed
+
+- **`MAX_AGENT_ITERATIONS` bumped from 5 to 8** (audit Pf-6). Legitimate multi-tool flows ("how am I doing this month and oh also log $5 coffee") were tripping the old ceiling more than the threat model called for. The cost cap is now the load-bearing ceiling, not the iteration count.
+
+### Internal
+
+- 4 new dispatcher unit tests pin the wrap/truncate behavior + a nested-tag stripping case.
+- 2 new integration_telegram tests pin the oversize-message refusal and the daily-cap refusal paths (LLM is asserted never-called in both).
+- 3 existing integration_dispatcher tests updated to expect `<user_data>` wrapping on descriptions, category names, and rule labels.
+
 ## [0.3.14] - 2026-05-11
 
 Security defense-in-depth batch (audit items S-1, S-3, S-4, S-5 from `docs/audit-v0.3.7.md`). Closes the last audit-flagged High severity (pairing-code brute force), removes the expired-vs-invalid oracle, gates the Ollama endpoint behind URL validation + a remote-host opt-in, and tightens the Telegram poller against crash-window duplicate inserts. Includes migration 0015 that adds three new tables/columns.

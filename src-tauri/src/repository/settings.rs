@@ -57,6 +57,12 @@ pub mod keys {
     pub const CHECK_UPDATES_ON_LAUNCH: &str = "check_updates_on_launch"; // "1" | "0"; default 1
     pub const WEEKLY_SUMMARY_ENABLED: &str = "weekly_summary_enabled"; // "1" | "0"; default 1
     pub const BUDGET_ALERTS_ENABLED: &str = "budget_alerts_enabled"; // "1" | "0"; default 1
+    /// Soft daily ceiling on Anthropic spend, in micros (1e-6 USD).
+    /// Default = $1.00 = 1_000_000 micros. The Telegram LLM loop refuses
+    /// a new turn (with a friendly link to Settings) once the day's
+    /// `llm_usage.cost_micros` sum hits this. Ollama rows cost zero so
+    /// the cap never triggers on local-only setups.
+    pub const LLM_DAILY_COST_CAP_MICROS: &str = "llm_daily_cost_cap_micros";
 }
 
 #[cfg(test)]

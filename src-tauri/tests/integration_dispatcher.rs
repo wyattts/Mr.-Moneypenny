@@ -377,9 +377,11 @@ fn list_categories_returns_seed_set() {
     let v = parse_ok(execute(&conn, &ctx, "tu_1", "list_categories", &json!({})));
     let cats = v["categories"].as_array().unwrap();
     assert!(cats.len() >= 25);
+    // Audit LLM-1: category names are wrapped in <user_data> tags so
+    // the LLM treats them as data rather than instructions.
     assert!(cats
         .iter()
-        .any(|c| c["name"] == "Coffee" && c["kind"] == "variable"));
+        .any(|c| c["name"] == "<user_data>Coffee</user_data>" && c["kind"] == "variable"));
 }
 
 // ---- set_budget ----
@@ -497,7 +499,12 @@ fn add_expense_then_query_round_trips() {
     let exps = queried["expenses"].as_array().unwrap();
     assert_eq!(exps.len(), 1);
     assert_eq!(exps[0]["amount_cents"], 500);
-    assert_eq!(exps[0]["description"], "morning latte");
+    // Audit LLM-1: query_expenses wraps stored descriptions in
+    // <user_data> tags before echoing them back to the LLM.
+    assert_eq!(
+        exps[0]["description"],
+        "<user_data>morning latte</user_data>"
+    );
 }
 
 // ---- add_refund ----
@@ -729,7 +736,8 @@ fn list_recurring_rules_returns_added_rule() {
     ));
     let rules = v["rules"].as_array().unwrap();
     assert_eq!(rules.len(), 1);
-    assert_eq!(rules[0]["label"], "Spotify");
+    // Audit LLM-1: labels are user-supplied and wrapped before echoing.
+    assert_eq!(rules[0]["label"], "<user_data>Spotify</user_data>");
     assert_eq!(rules[0]["mode"], "auto");
     assert_eq!(rules[0]["enabled"], true);
 }
