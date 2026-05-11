@@ -9,6 +9,7 @@ import {
   getBudgetAlertsEnabled,
   getCheckUpdatesOnLaunch,
   getLlmUsageSummary,
+  getOllamaAllowRemote,
   getRunInBackground,
   getSetupState,
   getWeeklySummaryEnabled,
@@ -21,6 +22,7 @@ import {
   setAutostart,
   setBudgetAlertsEnabled,
   setCheckUpdatesOnLaunch,
+  setOllamaAllowRemote,
   setRunInBackground,
   setStartingBalance,
   setWeeklySummaryEnabled,
@@ -156,6 +158,13 @@ export function Settings() {
             }}
             onError={setError}
           />
+        </Section>
+
+        <Section
+          title="Local Ollama"
+          description="The Ollama endpoint is set during initial setup. By default we only accept loopback or private-network hosts; flip the toggle below if you run Ollama on a public host you trust."
+        >
+          <OllamaSecurityControls onError={setError} onSaved={setInfo} />
         </Section>
 
         <Section
@@ -511,7 +520,12 @@ function RotateTelegramToken({
       // Snapshot current chat count so we can detect the new pair.
       const before = await listAuthorizedChats();
       baselineChatCount.current = before.length;
-      const code = await generatePairingCode(displayName.trim());
+      // If there's currently no owner — only possible after a factory
+      // reset clear_all — the next pairing has to grant Owner.
+      // Otherwise this is a Member invite (audit S-1 ownership
+      // hardening).
+      const isOwnerInvite = before.length === 0;
+      const code = await generatePairingCode(displayName.trim(), isOwnerInvite);
       setPairingCode(code);
     } catch (e) {
       onError(redactSecrets(String(e)));
@@ -738,6 +752,56 @@ function UpdateControls({
         ) : null}
       </div>
     </>
+  );
+}
+
+function OllamaSecurityControls({
+  onError,
+  onSaved,
+}: {
+  onError: (msg: string) => void;
+  onSaved: (msg: string) => void;
+}) {
+  const [allowRemote, setAllow] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        setAllow(await getOllamaAllowRemote());
+      } catch (e) {
+        onError(String(e));
+      } finally {
+        setLoaded(true);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function toggle(enabled: boolean) {
+    try {
+      await setOllamaAllowRemote(enabled);
+      setAllow(enabled);
+      onSaved(
+        enabled
+          ? "Remote Ollama endpoints are now allowed."
+          : "Remote Ollama endpoints are now blocked.",
+      );
+    } catch (e) {
+      onError(String(e));
+    }
+  }
+
+  if (!loaded) {
+    return <span className="text-xs text-graphite-500">Loading…</span>;
+  }
+  return (
+    <ToggleRow
+      label="Allow remote Ollama endpoint"
+      description="Off (default): only localhost, 127.0.0.1, and private-network addresses accepted. Turn on only if you trust the remote host — your CSV-import merchant strings could be sent there."
+      checked={allowRemote}
+      onChange={toggle}
+    />
   );
 }
 

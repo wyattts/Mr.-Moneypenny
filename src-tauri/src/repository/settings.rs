@@ -47,6 +47,7 @@ pub mod keys {
     pub const LLM_PROVIDER: &str = "llm_provider"; // "anthropic" | "ollama"
     pub const OLLAMA_ENDPOINT: &str = "ollama_endpoint";
     pub const OLLAMA_MODEL: &str = "ollama_model";
+    pub const OLLAMA_ALLOW_REMOTE: &str = "ollama_allow_remote"; // "1" | "0"; default 0
     pub const ANTHROPIC_MODEL: &str = "anthropic_model";
     pub const SETUP_COMPLETE: &str = "setup_complete"; // "1" | "0"
     pub const SETUP_STEP: &str = "setup_step"; // last completed step number

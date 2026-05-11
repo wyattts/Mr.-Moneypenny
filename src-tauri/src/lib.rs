@@ -140,6 +140,8 @@ mod app {
                 save_ollama_config,
                 list_ollama_models,
                 test_ollama,
+                get_ollama_allow_remote,
+                set_ollama_allow_remote,
                 save_telegram_token,
                 generate_pairing_code,
                 list_authorized_chats,

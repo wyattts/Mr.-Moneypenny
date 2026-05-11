@@ -65,11 +65,23 @@ export const listOllamaModels = (endpoint: string): Promise<string[]> =>
 
 export const testOllama = (): Promise<string> => invoke("test_ollama");
 
+export const getOllamaAllowRemote = (): Promise<boolean> =>
+  invoke("get_ollama_allow_remote");
+
+export const setOllamaAllowRemote = (enabled: boolean): Promise<void> =>
+  invoke("set_ollama_allow_remote", { enabled });
+
 export const saveTelegramToken = (token: string): Promise<TelegramBotInfo> =>
   invoke("save_telegram_token", { token });
 
-export const generatePairingCode = (displayName: string): Promise<string> =>
-  invoke("generate_pairing_code", { displayName });
+/** `isOwnerInvite=true` produces an owner-kind code (wizard's first-time
+ * pairing). Settings-issued codes default to member-kind so a guessed
+ * code can't escalate to Owner. See audit S-1 in docs/audit-v0.3.7.md. */
+export const generatePairingCode = (
+  displayName: string,
+  isOwnerInvite: boolean,
+): Promise<string> =>
+  invoke("generate_pairing_code", { displayName, isOwnerInvite });
 
 export const listAuthorizedChats = (): Promise<AuthorizedChat[]> =>
   invoke("list_authorized_chats");

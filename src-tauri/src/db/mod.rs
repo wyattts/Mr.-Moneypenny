@@ -107,6 +107,12 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("migrations/0014_csv_expense_source.sql"),
         recreate: true,
     },
+    Migration {
+        version: 15,
+        name: "0015_telegram_hardening",
+        sql: include_str!("migrations/0015_telegram_hardening.sql"),
+        recreate: false,
+    },
 ];
 
 /// Open a SQLite connection at the given path, creating the file if
@@ -278,12 +284,12 @@ mod tests {
         )
         .unwrap();
 
-        // Now apply migrations 0003 through 0014 (latest).
+        // Now apply migrations 0003 through 0015 (latest).
         migrate(&conn).unwrap();
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 14);
+        assert_eq!(v, 15);
 
         let active = collect_active_seed_names(&conn);
         let mut expected: Vec<String> = EXPECTED_DEFAULT_ACTIVE

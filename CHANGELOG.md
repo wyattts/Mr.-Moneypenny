@@ -4,6 +4,43 @@ All notable changes to Mr. Moneypenny are documented here. The format roughly fo
 
 ## [Unreleased]
 
+## [0.3.14] - 2026-05-11
+
+Security defense-in-depth batch (audit items S-1, S-3, S-4, S-5 from `docs/audit-v0.3.7.md`). Closes the last audit-flagged High severity (pairing-code brute force), removes the expired-vs-invalid oracle, gates the Ollama endpoint behind URL validation + a remote-host opt-in, and tightens the Telegram poller against crash-window duplicate inserts. Includes migration 0015 that adds three new tables/columns.
+
+### Added
+
+- **Migration 0015 (`0015_telegram_hardening.sql`)** introduces:
+  - `telegram_redemption_attempts` — per-chat rate-limit state with an escalating cooldown ladder.
+  - `telegram_redemption_global` — single-row counter for the per-minute global ceiling.
+  - `kind` column on `telegram_pending_pairings` — `'owner'` or `'member'`; the redeemer's role now comes from the code, not from "first redeemer wins."
+  - `processed_telegram_updates` — idempotency table for the poller (S-5).
+- **`PairingKind` enum** (`telegram/auth.rs`) with `Owner` / `Member` variants. `generate_pairing_code()` takes a `PairingKind`; `redeem_pairing_code()` uses the code's stored kind to decide the role.
+- **Tauri command surface**: `generate_pairing_code` now takes `is_owner_invite: bool`; new `get_ollama_allow_remote` + `set_ollama_allow_remote` commands.
+- **Settings → Local Ollama** section with a "Allow remote Ollama endpoint" toggle. Default off; toggle on if you run Ollama on a LAN/public host you trust.
+- **`llm::ollama::validate_endpoint()`** — used by `save_ollama_config` and `list_ollama_models` to gate the URL before reqwest sees it. Enforces `http`/`https` scheme, ≤2048 chars, and loopback/RFC1918/ULA host unless the Settings opt-in is enabled. 9 new unit tests cover the rules.
+- **Poller idempotency** (`telegram/poller.rs`): pre-check against `processed_telegram_updates` skips re-processing on restart; the post-handle bump of `last_update_id` and the idempotency-row insert share one transaction so a crash between them cannot reopen the v0.3.7 duplicate window.
+
+### Changed
+
+- **Pairing codes are now 8 digits** (was 6). Code space goes from 10⁶ to 10⁸; pairs with the new rate-limit layers to make brute-force enumeration impractical even at Telegram's flood-rate ceiling. Still leading-zero-padded decimal — copy-paste friendly on phones.
+- **Per-chat rate limit on `redeem_pairing_code`**: 5 wrong codes in 60s triggers an exponential cooldown ladder — 30s → 1m → 5m → 30m → 24h. Each successive trip moves up one step; a successful redemption deletes the row and resets the level.
+- **Global ceiling**: across all chats, >10 invalid attempts in any rolling minute pauses every redemption for 30s. Defends against Sybil attackers spinning up many chat_ids that the per-chat counter would not catch.
+- **Expired-vs-invalid oracle collapsed** (audit S-3): both paths return the single user-facing string `"invalid or expired pairing code"`. Internal distinction stays in `tracing::debug` for support. The router's `pairing_failed_text` wraps both in the same "Couldn't pair this chat" reply.
+- **Owner role can no longer be claimed by being first to redeem on a fresh install** (audit S-1 ownership hardening). The wizard's first-time pairing passes `is_owner_invite: true`; Settings rotation passes `true` only when the authorized-chat list is empty (post-factory-reset); the Household invite flow always passes `false`. A brute-forced member code cannot escalate to Owner.
+
+### Fixed
+
+- **Telegram poller no longer double-inserts expenses on a crash between `handle_update` and `persist_offset`** (audit S-5). The narrow residual window — between the expense INSERT inside `handle_update` and the post-handle transaction — is microseconds and will only fully close with a v0.4.0 transaction-handle refactor (documented inline in `telegram/poller.rs`).
+
+### Internal
+
+- New helpers in `telegram/poller.rs`: `already_processed()` (idempotency check), `persist_offset_and_mark()` (atomic offset+idempotency commit), `gc_processed_updates()` (drops rows older than 30 days, runs from the poll loop's existing housekeeping branch). 3 unit tests pin the SQL.
+- 4 new tests in `telegram/auth.rs`: per-chat cooldown trip, per-chat cooldown escalation across multiple windows, global pause across multiple chats, successful-redeem clears the attempts row.
+- `clear_all()` now also wipes the rate-limit state so a factory reset really starts clean.
+- `url = "2"` added as a Rust dependency for endpoint validation. (~30 KB to the bundle.)
+- `OnDiskFile` / `SecretsFile` and other v0.3.13 internals untouched.
+
 ## [0.3.13] - 2026-05-11
 
 Audit-roadmap cleanup batch (items 18–22 from `docs/audit-v0.3.7.md`): drops the OS-keyring crate, adds a third-party-notices bundle, sets up Dependabot, hardens secret handling in the wizard + Settings token-rotation flows, and adds `aria-pressed` to every pill-toggle group in the UI. No user-visible behavior changes beyond the new notices link in Settings → About.

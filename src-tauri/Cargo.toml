@@ -1,6 +1,6 @@
 [package]
 name = "moneypenny"
-version = "0.3.13"
+version = "0.3.14"
 description = "Mr. Moneypenny — privacy-first FOSS budgeting app"
 authors = ["Wyatt Smith"]
 license = "AGPL-3.0-or-later"
@@ -43,6 +43,7 @@ machine-uid = "0.5"
 base64 = "0.22"
 csv = "1"
 strsim = "0.11"
+url = "2"
 
 [dev-dependencies]
 tempfile = "3"

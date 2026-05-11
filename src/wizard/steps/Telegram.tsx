@@ -89,7 +89,9 @@ export function TelegramStep() {
     setBusy(true);
     setError(null);
     try {
-      const code = await generatePairingCode(displayName.trim());
+      // Wizard's first-time pairing is the Owner. See audit S-1
+      // ownership hardening.
+      const code = await generatePairingCode(displayName.trim(), true);
       setPairing(code, displayName.trim());
     } catch (e) {
       setError(redactSecrets(String(e)));

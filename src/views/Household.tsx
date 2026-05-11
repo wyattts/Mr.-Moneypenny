@@ -47,7 +47,9 @@ export function Household() {
     }
     setError(null);
     try {
-      const code = await generatePairingCode(inviteName.trim());
+      // Household invites are always Members — Owner stays with whoever
+      // ran the original setup. See audit S-1 ownership hardening.
+      const code = await generatePairingCode(inviteName.trim(), false);
       setInviteCode(code);
     } catch (e) {
       setError(String(e));

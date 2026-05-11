@@ -11,7 +11,7 @@ use moneypenny_lib::db;
 use moneypenny_lib::llm::{
     ChatRequest, ChatResponse, ContentBlock, LLMProvider, StopReason, Usage,
 };
-use moneypenny_lib::telegram::auth::{generate_pairing_code, is_authorized, Role};
+use moneypenny_lib::telegram::auth::{generate_pairing_code, is_authorized, PairingKind, Role};
 use moneypenny_lib::telegram::client::{Chat, Message, TelegramApi, Update, User};
 use moneypenny_lib::telegram::router::{handle_update, RouterDeps};
 use moneypenny_lib::telegram::state::BotState;
@@ -196,7 +196,7 @@ fn message_update(update_id: i64, chat_id: i64, text: &str) -> Update {
 
 fn pair_owner(conn: &Mutex<Connection>, chat_id: i64, name: &str, now: OffsetDateTime) {
     let conn = conn.lock().unwrap();
-    let code = generate_pairing_code(&conn, name, now).unwrap();
+    let code = generate_pairing_code(&conn, name, PairingKind::Owner, now).unwrap();
     moneypenny_lib::telegram::auth::redeem_pairing_code(&conn, chat_id, &code, now).unwrap();
 }
 
@@ -234,7 +234,7 @@ async fn start_with_valid_code_pairs_owner() {
     // Pre-issue a pairing code outside the router.
     let code = {
         let c = conn_arc.lock().unwrap();
-        generate_pairing_code(&c, "Wyatt", now).unwrap()
+        generate_pairing_code(&c, "Wyatt", PairingKind::Owner, now).unwrap()
     };
 
     handle_update(

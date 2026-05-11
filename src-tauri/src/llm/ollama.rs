@@ -16,6 +16,73 @@ use super::{
 
 const DEFAULT_BASE_URL: &str = "http://localhost:11434";
 
+/// Validate an Ollama endpoint URL before any code hands it to reqwest.
+/// Catches audit S-4 — reqwest in Rust does not honor the webview's
+/// `connect-src` CSP, so any URL the user (or a frontend bug) writes
+/// into `ollama_endpoint` would become a real outbound HTTP target.
+///
+/// Rules:
+///   - Parses cleanly via `url::Url`.
+///   - Scheme ∈ {`http`, `https`}.
+///   - Length ≤ 2048.
+///   - Host must be loopback / RFC1918 / link-local / ULA unless the
+///     caller passes `allow_remote = true` (gated on the
+///     `ollama_allow_remote` setting in the UI).
+///
+/// Returns the canonicalized URL string on success.
+pub fn validate_endpoint(raw: &str, allow_remote: bool) -> Result<String> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Err(anyhow!("Ollama endpoint is required"));
+    }
+    if raw.len() > 2048 {
+        return Err(anyhow!("Ollama endpoint is too long (max 2048 chars)"));
+    }
+    let parsed = url::Url::parse(raw).map_err(|e| anyhow!("not a valid URL: {e}"))?;
+    let scheme = parsed.scheme();
+    if scheme != "http" && scheme != "https" {
+        return Err(anyhow!(
+            "Ollama endpoint scheme must be http or https (got {scheme})"
+        ));
+    }
+    if !allow_remote && !is_local_host(&parsed) {
+        return Err(anyhow!(
+            "Ollama endpoint host '{}' is not local. To use a remote endpoint, enable \
+             \"Allow remote Ollama endpoint\" in Settings.",
+            parsed.host_str().unwrap_or("?"),
+        ));
+    }
+    Ok(parsed.to_string())
+}
+
+fn is_local_host(u: &url::Url) -> bool {
+    // `url::Url::host()` parses the host into typed form, which strips
+    // the surrounding brackets that `host_str()` keeps on IPv6 literals.
+    match u.host() {
+        Some(url::Host::Domain(d)) => d.eq_ignore_ascii_case("localhost"),
+        Some(url::Host::Ipv4(v4)) => {
+            let ip = std::net::IpAddr::V4(v4);
+            ip.is_loopback() || is_private_ip(&ip)
+        }
+        Some(url::Host::Ipv6(v6)) => {
+            let ip = std::net::IpAddr::V6(v6);
+            ip.is_loopback() || is_private_ip(&ip)
+        }
+        None => false,
+    }
+}
+
+fn is_private_ip(ip: &std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => v4.is_private() || v4.is_link_local(),
+        std::net::IpAddr::V6(v6) => {
+            let octets = v6.octets();
+            // RFC 4193 ULA (fc00::/7) + RFC 4291 link-local (fe80::/10).
+            (octets[0] & 0xfe) == 0xfc || (octets[0] == 0xfe && (octets[1] & 0xc0) == 0x80)
+        }
+    }
+}
+
 pub struct OllamaProvider {
     client: Client,
     base_url: String,
@@ -347,5 +414,62 @@ mod tests {
         let uses = resp.tool_uses();
         assert_eq!(uses.len(), 1);
         assert_eq!(uses[0].1, "add_expense");
+    }
+
+    // --- validate_endpoint (audit S-4) ---
+
+    #[test]
+    fn validate_accepts_default_localhost() {
+        let out = validate_endpoint("http://localhost:11434", false).unwrap();
+        assert!(out.starts_with("http://localhost:11434"));
+    }
+
+    #[test]
+    fn validate_accepts_127_0_0_1_and_ipv6_loopback() {
+        validate_endpoint("http://127.0.0.1:11434", false).unwrap();
+        validate_endpoint("http://[::1]:11434", false).unwrap();
+    }
+
+    #[test]
+    fn validate_accepts_private_ranges() {
+        validate_endpoint("http://192.168.1.10:11434", false).unwrap();
+        validate_endpoint("http://10.0.0.4:11434", false).unwrap();
+        validate_endpoint("http://172.16.5.5:11434", false).unwrap();
+    }
+
+    #[test]
+    fn validate_rejects_public_host_without_opt_in() {
+        let err = validate_endpoint("https://ollama.example.com", false).unwrap_err();
+        assert!(err.to_string().contains("not local"));
+    }
+
+    #[test]
+    fn validate_accepts_public_host_with_opt_in() {
+        validate_endpoint("https://ollama.example.com", true).unwrap();
+    }
+
+    #[test]
+    fn validate_rejects_non_http_scheme() {
+        let err = validate_endpoint("file:///etc/passwd", true).unwrap_err();
+        assert!(err.to_string().contains("scheme must be http"));
+    }
+
+    #[test]
+    fn validate_rejects_unparseable() {
+        let err = validate_endpoint("not a url", false).unwrap_err();
+        assert!(err.to_string().contains("not a valid URL"));
+    }
+
+    #[test]
+    fn validate_rejects_empty() {
+        let err = validate_endpoint("   ", false).unwrap_err();
+        assert!(err.to_string().contains("required"));
+    }
+
+    #[test]
+    fn validate_rejects_overlong() {
+        let huge = "http://localhost:11434/".to_string() + &"x".repeat(2050);
+        let err = validate_endpoint(&huge, false).unwrap_err();
+        assert!(err.to_string().contains("too long"));
     }
 }

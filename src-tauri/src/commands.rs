@@ -155,14 +155,27 @@ pub async fn save_ollama_config(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let conn = state.db.lock().unwrap();
-    settings::set(&conn, settings::keys::OLLAMA_ENDPOINT, &endpoint).map_err(err)?;
+    let allow_remote = settings::get_or_default(&conn, settings::keys::OLLAMA_ALLOW_REMOTE, "0")
+        .map_err(err)?
+        == "1";
+    let cleaned = crate::llm::ollama::validate_endpoint(&endpoint, allow_remote).map_err(err)?;
+    settings::set(&conn, settings::keys::OLLAMA_ENDPOINT, &cleaned).map_err(err)?;
     settings::set(&conn, settings::keys::OLLAMA_MODEL, &model).map_err(err)?;
     Ok(())
 }
 
 #[tauri::command]
-pub async fn list_ollama_models(endpoint: String) -> Result<Vec<String>, String> {
-    let url = format!("{}/api/tags", endpoint.trim_end_matches('/'));
+pub async fn list_ollama_models(
+    endpoint: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<String>, String> {
+    let allow_remote = {
+        let conn = state.db.lock().unwrap();
+        settings::get_or_default(&conn, settings::keys::OLLAMA_ALLOW_REMOTE, "0").map_err(err)?
+            == "1"
+    };
+    let cleaned = crate::llm::ollama::validate_endpoint(&endpoint, allow_remote).map_err(err)?;
+    let url = format!("{}/api/tags", cleaned.trim_end_matches('/'));
     let resp = reqwest::Client::new().get(&url).send().await.map_err(err)?;
     if !resp.status().is_success() {
         return Err(format!("ollama returned {}", resp.status()));
@@ -255,10 +268,17 @@ pub async fn save_telegram_token(
 #[tauri::command]
 pub async fn generate_pairing_code(
     display_name: String,
+    is_owner_invite: bool,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
     let conn = state.db.lock().unwrap();
-    auth::generate_pairing_code(&conn, &display_name, time::OffsetDateTime::now_utc()).map_err(err)
+    let kind = if is_owner_invite {
+        auth::PairingKind::Owner
+    } else {
+        auth::PairingKind::Member
+    };
+    auth::generate_pairing_code(&conn, &display_name, kind, time::OffsetDateTime::now_utc())
+        .map_err(err)
 }
 
 #[tauri::command]
@@ -623,6 +643,29 @@ pub async fn set_run_in_background(
     settings::set(
         &conn,
         settings::keys::RUN_IN_BACKGROUND,
+        if enabled { "1" } else { "0" },
+    )
+    .map_err(err)
+}
+
+#[tauri::command]
+pub async fn get_ollama_allow_remote(state: State<'_, AppState>) -> Result<bool, String> {
+    let conn = state.db.lock().unwrap();
+    Ok(settings::get(&conn, settings::keys::OLLAMA_ALLOW_REMOTE)
+        .map_err(err)?
+        .as_deref()
+        == Some("1"))
+}
+
+#[tauri::command]
+pub async fn set_ollama_allow_remote(
+    enabled: bool,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let conn = state.db.lock().unwrap();
+    settings::set(
+        &conn,
+        settings::keys::OLLAMA_ALLOW_REMOTE,
         if enabled { "1" } else { "0" },
     )
     .map_err(err)

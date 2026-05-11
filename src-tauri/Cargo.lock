@@ -2444,7 +2444,7 @@ dependencies = [
 
 [[package]]
 name = "moneypenny"
-version = "0.3.13"
+version = "0.3.14"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2472,6 +2472,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "url",
  "zeroize",
 ]
 
