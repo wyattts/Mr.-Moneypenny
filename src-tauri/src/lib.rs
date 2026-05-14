@@ -18,6 +18,9 @@ pub mod commands;
 
 #[cfg(feature = "desktop")]
 mod app {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
     use crate::app_state::AppState;
     use crate::commands::*;
     use crate::db;
@@ -25,8 +28,15 @@ mod app {
 
     use tauri::menu::{Menu, MenuItem};
     use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-    use tauri::{Manager, WindowEvent};
+    use tauri::{Manager, RunEvent, WebviewUrl, WebviewWindowBuilder};
     use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
+
+    /// Wraps an AtomicBool stashed in Tauri's managed state so the
+    /// Quit menu handler can signal "yes, the user actually wants to
+    /// exit" and the run-loop's `ExitRequested` handler can tell that
+    /// apart from "the user just closed the window" (which we keep the
+    /// process alive through — see v0.3.17 webview-on-close work).
+    struct UserQuit(Arc<AtomicBool>);
 
     #[cfg_attr(mobile, tauri::mobile_entry_point)]
     pub fn run() {
@@ -52,8 +62,9 @@ mod app {
         let state = AppState::new(conn);
 
         let silent = std::env::args().any(|a| a == "--silent");
+        let user_quit = Arc::new(AtomicBool::new(false));
 
-        tauri::Builder::default()
+        let app = tauri::Builder::default()
             // Single-instance must be the FIRST plugin: when a second
             // launch is attempted, the plugin shorts the new process's
             // startup, hands its argv to the already-running instance,
@@ -63,14 +74,9 @@ mod app {
             // already has one.
             .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
                 // Existing instance hears about the new launch — show
-                // and focus the window instead of letting a new one
-                // start. macOS handles this natively via the Dock so
-                // the callback there is functionally a no-op.
-                if let Some(w) = app.get_webview_window("main") {
-                    let _ = w.show();
-                    let _ = w.unminimize();
-                    let _ = w.set_focus();
-                }
+                // (or rebuild, if it was closed-to-tray) and focus the
+                // window instead of letting a new one start.
+                show_or_create_main_window(app);
             }))
             .plugin(tauri_plugin_autostart::init(
                 MacosLauncher::LaunchAgent,
@@ -78,6 +84,7 @@ mod app {
             ))
             .plugin(tauri_plugin_updater::Builder::new().build())
             .manage(state)
+            .manage(UserQuit(user_quit.clone()))
             .setup(move |app| {
                 // Apply first-run defaults for bg-mode and autostart, then
                 // sync the OS autostart state with our saved setting.
@@ -86,12 +93,15 @@ mod app {
                 // Build tray icon + menu.
                 build_tray(app)?;
 
-                // If launched via --silent (e.g., autostart), hide the
-                // window so we live entirely in the tray.
-                if silent {
-                    if let Some(w) = app.get_webview_window("main") {
-                        let _ = w.hide();
-                    }
+                // Non-silent launch (user double-clicked the icon): build
+                // the main window now. Silent launch (autostart at login):
+                // skip — we live in the tray only until the user clicks
+                // it. tauri.conf.json declares no windows so nothing is
+                // auto-created either way. (v0.3.17: avoids loading the
+                // WebKit process at all in tray-only mode, which is the
+                // ~440 MB resident savings we're after.)
+                if !silent {
+                    show_or_create_main_window(app.handle());
                 }
 
                 // Tokio runtime is live by setup() so this is the right
@@ -115,23 +125,10 @@ mod app {
                 }
                 Ok(())
             })
-            .on_window_event(|window, event| {
-                if let WindowEvent::CloseRequested { api, .. } = event {
-                    let state: tauri::State<AppState> = window.state();
-                    let bg_mode = {
-                        let conn = state.db.lock().unwrap();
-                        settings::get(&conn, settings::keys::RUN_IN_BACKGROUND)
-                            .ok()
-                            .flatten()
-                            .as_deref()
-                            != Some("0")
-                    };
-                    if bg_mode {
-                        let _ = window.hide();
-                        api.prevent_close();
-                    }
-                }
-            })
+            // No on_window_event handler: a close request is allowed
+            // to actually close the window so the WebKit process exits.
+            // The app stays alive via the tray icon + the
+            // ExitRequested guard in the run callback below.
             .invoke_handler(tauri::generate_handler![
                 ping,
                 get_setup_state,
@@ -197,8 +194,42 @@ mod app {
                 list_merchant_rules,
                 delete_merchant_rule,
             ])
-            .run(tauri::generate_context!())
-            .expect("error while running tauri application");
+            .build(tauri::generate_context!())
+            .expect("error while building tauri application");
+
+        // Drive the event loop manually so we can intercept
+        // ExitRequested. With no startup window declared in
+        // tauri.conf.json, closing the last window would otherwise let
+        // the event loop wind down and kill the tray + scheduler +
+        // poller.
+        //
+        // - Quit menu / `app.exit()`: UserQuit flag is set first, so
+        //   we let exit happen.
+        // - User closes the window with RUN_IN_BACKGROUND=1 (default):
+        //   prevent exit; tray + scheduler + poller keep running.
+        // - User closes the window with RUN_IN_BACKGROUND=0: let exit
+        //   happen, same as if Tauri's default behavior were in
+        //   effect.
+        app.run(move |app_handle, event| {
+            if let RunEvent::ExitRequested { api, .. } = event {
+                let wants_quit = app_handle.state::<UserQuit>().0.load(Ordering::SeqCst);
+                if wants_quit {
+                    return;
+                }
+                let bg_mode = {
+                    let state = app_handle.state::<AppState>();
+                    let conn = state.db.lock().unwrap();
+                    settings::get(&conn, settings::keys::RUN_IN_BACKGROUND)
+                        .ok()
+                        .flatten()
+                        .as_deref()
+                        != Some("0")
+                };
+                if bg_mode {
+                    api.prevent_exit();
+                }
+            }
+        });
     }
 
     /// On first run, apply OS-specific defaults for bg-mode and autostart.
@@ -280,13 +311,17 @@ mod app {
                     ..
                 } = event
                 {
-                    let app = tray.app_handle();
-                    show_main_window(app);
+                    show_or_create_main_window(tray.app_handle());
                 }
             })
             .on_menu_event(|app, event| match event.id.as_ref() {
-                "show" => show_main_window(app),
-                "quit" => app.exit(0),
+                "show" => show_or_create_main_window(app),
+                "quit" => {
+                    // Flip the user-quit flag BEFORE exit() so the
+                    // ExitRequested guard lets the process die.
+                    app.state::<UserQuit>().0.store(true, Ordering::SeqCst);
+                    app.exit(0);
+                }
                 _ => {}
             })
             .build(app)?;
@@ -294,11 +329,25 @@ mod app {
         Ok(())
     }
 
-    fn show_main_window(app: &tauri::AppHandle) {
+    /// Show the main window if it exists, otherwise build it. Building
+    /// reloads the bundled HTML/JS and spins up a fresh WebKit process.
+    fn show_or_create_main_window(app: &tauri::AppHandle) {
         if let Some(w) = app.get_webview_window("main") {
             let _ = w.show();
             let _ = w.unminimize();
             let _ = w.set_focus();
+            return;
+        }
+        let result = WebviewWindowBuilder::new(app, "main", WebviewUrl::default())
+            .title("Mr. Moneypenny")
+            .inner_size(1100.0, 740.0)
+            .min_inner_size(900.0, 600.0)
+            .resizable(true)
+            .decorations(true)
+            .theme(Some(tauri::Theme::Dark))
+            .build();
+        if let Err(e) = result {
+            tracing::error!(target: "app::run", error=%e, "could not build main window");
         }
     }
 }

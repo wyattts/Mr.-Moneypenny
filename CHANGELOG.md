@@ -4,6 +4,23 @@ All notable changes to Mr. Moneypenny are documented here. The format roughly fo
 
 ## [Unreleased]
 
+## [0.3.17] - 2026-05-11
+
+Background-mode RAM optimization. Measured a v0.3.x install sitting in the tray and found ~560 MB resident, of which ~545 MB was the WebKit process and its IPC shared memory mapped into the parent. Killing the webview on window close drops tray-mode resident to roughly the Rust binary + plugins, in the ~30–50 MB range. First open from the tray now reloads the bundle (perceived latency: ~0.5–1 s on a warm machine); all subsequent UI is the same as before.
+
+### Changed
+
+- **The window is destroyed on close, not hidden.** When `RUN_IN_BACKGROUND=1` (default), the tray icon + scheduler + poller keep running so notifications and recurring rules still fire; the WebKit process exits, releasing ~440 MB resident on Linux. When the user clicks the tray icon (left-click or "Open Mr. Moneypenny") the window is rebuilt — bundle reloads, fresh React tree.
+- **Autostart (`--silent`) no longer creates a window at all.** Previously, autostart launched the app, built the window, then immediately hid it — leaving the WebKit process loaded for the lifetime of the session. Now silent launches go straight to tray-only mode; the window is only built when the user actually asks for it.
+- **`RUN_IN_BACKGROUND=0`** still exits the app cleanly on window close (no semantic change). The setting now means "should I keep the tray running after you close the window?"
+
+### Internal
+
+- `tauri.conf.json` no longer declares a startup window (`app.windows: []`). The window is constructed programmatically by `show_or_create_main_window()` with the same size/theme/decorations the JSON used to specify.
+- New `UserQuit(Arc<AtomicBool>)` managed state lets the Quit menu item flip a flag before calling `app.exit(0)`, so the `RunEvent::ExitRequested` guard can tell "user clicked Quit" apart from "user closed the window."
+- Switched from `Builder::run()` to `Builder::build().run(callback)` to get the event-loop callback. The callback `prevent_exit()`s while `RUN_IN_BACKGROUND=1` and the user hasn't quit; otherwise it lets the process exit normally.
+- The old `on_window_event` close-prevention handler is gone — close requests now actually close the window.
+
 ## [0.3.16] - 2026-05-11
 
 Two small v0.4.0-roadmap items lifted forward: composite expense index (D-4) and SPDX file headers across the source tree (Co-3). No user-visible behavior changes.
