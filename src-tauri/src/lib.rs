@@ -59,7 +59,13 @@ mod app {
         let path = db::default_db_path().expect("could not resolve db path");
         let conn = db::open(&path).expect("could not open db");
         db::migrate(&conn).expect("could not migrate db");
-        let state = AppState::new(conn);
+        // Phase 1 of the audit CC-1/Pf-4 fix: spawn a single-writer
+        // actor that owns its own SQLite Connection. New handlers
+        // submit closures over this; legacy handlers continue to use
+        // the Mutex-wrapped `conn` until phases 2-3 migrate them.
+        // SQLite WAL handles two simultaneous connections cleanly.
+        let db_actor = db::DbHandle::spawn_from_path(&path).expect("could not start db actor");
+        let state = AppState::new(conn, db_actor);
 
         let silent = std::env::args().any(|a| a == "--silent");
         let user_quit = Arc::new(AtomicBool::new(false));

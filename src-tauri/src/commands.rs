@@ -797,15 +797,23 @@ pub async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
     app.restart();
 }
 
+// Phase-1 smoke-test migration to the new DbHandle actor (audit
+// CC-1/Pf-4). These two handlers route through `state.db_actor` while
+// every other handler in this file still uses the legacy
+// `state.db.lock()` path. Future phases migrate the rest in batches.
+
 #[tauri::command]
 pub async fn get_check_updates_on_launch(state: State<'_, AppState>) -> Result<bool, String> {
-    let conn = state.db.lock().unwrap();
-    Ok(
-        settings::get(&conn, settings::keys::CHECK_UPDATES_ON_LAUNCH)
-            .map_err(err)?
-            .as_deref()
-            != Some("0"),
-    )
+    state
+        .db_actor
+        .run(|conn| {
+            Ok(
+                settings::get(conn, settings::keys::CHECK_UPDATES_ON_LAUNCH)?.as_deref()
+                    != Some("0"),
+            )
+        })
+        .await
+        .map_err(err)
 }
 
 #[tauri::command]
@@ -813,13 +821,17 @@ pub async fn set_check_updates_on_launch(
     enabled: bool,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let conn = state.db.lock().unwrap();
-    settings::set(
-        &conn,
-        settings::keys::CHECK_UPDATES_ON_LAUNCH,
-        if enabled { "1" } else { "0" },
-    )
-    .map_err(err)
+    state
+        .db_actor
+        .run(move |conn| {
+            settings::set(
+                conn,
+                settings::keys::CHECK_UPDATES_ON_LAUNCH,
+                if enabled { "1" } else { "0" },
+            )
+        })
+        .await
+        .map_err(err)
 }
 
 #[tauri::command]

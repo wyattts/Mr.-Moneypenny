@@ -5,6 +5,14 @@
 //! Migrations are SQL files embedded at compile time. Each file's last
 //! statement bumps `PRAGMA user_version`, and the runner applies any
 //! files whose version exceeds the current `user_version`.
+//!
+//! The `actor` submodule exposes [`DbHandle`], a single-writer async
+//! API that runs SQL on a dedicated OS thread. v0.3.19 introduced it
+//! as Phase 1 of the audit CC-1/Pf-4 fix; later phases migrate the
+//! existing `Arc<Mutex<Connection>>` callsites over.
+
+mod actor;
+pub use actor::DbHandle;
 
 use std::path::{Path, PathBuf};
 

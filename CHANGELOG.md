@@ -4,6 +4,22 @@ All notable changes to Mr. Moneypenny are documented here. The format roughly fo
 
 ## [Unreleased]
 
+## [0.3.19] - 2026-05-14
+
+Phase 1 of the audit CC-1/Pf-4 fix: a single-writer SQLite actor lands alongside the existing `Arc<Mutex<Connection>>` API. No callsite migration this release beyond one smoke-test handler — the actor is exercised in production to validate the abstraction before later phases move scheduler + commands.rs over to it.
+
+### Added
+
+- **`src-tauri/src/db/actor.rs`**: `DbHandle::spawn(conn)` and `spawn_from_path(path)` give callers a cheap-to-clone async handle. `DbHandle::run(|conn| -> Result<T>)` submits a closure to the actor's dedicated OS thread; the closure runs synchronously with exclusive `&mut Connection`, the result returns via a `oneshot::channel` the caller awaits. Bounded `mpsc::channel(64)` provides natural backpressure. Closures that panic are caught (`catch_unwind` + `AssertUnwindSafe`) and surface as `Err("db closure panicked: …")` rather than killing the actor thread. Dropping the last `DbHandle` clone closes the channel; the actor exits cleanly. 7 unit tests cover the round-trip, mutate-then-read across calls, concurrent submissions, panic recovery, error propagation, drop-shutdown, and dropped-caller paths.
+- **`AppState.db_actor: DbHandle`** ships alongside `AppState.db: Arc<Mutex<Connection>>`. New handlers should reach for `db_actor`; legacy handlers continue using `db` until phases 2-3 migrate them. The actor opens its own `Connection` to the same SQLite file — WAL mode handles two simultaneous connections cleanly. Connection count goes up by 1; resident-memory cost is ~50 KB.
+- **`get_check_updates_on_launch` and `set_check_updates_on_launch`** migrated to the actor as a smoke test. Read + write coverage on a low-blast-radius pair (read once on Settings load, write on toggle). Both still work identically from the UI — the migration is type-level only.
+
+### Internal
+
+- `AppState::new()` signature changed from `new(db: Connection)` to `new(db: Connection, db_actor: DbHandle)`. Only one caller (`lib.rs`), updated.
+- Migration runs twice at startup (once via the `Mutex<Connection>` path, once via `DbHandle::spawn_from_path`). Migrations are idempotent so the second call is a no-op against the already-migrated DB. Slight redundancy in service of the phased rollout.
+- Audit cross-references for this work: CC-1 (sync rusqlite on Tokio workers), CC-4 (Mutex-across-await fragility), CC-6 (scheduler unwraps on a poisoned lock). The actor pattern is the recommended fix for all three; phases 2-4 migrate the affected sites.
+
 ## [0.3.18] - 2026-05-14
 
 Frontend bundle is now code-split (audit Pf-3) and the release workflow is race-safe across multi-tag pushes. Pairs naturally with v0.3.17's close-window-on-tray work — every tray-click reload now parses a 65 KB initial shell instead of the previous ~225 KB monolith, with view chunks fetched on demand.

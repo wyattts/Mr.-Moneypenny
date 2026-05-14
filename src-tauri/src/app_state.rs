@@ -20,6 +20,8 @@ use std::sync::{Arc, Mutex};
 use anyhow::{Context, Result};
 use rusqlite::Connection;
 
+use crate::db::DbHandle;
+
 #[cfg(feature = "desktop")]
 use crate::llm::anthropic::{AnthropicProvider, DEFAULT_MODEL as DEFAULT_ANTHROPIC_MODEL};
 #[cfg(feature = "desktop")]
@@ -40,6 +42,13 @@ use crate::telegram::state::BotState;
 
 pub struct AppState {
     pub db: Arc<Mutex<Connection>>,
+    /// Async DB handle backed by a dedicated OS thread (audit CC-1/Pf-4
+    /// phase 1). Ships alongside `db` during migration; new handlers
+    /// should reach for this instead of the Mutex. Both fields point at
+    /// the same SQLite file via independent Connections — WAL handles
+    /// the concurrency. Phase 4 will remove `db` once nothing else
+    /// references it.
+    pub db_actor: DbHandle,
     pub bot: Arc<BotState>,
     #[allow(dead_code)] // only read by the desktop poller path
     inner: Mutex<Inner>,
@@ -59,9 +68,10 @@ struct Inner {
 }
 
 impl AppState {
-    pub fn new(db: Connection) -> Self {
+    pub fn new(db: Connection, db_actor: DbHandle) -> Self {
         Self {
             db: Arc::new(Mutex::new(db)),
+            db_actor,
             bot: Arc::new(BotState::new()),
             inner: Mutex::new(Inner {
                 started: false,
