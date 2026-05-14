@@ -161,8 +161,16 @@ fn make_deps(
     telegram: Arc<StubTelegram>,
 ) -> (RouterDeps, Arc<Mutex<Connection>>) {
     let conn = Arc::new(Mutex::new(conn));
+    // The telegram router is still on the Mutex path (phase 2 only
+    // migrated the scheduler). We populate `db_actor` with a separate
+    // in-memory Connection because RouterDeps requires the field; no
+    // test code here invokes the actor, so it can hold an empty DB.
+    let actor_conn = moneypenny_lib::db::open_in_memory().unwrap();
+    moneypenny_lib::db::migrate(&actor_conn).unwrap();
+    let db_actor = moneypenny_lib::db::DbHandle::spawn(actor_conn);
     let deps = RouterDeps {
         conn: conn.clone(),
+        db_actor,
         llm,
         client: telegram,
         state: Arc::new(BotState::new()),

@@ -21,6 +21,7 @@ use moneypenny_lib::telegram::client::{Chat, Message, TelegramApi, Update, User}
 use moneypenny_lib::telegram::router::RouterDeps;
 use moneypenny_lib::telegram::state::BotState;
 use rusqlite::Connection;
+use tempfile::TempDir;
 use time::macros::datetime;
 
 #[derive(Default)]
@@ -91,27 +92,45 @@ impl LLMProvider for NoopLlm {
     }
 }
 
-fn fresh_deps() -> (RouterDeps, Arc<Mutex<Connection>>, Arc<NoopTelegram>) {
-    let conn = db::open_in_memory().unwrap();
+/// Build a fresh scheduler test bench. The Mutex `conn` and the
+/// `db_actor` inside `RouterDeps` both point at the same on-disk
+/// SQLite file (under `TempDir`) — in-memory DBs would be private to
+/// each Connection, so the actor wouldn't see seed rows the test
+/// inserts via the Mutex Connection. The returned `TempDir` must
+/// outlive the test (kept on the stack by the caller).
+fn fresh_deps() -> (
+    RouterDeps,
+    Arc<Mutex<Connection>>,
+    Arc<NoopTelegram>,
+    TempDir,
+) {
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("test.sqlite");
+    let conn = db::open(&path).unwrap();
     db::migrate(&conn).unwrap();
     // Reactivate all seed categories so handler tests can use them.
     conn.execute("UPDATE categories SET is_active = 1 WHERE is_seed = 1", [])
         .unwrap();
     let conn = Arc::new(Mutex::new(conn));
+    // Spawn an actor on a separate Connection to the same file. SQLite
+    // WAL handles two simultaneous writer-eligible connections by
+    // serializing under BEGIN IMMEDIATE; readers see committed state.
+    let db_actor = db::DbHandle::spawn_from_path(&path).unwrap();
     let tg = Arc::new(NoopTelegram::default());
     let deps = RouterDeps {
         conn: conn.clone(),
+        db_actor,
         llm: Arc::new(NoopLlm),
         client: tg.clone(),
         state: Arc::new(BotState::new()),
         default_currency: "USD".into(),
     };
-    (deps, conn, tg)
+    (deps, conn, tg, tmp)
 }
 
 #[tokio::test]
 async fn tick_with_empty_queue_is_a_noop() {
-    let (deps, _, _) = fresh_deps();
+    let (deps, _, _, _tmp) = fresh_deps();
     let now = datetime!(2026-04-15 12:00:00 UTC);
     let fired = tick(&deps, now).await.unwrap();
     assert_eq!(fired, 0);
@@ -121,7 +140,7 @@ async fn tick_with_empty_queue_is_a_noop() {
 async fn tick_skips_stale_jobs_and_advances_them() {
     // A job 30 days overdue exceeds MAX_STALE_DAYS=7; tick should bump
     // its next_due_at forward by MAX_STALE_DAYS without firing it.
-    let (deps, conn, _) = fresh_deps();
+    let (deps, conn, _, _tmp) = fresh_deps();
     let now = datetime!(2026-04-15 12:00:00 UTC);
     let stale_due = datetime!(2026-03-15 12:00:00 UTC);
     let id = {
@@ -159,7 +178,7 @@ async fn tick_skips_stale_jobs_and_advances_them() {
 
 #[tokio::test]
 async fn budget_alert_fires_at_80_pct_then_not_again_same_month() {
-    let (deps, conn, tg) = fresh_deps();
+    let (deps, conn, tg, _tmp) = fresh_deps();
     pair_owner(&conn, 111, "Wyatt");
     let cid = category_id_by_name(&conn, "Dining Out");
     // $100 monthly target.
@@ -215,7 +234,7 @@ async fn budget_alert_fires_at_80_pct_then_not_again_same_month() {
 
 #[tokio::test]
 async fn budget_alert_disabled_setting_short_circuits() {
-    let (deps, conn, tg) = fresh_deps();
+    let (deps, conn, tg, _tmp) = fresh_deps();
     pair_owner(&conn, 111, "Wyatt");
     let cid = category_id_by_name(&conn, "Dining Out");
     {
@@ -258,7 +277,7 @@ async fn budget_alert_disabled_setting_short_circuits() {
 async fn weekly_summary_no_owner_just_advances() {
     // No paired owner — weekly summary can't DM anyone, so it just
     // slips its schedule forward by 7 days and tries again next week.
-    let (deps, conn, tg) = fresh_deps();
+    let (deps, conn, tg, _tmp) = fresh_deps();
     let now = datetime!(2026-04-15 12:00:00 UTC);
     let due = datetime!(2026-04-15 11:00:00 UTC);
     let id = {
@@ -286,7 +305,7 @@ async fn weekly_summary_no_owner_just_advances() {
 
 #[tokio::test]
 async fn weekly_summary_with_owner_dms_owner() {
-    let (deps, conn, tg) = fresh_deps();
+    let (deps, conn, tg, _tmp) = fresh_deps();
     pair_owner(&conn, 111, "Wyatt");
     // Insert one expense in the last 7 days.
     {
@@ -341,7 +360,7 @@ fn pair_owner(conn: &Mutex<Connection>, chat_id: i64, name: &str) {
 
 #[tokio::test]
 async fn auto_mode_recurring_inserts_expense_and_reschedules() {
-    let (deps, conn, _tg) = fresh_deps();
+    let (deps, conn, _tg, _tmp) = fresh_deps();
     let cid = category_id_by_name(&conn, "Entertainment");
     let now = datetime!(2026-04-15 12:00:00 UTC);
 
@@ -409,7 +428,7 @@ async fn auto_mode_recurring_inserts_expense_and_reschedules() {
 
 #[tokio::test]
 async fn confirm_mode_recurring_dms_owner_and_records_pending() {
-    let (deps, conn, tg) = fresh_deps();
+    let (deps, conn, tg, _tmp) = fresh_deps();
     pair_owner(&conn, 111, "Wyatt");
     let cid = category_id_by_name(&conn, "Entertainment");
     let now = datetime!(2026-04-15 12:00:00 UTC);
@@ -469,7 +488,7 @@ async fn confirm_mode_recurring_dms_owner_and_records_pending() {
 
 #[tokio::test]
 async fn confirm_mode_defers_when_chat_already_has_pending() {
-    let (deps, conn, _tg) = fresh_deps();
+    let (deps, conn, _tg, _tmp) = fresh_deps();
     pair_owner(&conn, 111, "Wyatt");
     let cid = category_id_by_name(&conn, "Entertainment");
     let now = datetime!(2026-04-15 12:00:00 UTC);
@@ -547,7 +566,7 @@ async fn confirm_mode_defers_when_chat_already_has_pending() {
 
 #[tokio::test]
 async fn paused_recurring_rule_just_advances_no_dm_no_insert() {
-    let (deps, conn, tg) = fresh_deps();
+    let (deps, conn, tg, _tmp) = fresh_deps();
     pair_owner(&conn, 111, "Wyatt");
     let cid = category_id_by_name(&conn, "Entertainment");
     let now = datetime!(2026-04-15 12:00:00 UTC);
@@ -590,7 +609,7 @@ async fn paused_recurring_rule_just_advances_no_dm_no_insert() {
 
 #[tokio::test]
 async fn missing_rule_disables_orphan_job() {
-    let (deps, conn, _tg) = fresh_deps();
+    let (deps, conn, _tg, _tmp) = fresh_deps();
     let now = datetime!(2026-04-15 12:00:00 UTC);
 
     let job_id = {
@@ -624,7 +643,7 @@ async fn missing_rule_disables_orphan_job() {
 async fn ensure_singleton_idempotent_across_simulated_relaunches() {
     // Two consecutive tick cycles in the same process simulate the user
     // launching the app twice. The singleton row count must stay at 1.
-    let (_deps, conn, _) = fresh_deps();
+    let (_deps, conn, _, _tmp) = fresh_deps();
     let due = datetime!(2026-04-15 12:00:00 UTC);
     {
         let c = conn.lock().unwrap();

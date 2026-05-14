@@ -104,6 +104,7 @@ impl AppState {
 
         let deps = RouterDeps {
             conn: Arc::clone(&self.db),
+            db_actor: self.db_actor.clone(),
             llm,
             client: Arc::new(client),
             state: Arc::clone(&self.bot),
@@ -159,6 +160,7 @@ impl AppState {
 
         let deps = crate::telegram::router::RouterDeps {
             conn: Arc::clone(&self.db),
+            db_actor: self.db_actor.clone(),
             llm,
             client: Arc::new(client),
             state: Arc::clone(&self.bot),

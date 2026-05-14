@@ -20,7 +20,6 @@
 //!      independently).
 
 use anyhow::Result;
-use rusqlite::params;
 use time::{Duration, OffsetDateTime};
 
 use crate::domain::recurring::{self as rec, RecurringMode};
@@ -58,10 +57,10 @@ pub async fn handle(deps: &RouterDeps, job: &Job, now: OffsetDateTime) -> Result
         }
     };
 
-    let rule = {
-        let conn = deps.conn.lock().unwrap();
-        recurring_rules::get(&conn, rule_id)?
-    };
+    let rule = deps
+        .db_actor
+        .run(move |conn| recurring_rules::get(conn, rule_id))
+        .await?;
 
     let Some(rule) = rule else {
         // Rule was deleted; the FK ON DELETE CASCADE on scheduled_jobs
@@ -100,10 +99,9 @@ pub async fn handle(deps: &RouterDeps, job: &Job, now: OffsetDateTime) -> Result
 
     match rule.mode {
         RecurringMode::Auto => {
-            {
-                let conn = deps.conn.lock().unwrap();
-                expenses::insert(&conn, &new_expense)?;
-            }
+            deps.db_actor
+                .run(move |conn| expenses::insert(conn, &new_expense))
+                .await?;
             tracing::info!(
                 target: "scheduler::recurring",
                 rule_id = rule.id,
@@ -114,16 +112,19 @@ pub async fn handle(deps: &RouterDeps, job: &Job, now: OffsetDateTime) -> Result
         RecurringMode::Confirm => {
             // Find the household owner's chat_id. (If there's no owner,
             // we can't ask anyone — disable the job until pairing happens.)
-            let owner: Option<i64> = {
-                let conn = deps.conn.lock().unwrap();
-                conn.query_row(
-                    "SELECT chat_id FROM telegram_authorized_chats \
-                     WHERE role = 'owner' ORDER BY chat_id LIMIT 1",
-                    [],
-                    |r| r.get(0),
-                )
-                .ok()
-            };
+            let owner: Option<i64> = deps
+                .db_actor
+                .run(|conn| {
+                    Ok(conn
+                        .query_row(
+                            "SELECT chat_id FROM telegram_authorized_chats \
+                             WHERE role = 'owner' ORDER BY chat_id LIMIT 1",
+                            [],
+                            |r| r.get(0),
+                        )
+                        .ok())
+                })
+                .await?;
             let Some(chat_id) = owner else {
                 // No owner paired — leave for retry; once the user
                 // pairs, the next tick will see them.
@@ -131,10 +132,10 @@ pub async fn handle(deps: &RouterDeps, job: &Job, now: OffsetDateTime) -> Result
             };
 
             // Don't stack confirmations on the same chat.
-            let already_pending = {
-                let conn = deps.conn.lock().unwrap();
-                recurring_rules::chat_has_pending(&conn, chat_id)?
-            };
+            let already_pending = deps
+                .db_actor
+                .run(move |conn| recurring_rules::chat_has_pending(conn, chat_id))
+                .await?;
             if already_pending {
                 return Ok(JobOutcome::Retry);
             }
@@ -157,17 +158,17 @@ pub async fn handle(deps: &RouterDeps, job: &Job, now: OffsetDateTime) -> Result
                 return Ok(JobOutcome::Retry);
             }
 
-            // Insert the pending row.
+            // Insert the pending row. The not-yet-inserted expense's
+            // `occurred_at` and amount aren't stashed here — when the
+            // router resolves the user's yes/no reply, it re-reads
+            // those off the rule by rule_id.
             let expires_at = now + Duration::hours(CONFIRM_TTL_HOURS);
-            {
-                let conn = deps.conn.lock().unwrap();
-                recurring_rules::insert_pending(&conn, chat_id, rule.id, now, expires_at)?;
-                // Stash the not-yet-inserted expense's `occurred_at` and
-                // amount on the pending row implicitly via the rule_id;
-                // the router resolves it from the rule when the user
-                // replies, so we don't store anything else here.
-                let _ = params![]; // (no-op — keep imports tidy)
-            }
+            let rule_id = rule.id;
+            deps.db_actor
+                .run(move |conn| {
+                    recurring_rules::insert_pending(conn, chat_id, rule_id, now, expires_at)
+                })
+                .await?;
             tracing::info!(
                 target: "scheduler::recurring",
                 rule_id = rule.id,

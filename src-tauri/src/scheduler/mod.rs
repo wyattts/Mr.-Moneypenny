@@ -223,11 +223,13 @@ pub fn is_stale(job: &Job, now: OffsetDateTime) -> bool {
 // ---------------------------------------------------------------------
 
 /// Process all due jobs once. Used by the scheduler loop AND by tests.
+///
+/// Audit CC-1 phase 2: all DB access routes through `deps.db_actor`
+/// instead of locking `deps.conn`. Tokio worker threads now await a
+/// oneshot while the actor thread runs SQL — heavy queries no longer
+/// stall the runtime.
 pub async fn tick(deps: &RouterDeps, now: OffsetDateTime) -> Result<usize> {
-    let due = {
-        let conn = deps.conn.lock().unwrap();
-        list_due(&conn, now)?
-    };
+    let due = deps.db_actor.run(move |conn| list_due(conn, now)).await?;
     let mut fired = 0;
     for job in due {
         if is_stale(&job, now) {
@@ -242,8 +244,10 @@ pub async fn tick(deps: &RouterDeps, now: OffsetDateTime) -> Result<usize> {
             // For singleton jobs (weekly_summary / budget_alert_sweep)
             // the handler-specific schedule kicks in on the next real tick.
             let new_due = now + Duration::from_secs((MAX_STALE_DAYS as u64) * 86_400);
-            let conn = deps.conn.lock().unwrap();
-            update_next_due(&conn, job.id, new_due, None)?;
+            let job_id = job.id;
+            deps.db_actor
+                .run(move |conn| update_next_due(conn, job_id, new_due, None))
+                .await?;
             continue;
         }
 
@@ -253,14 +257,19 @@ pub async fn tick(deps: &RouterDeps, now: OffsetDateTime) -> Result<usize> {
             JobKind::BudgetAlertSweep => budget_alerts::handle(deps, &job, now).await,
         };
 
-        let conn = deps.conn.lock().unwrap();
         match outcome {
             Ok(JobOutcome::Reschedule(next)) => {
-                update_next_due(&conn, job.id, next, Some(now))?;
+                let job_id = job.id;
+                deps.db_actor
+                    .run(move |conn| update_next_due(conn, job_id, next, Some(now)))
+                    .await?;
                 fired += 1;
             }
             Ok(JobOutcome::Done) => {
-                disable_job(&conn, job.id)?;
+                let job_id = job.id;
+                deps.db_actor
+                    .run(move |conn| disable_job(conn, job_id))
+                    .await?;
                 fired += 1;
             }
             Ok(JobOutcome::Retry) => {

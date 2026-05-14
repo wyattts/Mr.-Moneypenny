@@ -4,6 +4,23 @@ All notable changes to Mr. Moneypenny are documented here. The format roughly fo
 
 ## [Unreleased]
 
+## [0.3.20] - 2026-05-14
+
+Phase 2 of the audit CC-1/Pf-4 fix: the entire scheduler subsystem is migrated off `Arc<Mutex<Connection>>` and onto the v0.3.19 `DbHandle` actor. Tokio worker threads no longer block on sync rusqlite for any scheduler-side work — the actor thread serializes SQL while workers await a `oneshot`. 16 lock-and-query sites identified by the audit are gone.
+
+### Changed
+
+- **`RouterDeps`** now carries `db_actor: DbHandle` alongside the legacy `conn: Arc<Mutex<Connection>>`. The two fields share the same `AppState` actor (one clone forwarded), so the single-writer invariant holds across the scheduler and (still-Mutex-path) router. The Mutex field is retained for phase 3 callsites; phase 4 will remove it.
+- **`scheduler/mod.rs::tick`** — 3 lock sites migrated. The pre-handler `list_due`, the stale-job bump, and the post-handler reschedule/disable each become a `db_actor.run(move |conn| …)` await. No semantic change in retry / `JobOutcome` handling.
+- **`scheduler/recurring.rs::handle`** — 5 lock sites migrated. The rule fetch, the expense insert in auto mode, the owner lookup in confirm mode, the chat-has-pending check, and the pending-row insert all route through the actor. Removed the dead `let _ = params![]` no-op (and the now-unused `rusqlite::params` import).
+- **`scheduler/budget_alerts.rs::handle`** — 7 lock sites migrated and consolidated. The toggle + owner lookup are folded into one round-trip; the categories + currency fetch into another; the per-category SUM + "already-alerted threshold list" pulls into one round-trip per category (down from two locks per loop iteration). The fire-and-record loop's INSERT happens via the actor.
+- **`scheduler/weekly_summary.rs::handle`** — 6 lock sites collapsed into 2 actor round-trips. The toggle + owner check fold together at the top; the 7-day rollup (total, count, top-3 categories, currency) fold into a single closure that runs all four queries on the actor thread before returning.
+
+### Internal
+
+- **Test bench**: `tests/integration_scheduler.rs::fresh_deps` now creates a `tempfile::TempDir` and opens both the legacy `Connection` and the `DbHandle` against the same on-disk SQLite file. In-memory DBs (`open_in_memory`) are per-Connection-private, so the actor wouldn't see seed rows the test inserts via the Mutex path. All 12 call sites updated to the 4-tuple return (the `TempDir` is held on the test's stack to keep the file alive). `tests/integration_telegram.rs::make_deps` adds a separate in-memory `DbHandle` placeholder since the router still routes through the Mutex.
+- The scheduler's overall round-trip count across `tick` + each handler dropped from 16 lock acquisitions to roughly 10–12 actor calls, mostly because the budget-alert and weekly-summary handlers now batch related reads into single closures. Each actor call has higher per-call overhead than a Mutex lock but the Tokio runtime stays responsive throughout, which is the audit's actual concern.
+
 ## [0.3.19] - 2026-05-14
 
 Phase 1 of the audit CC-1/Pf-4 fix: a single-writer SQLite actor lands alongside the existing `Arc<Mutex<Connection>>` API. No callsite migration this release beyond one smoke-test handler — the actor is exercised in production to validate the abstraction before later phases move scheduler + commands.rs over to it.
