@@ -153,16 +153,49 @@ jobs:
     # silently breaks the auto-updater (the updater fetches
     # latest/download/latest.json which is gated on the `latest` flag).
     # See v0.3.4 retraction in the CHANGELOG for prior art.
+    #
+    # Race-safety (added after v0.3.16/v0.3.17 collision): when multiple
+    # tags are pushed in a single `git push`, GitHub Actions fires one
+    # workflow run per tag and the matrix builds finish in arbitrary
+    # order. The earlier behavior — unconditional `gh release edit ...
+    # --latest` — meant whichever promote job ran *last* won the latest
+    # flag, even if it was the older version. We now compare against
+    # the highest version tag across all releases (including draft
+    # siblings still being built) and only flag --latest when we're it.
     needs: release
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - name: Promote
+      - name: Promote (only if this is the highest version tag)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          THIS_TAG: ${{ github.ref_name }}
         run: |
-          gh release edit "${{ github.ref_name }}" \
+          set -euo pipefail
+
+          # Highest non-prerelease tag across the repo, including drafts
+          # — a draft here is a sibling release run that hasn't promoted
+          # yet, and we want to defer to it if its version is higher.
+          # `sort -V` is semver-aware (v0.3.10 > v0.3.9).
+          highest=$(gh release list --limit 100 \
             --repo "${{ github.repository }}" \
-            --draft=false \
-            --latest
+            --json tagName,isPrerelease \
+            --jq '[.[] | select(.isPrerelease|not) | .tagName] | .[]' \
+            | sort -V | tail -1)
+
+          echo "this_tag=$THIS_TAG"
+          echo "highest_tag=$highest"
+
+          if [ "$highest" = "$THIS_TAG" ]; then
+            gh release edit "$THIS_TAG" \
+              --repo "${{ github.repository }}" \
+              --draft=false \
+              --latest
+            echo "Promoted $THIS_TAG to latest."
+          else
+            gh release edit "$THIS_TAG" \
+              --repo "${{ github.repository }}" \
+              --draft=false
+            echo "Published $THIS_TAG as non-draft; kept $highest as latest."
+          fi

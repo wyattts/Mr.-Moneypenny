@@ -4,6 +4,10 @@ All notable changes to Mr. Moneypenny are documented here. The format roughly fo
 
 ## [Unreleased]
 
+### Internal
+
+- `release.yml` promote step is now race-safe across multi-tag pushes. When `git push` ships multiple release tags in one go (as we did with v0.3.13–v0.3.15 and again with v0.3.16/v0.3.17), each tag spawns its own workflow run and the matrix builds finish in arbitrary order. The old unconditional `gh release edit … --latest` meant whichever promote ran *last* won the latest flag, even if it was the older version — which is exactly what bit us on v0.3.17 (built first, but v0.3.16 finished its matrix later and stomped the latest flag). Promote now computes the highest non-prerelease tag across all releases (including draft siblings still being built) and only flags `--latest` when it matches ours. Both race orders converge to "highest tag = latest" without manual intervention.
+
 ## [0.3.17] - 2026-05-11
 
 Background-mode RAM optimization. Measured a v0.3.x install sitting in the tray and found ~560 MB resident, of which ~545 MB was the WebKit process and its IPC shared memory mapped into the parent. Killing the webview on window close drops tray-mode resident to roughly the Rust binary + plugins, in the ~30–50 MB range. First open from the tray now reloads the bundle (perceived latency: ~0.5–1 s on a warm machine); all subsequent UI is the same as before.
