@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Wyatt Smith and contributors
-import { useEffect, useState } from "react";
+import { lazy, useEffect, useState } from "react";
 import { Navigate, Route, Routes } from "react-router-dom";
 
 import { Brand } from "@/components/Brand";
@@ -8,12 +8,38 @@ import { getSetupState } from "@/lib/tauri";
 import { stepFromSavedNumber, useWizard } from "@/lib/store";
 import { Wizard } from "@/wizard/Wizard";
 import { MainApp } from "@/views/MainApp";
-import { Insights } from "@/views/Insights";
-import { Forecast } from "@/views/Forecast";
-import { Ledger } from "@/views/Ledger";
-import { Categories } from "@/views/Categories";
-import { Household } from "@/views/Household";
-import { Settings } from "@/views/Settings";
+
+// Audit Pf-3: code-split the routed views so the initial bundle parses
+// only the layout shell + the first route. Forecast (~2.8k LOC) and
+// Insights both pull in Recharts; lazy-loading lets the bundler emit
+// a shared Recharts chunk that only fetches when a chart view is
+// rendered. With v0.3.17 (close-window-on-tray) this is doubly useful:
+// every tray-click reload now parses a smaller initial bundle.
+//
+// MainApp stays eager — it's the layout shell that the Suspense
+// fallback (defined in MainApp.tsx) sits inside, so the sidebar +
+// header stay mounted while a route chunk fetches.
+//
+// React.lazy requires default exports; the views are named exports,
+// so each thunk shims the rename inline.
+const Insights = lazy(() =>
+  import("@/views/Insights").then((m) => ({ default: m.Insights })),
+);
+const Forecast = lazy(() =>
+  import("@/views/Forecast").then((m) => ({ default: m.Forecast })),
+);
+const Ledger = lazy(() =>
+  import("@/views/Ledger").then((m) => ({ default: m.Ledger })),
+);
+const Categories = lazy(() =>
+  import("@/views/Categories").then((m) => ({ default: m.Categories })),
+);
+const Household = lazy(() =>
+  import("@/views/Household").then((m) => ({ default: m.Household })),
+);
+const Settings = lazy(() =>
+  import("@/views/Settings").then((m) => ({ default: m.Settings })),
+);
 
 export default function App() {
   const setup = useWizard((s) => s.setup);

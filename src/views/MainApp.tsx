@@ -3,7 +3,14 @@
 /**
  * Main application shell shown after setup completes. Persistent sidebar
  * + Outlet for the current view.
+ *
+ * The routed views (Insights, Forecast, etc.) are lazy-loaded in
+ * `App.tsx` via React.lazy, so the Outlet sits inside a Suspense
+ * boundary scoped to the view area only. The sidebar and header stay
+ * mounted during chunk fetch — only the right-hand view region shows
+ * the fallback.
  */
+import { Suspense } from "react";
 import { NavLink, Outlet } from "react-router-dom";
 
 import { Brand } from "@/components/Brand";
@@ -49,8 +56,25 @@ export function MainApp() {
       </aside>
       <main className="flex-1 overflow-y-auto">
         <UpdateBanner />
-        <Outlet />
+        <Suspense fallback={<ViewLoadingFallback />}>
+          <Outlet />
+        </Suspense>
       </main>
+    </div>
+  );
+}
+
+/**
+ * Placeholder shown while a lazy-loaded route chunk is fetching. Kept
+ * intentionally minimal — chunk loads from disk in Tauri so this
+ * usually flashes for <100 ms and a heavier spinner just looks janky.
+ */
+function ViewLoadingFallback() {
+  return (
+    <div className="flex h-full items-center justify-center">
+      <span className="text-xs uppercase tracking-widest text-graphite-500">
+        Loading…
+      </span>
     </div>
   );
 }

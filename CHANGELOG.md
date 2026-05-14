@@ -4,9 +4,20 @@ All notable changes to Mr. Moneypenny are documented here. The format roughly fo
 
 ## [Unreleased]
 
+## [0.3.18] - 2026-05-14
+
+Frontend bundle is now code-split (audit Pf-3) and the release workflow is race-safe across multi-tag pushes. Pairs naturally with v0.3.17's close-window-on-tray work — every tray-click reload now parses a 65 KB initial shell instead of the previous ~225 KB monolith, with view chunks fetched on demand.
+
+### Changed
+
+- **Routed views are lazy-loaded** via `React.lazy` + `Suspense` (audit Pf-3). `App.tsx` defers Insights, Forecast, Ledger, Categories, Household, and Settings to dynamic imports; only the layout shell (`MainApp` + Wizard chrome) is in the initial chunk. The bundler emits a shared 386 KB Recharts chunk (`LineChart`) that loads only when a chart-using view (Insights or Forecast) is first rendered.
+- **Suspense fallback** is scoped to the view region inside `MainApp.tsx`'s `<Outlet>`, so the sidebar and header stay mounted while a route chunk fetches — only the main view area shows the brief "Loading…" placeholder. From-disk chunk loads in Tauri are typically <100 ms so the placeholder usually flashes imperceptibly.
+
 ### Internal
 
-- `release.yml` promote step is now race-safe across multi-tag pushes. When `git push` ships multiple release tags in one go (as we did with v0.3.13–v0.3.15 and again with v0.3.16/v0.3.17), each tag spawns its own workflow run and the matrix builds finish in arbitrary order. The old unconditional `gh release edit … --latest` meant whichever promote ran *last* won the latest flag, even if it was the older version — which is exactly what bit us on v0.3.17 (built first, but v0.3.16 finished its matrix later and stomped the latest flag). Promote now computes the highest non-prerelease tag across all releases (including draft siblings still being built) and only flags `--latest` when it matches ours. Both race orders converge to "highest tag = latest" without manual intervention.
+- `release.yml` promote step is now **race-safe across multi-tag pushes**. When `git push` ships multiple release tags in one go (as we did with v0.3.13–v0.3.15 and again with v0.3.16/v0.3.17), each tag spawns its own workflow run and the matrix builds finish in arbitrary order. The old unconditional `gh release edit … --latest` meant whichever promote ran *last* won the latest flag, even if it was the older version — which is exactly what bit us on v0.3.17 (built first, but v0.3.16 finished its matrix later and stomped the latest flag). Promote now computes the highest non-prerelease tag across all releases (including draft siblings still being built) and only flags `--latest` when it matches ours. Both race orders converge to "highest tag = latest" without manual intervention.
+- Bundle sizes (gzipped) after the split: 65 KB initial shell + 11–18 KB per content view + 106 KB shared Recharts chunk. Total transferred per cold load with default route (`/insights`): ~190 KB gzipped vs ~225 KB before; total transferred for non-chart routes (Settings, Ledger, etc.): ~75 KB gzipped.
+- Dependabot bumps merged this batch: `tokio 1.52.1 → 1.52.3`, `postcss 8.5.12 → 8.5.14`, `hkdf 0.12 → 0.13`, `sha2 0.10 → 0.11`, `machine-uid 0.5 → 0.6` (perf-only: macOS now uses `gethostuuid(3)` instead of shelling out to `ioreg`; UID value unchanged so existing users' KDF-derived secrets still decrypt), `actions/checkout 4 → 6`, `actions/setup-node 4 → 6`.
 
 ## [0.3.17] - 2026-05-11
 
