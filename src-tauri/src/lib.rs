@@ -146,6 +146,8 @@ mod app {
                 set_ollama_allow_remote,
                 get_llm_daily_cost_cap_micros,
                 set_llm_daily_cost_cap_micros,
+                report_estimate,
+                report_generate,
                 save_telegram_token,
                 generate_pairing_code,
                 list_authorized_chats,

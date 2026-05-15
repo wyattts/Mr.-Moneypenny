@@ -11,6 +11,7 @@ pub mod anthropic;
 pub mod dispatcher;
 pub mod ollama;
 pub mod pricing;
+pub mod report;
 pub mod system_prompt;
 pub mod tools;
 

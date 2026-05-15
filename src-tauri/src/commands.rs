@@ -787,6 +787,203 @@ pub async fn set_llm_daily_cost_cap_micros(
         .map_err(err)
 }
 
+// ---------------------------------------------------------------------
+// AI Report Wizard (v0.4.0). Deterministic figures come from
+// `insights::report`; the LLM only narrates them. Cost is logged to
+// `llm_usage` and gated by the same daily cap as the bot.
+// ---------------------------------------------------------------------
+
+use crate::insights::report::{build_report_data, ReportData};
+use crate::llm::report as report_writer;
+use report_writer::{ReportRequest, REPORT_ANTHROPIC_MODEL};
+
+/// What model + provider a report would use, given current settings.
+/// Anthropic forces Sonnet; Ollama uses the configured local model
+/// (unpriced → zero estimated cost).
+fn report_model(provider_choice: &str, ollama_model: &str) -> (String, String) {
+    if provider_choice == "ollama" {
+        ("ollama".to_string(), ollama_model.to_string())
+    } else {
+        ("anthropic".to_string(), REPORT_ANTHROPIC_MODEL.to_string())
+    }
+}
+
+#[derive(Serialize)]
+pub struct ReportEstimate {
+    pub provider: String,
+    pub model: String,
+    pub estimate_micros: i64,
+    pub today_micros: i64,
+    pub cap_micros: i64,
+    /// True when the cap is enabled (>= 0) and today's spend plus the
+    /// estimate would cross it. The UI warns but still lets the user
+    /// proceed; the hard refusal is server-side in `report_generate`.
+    pub would_exceed_cap: bool,
+}
+
+struct ReportCtx {
+    data: ReportData,
+    provider_choice: String,
+    ollama_model: String,
+    ollama_endpoint: String,
+    today_micros: i64,
+    cap_micros: i64,
+}
+
+fn load_report_ctx(
+    conn: &Connection,
+    req: &ReportRequest,
+    now: OffsetDateTime,
+) -> anyhow::Result<ReportCtx> {
+    let data = build_report_data(
+        conn,
+        req.timeframe,
+        now,
+        req.monthly_income_cents,
+        req.include_merchant_samples,
+    )?;
+    let provider_choice =
+        settings::get(conn, settings::keys::LLM_PROVIDER)?.unwrap_or_else(|| "anthropic".into());
+    let ollama_model = settings::get_or_default(conn, settings::keys::OLLAMA_MODEL, "llama3:8b")?;
+    let ollama_endpoint = settings::get_or_default(
+        conn,
+        settings::keys::OLLAMA_ENDPOINT,
+        "http://localhost:11434",
+    )?;
+    let cap_micros = settings::get(conn, settings::keys::LLM_DAILY_COST_CAP_MICROS)?
+        .and_then(|s| s.parse::<i64>().ok())
+        .unwrap_or(DEFAULT_DAILY_COST_CAP_MICROS);
+    let today_micros = llm_usage::today_cost_micros(conn, now)?;
+    Ok(ReportCtx {
+        data,
+        provider_choice,
+        ollama_model,
+        ollama_endpoint,
+        today_micros,
+        cap_micros,
+    })
+}
+
+#[tauri::command]
+pub async fn report_estimate(
+    input: ReportRequest,
+    state: State<'_, AppState>,
+) -> Result<ReportEstimate, String> {
+    let now = OffsetDateTime::now_utc();
+    let req = input.clone();
+    let ctx = state
+        .db_actor
+        .run(move |conn| load_report_ctx(conn, &req, now))
+        .await
+        .map_err(err)?;
+
+    let (provider, model) = report_model(&ctx.provider_choice, &ctx.ollama_model);
+    let (prompt, max_tokens) = report_writer::preview_prompt(&ctx.data, &input);
+    let estimate_micros = report_writer::estimate_micros(&model, &prompt, max_tokens);
+    let would_exceed_cap =
+        ctx.cap_micros >= 0 && ctx.today_micros + estimate_micros > ctx.cap_micros;
+
+    Ok(ReportEstimate {
+        provider,
+        model,
+        estimate_micros,
+        today_micros: ctx.today_micros,
+        cap_micros: ctx.cap_micros,
+        would_exceed_cap,
+    })
+}
+
+#[derive(Serialize)]
+pub struct GeneratedReportResponse {
+    pub report: report_writer::GeneratedReport,
+    /// The deterministic figures the narrative is built on — the UI
+    /// renders these as the authoritative numbers alongside the prose.
+    pub figures: serde_json::Value,
+    pub provider: String,
+    pub model: String,
+    pub cost_micros: i64,
+    pub generated_at: String,
+    pub timeframe_label: String,
+}
+
+#[tauri::command]
+pub async fn report_generate(
+    input: ReportRequest,
+    state: State<'_, AppState>,
+) -> Result<GeneratedReportResponse, String> {
+    let now = OffsetDateTime::now_utc();
+    let req = input.clone();
+    let ctx = state
+        .db_actor
+        .run(move |conn| load_report_ctx(conn, &req, now))
+        .await
+        .map_err(err)?;
+
+    // Hard daily-cap refusal, consistent with the bot's per-turn check:
+    // refuse only once already at/over the cap (we can't know the exact
+    // cost before the call).
+    if ctx.cap_micros >= 0 && ctx.today_micros >= ctx.cap_micros {
+        return Err(format!(
+            "Daily AI cost cap reached ({}/{} used today). Raise it in Settings or try tomorrow.",
+            crate::llm::pricing::format_micros_usd(ctx.today_micros),
+            crate::llm::pricing::format_micros_usd(ctx.cap_micros),
+        ));
+    }
+
+    let (provider_name, model) = report_model(&ctx.provider_choice, &ctx.ollama_model);
+
+    let (report, usage) = if ctx.provider_choice == "ollama" {
+        let provider =
+            OllamaProvider::with_base_url(ctx.ollama_model.clone(), ctx.ollama_endpoint.clone())
+                .map_err(err)?;
+        let (r, u, _m) = report_writer::generate(&provider, &ctx.data, &input)
+            .await
+            .map_err(err)?;
+        (r, u)
+    } else {
+        let key = secrets::retrieve(secrets::keys::ANTHROPIC_API_KEY)
+            .map_err(err)?
+            .ok_or_else(|| "no Anthropic API key saved".to_string())?;
+        let provider = AnthropicProvider::with_options(
+            key,
+            REPORT_ANTHROPIC_MODEL,
+            "https://api.anthropic.com",
+        )
+        .map_err(err)?;
+        let (r, u, _m) = report_writer::generate(&provider, &ctx.data, &input)
+            .await
+            .map_err(err)?;
+        (r, u)
+    };
+
+    let cost_micros = crate::llm::pricing::compute_cost_micros(&model, &usage).unwrap_or(0);
+
+    // Log to llm_usage so report spend shows in Settings and counts
+    // toward the daily cap, exactly like the bot's calls. Best-effort.
+    {
+        let pn = provider_name.clone();
+        let m = model.clone();
+        let _ = state
+            .db_actor
+            .run(move |conn| llm_usage::log(conn, &pn, &m, &usage, now))
+            .await;
+    }
+
+    let generated_at = now
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_else(|_| now.unix_timestamp().to_string());
+
+    Ok(GeneratedReportResponse {
+        figures: serde_json::to_value(&ctx.data).unwrap_or(serde_json::Value::Null),
+        timeframe_label: ctx.data.timeframe_label.clone(),
+        report,
+        provider: provider_name,
+        model,
+        cost_micros,
+        generated_at,
+    })
+}
+
 #[tauri::command]
 pub async fn get_ollama_allow_remote(state: State<'_, AppState>) -> Result<bool, String> {
     state
