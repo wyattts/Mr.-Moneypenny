@@ -10,6 +10,8 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 use time::{Date, Duration, OffsetDateTime, Time};
 
+use rusqlite::Connection;
+
 use crate::app_state::AppState;
 use crate::domain::{CategoryKind, ExpenseSource, NewCategory};
 use crate::insights::{
@@ -555,73 +557,82 @@ pub struct LedgerRow {
     pub logged_by_name: Option<String>,
 }
 
+/// Plain helper version of the `list_expenses` SQL pipeline so the
+/// integration tests in `tests/integration_commands.rs` can exercise
+/// it without going through Tauri's `State<>` machinery (audit T-1).
+/// The Tauri command wrapper below is a one-liner that defers here.
+pub fn list_expenses_query(
+    conn: &Connection,
+    filters: &ExpenseFilters,
+    tz: time::UtcOffset,
+) -> anyhow::Result<Vec<LedgerRow>> {
+    let limit = filters.limit.unwrap_or(100).min(500);
+    let offset = filters.offset.unwrap_or(0);
+    let mut sql = String::from(
+        "SELECT e.id, e.amount_cents, e.currency, e.category_id, c.name, c.kind, e.description,
+                e.occurred_at, e.source, e.logged_by_chat_id, t.display_name
+         FROM expenses e
+         LEFT JOIN categories c ON c.id = e.category_id
+         LEFT JOIN telegram_authorized_chats t ON t.chat_id = e.logged_by_chat_id
+         WHERE 1=1",
+    );
+    let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+
+    if let Some(id) = filters.category_id {
+        sql.push_str(" AND e.category_id = ?");
+        params.push(Box::new(id));
+    }
+    if let Some(d) = filters.start_date {
+        sql.push_str(" AND e.occurred_at >= ?");
+        params.push(Box::new(d.with_time(Time::MIDNIGHT).assume_offset(tz)));
+    }
+    if let Some(d) = filters.end_date {
+        let next = d + Duration::days(1);
+        sql.push_str(" AND e.occurred_at < ?");
+        params.push(Box::new(next.with_time(Time::MIDNIGHT).assume_offset(tz)));
+    }
+    if let Some(s) = filters.search.as_ref().filter(|s| !s.trim().is_empty()) {
+        sql.push_str(" AND (e.description LIKE ? OR e.raw_message LIKE ?)");
+        let pattern = format!("%{}%", s.trim());
+        params.push(Box::new(pattern.clone()));
+        params.push(Box::new(pattern));
+    }
+    sql.push_str(" ORDER BY e.occurred_at DESC, e.id DESC LIMIT ? OFFSET ?");
+    params.push(Box::new(limit));
+    params.push(Box::new(offset));
+
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt
+        .query_map(rusqlite::params_from_iter(params.iter()), |r| {
+            let kind: Option<CategoryKind> = r.get(5)?;
+            Ok(LedgerRow {
+                id: r.get(0)?,
+                amount_cents: r.get(1)?,
+                currency: r.get(2)?,
+                category_id: r.get(3)?,
+                category_name: r.get(4)?,
+                category_kind: kind.map(|k| k.as_str().to_string()),
+                description: r.get(6)?,
+                occurred_at: r.get(7)?,
+                source: r.get::<_, ExpenseSource>(8)?.as_str().to_string(),
+                logged_by_chat_id: r.get(9)?,
+                logged_by_name: r.get(10)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
 #[tauri::command]
 pub async fn list_expenses(
     filters: ExpenseFilters,
     state: State<'_, AppState>,
 ) -> Result<Vec<LedgerRow>, String> {
-    let limit = filters.limit.unwrap_or(100).min(500);
-    let offset = filters.offset.unwrap_or(0);
     let now = OffsetDateTime::now_utc();
     let tz = now.offset();
-
     state
         .db_actor
-        .run(move |conn| {
-            let mut sql = String::from(
-                "SELECT e.id, e.amount_cents, e.currency, e.category_id, c.name, c.kind, e.description,
-                        e.occurred_at, e.source, e.logged_by_chat_id, t.display_name
-                 FROM expenses e
-                 LEFT JOIN categories c ON c.id = e.category_id
-                 LEFT JOIN telegram_authorized_chats t ON t.chat_id = e.logged_by_chat_id
-                 WHERE 1=1",
-            );
-            let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
-
-            if let Some(id) = filters.category_id {
-                sql.push_str(" AND e.category_id = ?");
-                params.push(Box::new(id));
-            }
-            if let Some(d) = filters.start_date {
-                sql.push_str(" AND e.occurred_at >= ?");
-                params.push(Box::new(d.with_time(Time::MIDNIGHT).assume_offset(tz)));
-            }
-            if let Some(d) = filters.end_date {
-                let next = d + Duration::days(1);
-                sql.push_str(" AND e.occurred_at < ?");
-                params.push(Box::new(next.with_time(Time::MIDNIGHT).assume_offset(tz)));
-            }
-            if let Some(s) = filters.search.as_ref().filter(|s| !s.trim().is_empty()) {
-                sql.push_str(" AND (e.description LIKE ? OR e.raw_message LIKE ?)");
-                let pattern = format!("%{}%", s.trim());
-                params.push(Box::new(pattern.clone()));
-                params.push(Box::new(pattern));
-            }
-            sql.push_str(" ORDER BY e.occurred_at DESC, e.id DESC LIMIT ? OFFSET ?");
-            params.push(Box::new(limit));
-            params.push(Box::new(offset));
-
-            let mut stmt = conn.prepare(&sql)?;
-            let rows = stmt
-                .query_map(rusqlite::params_from_iter(params.iter()), |r| {
-                    let kind: Option<CategoryKind> = r.get(5)?;
-                    Ok(LedgerRow {
-                        id: r.get(0)?,
-                        amount_cents: r.get(1)?,
-                        currency: r.get(2)?,
-                        category_id: r.get(3)?,
-                        category_name: r.get(4)?,
-                        category_kind: kind.map(|k| k.as_str().to_string()),
-                        description: r.get(6)?,
-                        occurred_at: r.get(7)?,
-                        source: r.get::<_, ExpenseSource>(8)?.as_str().to_string(),
-                        logged_by_chat_id: r.get(9)?,
-                        logged_by_name: r.get(10)?,
-                    })
-                })?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            Ok(rows)
-        })
+        .run(move |conn| list_expenses_query(conn, &filters, tz))
         .await
         .map_err(err)
 }
@@ -1484,6 +1495,74 @@ pub struct CommitResult {
     pub rules_added: usize,
 }
 
+/// Plain helper version of `csv_import_commit` so tests can exercise
+/// the transaction logic (insert loop + rule writes + profile touch)
+/// without going through Tauri's State<> wrapper. Audit T-1.
+pub fn csv_import_commit_inner(
+    conn: &mut Connection,
+    input: &CommitInput,
+    now: OffsetDateTime,
+) -> anyhow::Result<CommitResult> {
+    let currency = settings::get_or_default(conn, settings::keys::DEFAULT_CURRENCY, "USD")?;
+    // Wrap the entire commit (expense inserts + merchant-rule writes
+    // + profile touch) in a single transaction so a mid-batch failure
+    // (bogus date parse, FK violation, rusqlite Busy on WAL
+    // contention) rolls back cleanly instead of leaving a partial
+    // import on disk.
+    let tx = conn.unchecked_transaction()?;
+
+    let mut inserted = 0usize;
+    for row in &input.rows {
+        let occurred_at = OffsetDateTime::parse(
+            &row.occurred_at,
+            &time::format_description::well_known::Rfc3339,
+        )?;
+        expenses::insert(
+            &tx,
+            &crate::domain::NewExpense {
+                amount_cents: row.amount_cents,
+                currency: currency.clone(),
+                category_id: row.category_id,
+                description: row
+                    .description
+                    .clone()
+                    .or_else(|| Some(row.merchant.clone())),
+                occurred_at,
+                source: ExpenseSource::Csv,
+                raw_message: Some(row.merchant.clone()),
+                llm_confidence: None,
+                logged_by_chat_id: None,
+                is_refund: row.is_refund,
+                refund_for_expense_id: None,
+            },
+        )?;
+        inserted += 1;
+    }
+
+    let mut rules_added = 0usize;
+    for rule in &input.rules_to_save {
+        merchant_rules::create(
+            &tx,
+            &rule.pattern,
+            rule.category_id,
+            rule.default_is_refund,
+            0,
+            now,
+        )?;
+        rules_added += 1;
+    }
+
+    if let Some(id) = input.profile_id {
+        let _ = csv_profiles::touch(&tx, id, now);
+    }
+
+    tx.commit()?;
+    Ok(CommitResult {
+        inserted,
+        rules_added,
+    })
+}
+
 #[tauri::command]
 pub async fn csv_import_commit(
     input: CommitInput,
@@ -1492,66 +1571,7 @@ pub async fn csv_import_commit(
     let now = OffsetDateTime::now_utc();
     state
         .db_actor
-        .run(move |conn| {
-            let currency = settings::get_or_default(conn, settings::keys::DEFAULT_CURRENCY, "USD")?;
-            // Wrap the entire commit (expense inserts + merchant-rule
-            // writes + profile touch) in a single transaction so a
-            // mid-batch failure (bogus date parse, FK violation,
-            // rusqlite Busy on WAL contention) rolls back cleanly
-            // instead of leaving a partial import on disk.
-            let tx = conn.unchecked_transaction()?;
-
-            let mut inserted = 0usize;
-            for row in &input.rows {
-                let occurred_at = OffsetDateTime::parse(
-                    &row.occurred_at,
-                    &time::format_description::well_known::Rfc3339,
-                )?;
-                expenses::insert(
-                    &tx,
-                    &crate::domain::NewExpense {
-                        amount_cents: row.amount_cents,
-                        currency: currency.clone(),
-                        category_id: row.category_id,
-                        description: row
-                            .description
-                            .clone()
-                            .or_else(|| Some(row.merchant.clone())),
-                        occurred_at,
-                        source: ExpenseSource::Csv,
-                        raw_message: Some(row.merchant.clone()),
-                        llm_confidence: None,
-                        logged_by_chat_id: None,
-                        is_refund: row.is_refund,
-                        refund_for_expense_id: None,
-                    },
-                )?;
-                inserted += 1;
-            }
-
-            let mut rules_added = 0usize;
-            for rule in &input.rules_to_save {
-                merchant_rules::create(
-                    &tx,
-                    &rule.pattern,
-                    rule.category_id,
-                    rule.default_is_refund,
-                    0,
-                    now,
-                )?;
-                rules_added += 1;
-            }
-
-            if let Some(id) = input.profile_id {
-                let _ = csv_profiles::touch(&tx, id, now);
-            }
-
-            tx.commit()?;
-            Ok(CommitResult {
-                inserted,
-                rules_added,
-            })
-        })
+        .run(move |conn| csv_import_commit_inner(conn, &input, now))
         .await
         .map_err(err)
 }

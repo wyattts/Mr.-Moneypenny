@@ -15,7 +15,7 @@
  * via a `step` discriminator. Closes itself via `onClose`.
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
   csvImportAiSuggest,
@@ -63,6 +63,11 @@ interface Props {
 export function CsvImportWizard({ onClose, onImported }: Props) {
   const [step, setStep] = useState<Step>("file");
   const [error, setError] = useState<string | null>(null);
+  // Audit F-4: dialog focus management. Hold a ref to the panel for
+  // the focus-trap; capture the previously-focused element on mount so
+  // we can restore it on unmount.
+  const dialogRef = useRef<HTMLDivElement | null>(null);
+  useDialogFocusTrap(dialogRef, onClose);
 
   // File-stage state.
   const [content, setContent] = useState<string>("");
@@ -291,9 +296,15 @@ export function CsvImportWizard({ onClose, onImported }: Props) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-graphite-950/80 p-4">
-      <div className="flex max-h-[90vh] w-full max-w-3xl flex-col overflow-hidden rounded-lg border border-graphite-700 bg-graphite-900 shadow-xl">
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="csv-import-title"
+        className="flex max-h-[90vh] w-full max-w-3xl flex-col overflow-hidden rounded-lg border border-graphite-700 bg-graphite-900 shadow-xl"
+      >
         <div className="flex items-center justify-between border-b border-graphite-700 px-5 py-3">
-          <h2 className="text-base font-semibold text-graphite-100">
+          <h2 id="csv-import-title" className="text-base font-semibold text-graphite-100">
             Import CSV
             <span className="ml-3 text-xs text-graphite-500">
               {stepLabel(step)}
@@ -958,4 +969,88 @@ function CommitStep({
       </button>
     </div>
   );
+}
+
+/**
+ * Dialog focus management for the CSV import modal (audit F-4):
+ *
+ * - On mount: store the previously-focused element and move focus to
+ *   the first interactive element inside the dialog. Falls back to
+ *   focusing the dialog itself if none are present yet (file-step has
+ *   only the file input, which is focusable but Vite + the browser
+ *   sometimes load it on a later tick).
+ * - On Escape: close the dialog via `onClose`.
+ * - On Tab / Shift+Tab at the boundary: cycle within the dialog so
+ *   the user can't tab out into the underlying app and lose context.
+ * - On unmount: restore focus to the element that owned it before the
+ *   dialog opened.
+ *
+ * Implemented inline rather than pulling a `focus-trap` dependency —
+ * the modal has one entry point, and a 40-line hook is auditable.
+ */
+function useDialogFocusTrap(
+  dialogRef: React.RefObject<HTMLDivElement | null>,
+  onClose: () => void,
+) {
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    const previouslyFocused = document.activeElement as HTMLElement | null;
+
+    // Defer the focus shift one tick so React's render commit
+    // settles before we start traversing the DOM.
+    const focusTimer = window.setTimeout(() => {
+      const first = firstFocusable(dialog);
+      if (first) first.focus();
+      else dialog.focus();
+    }, 0);
+
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        onClose();
+        return;
+      }
+      if (e.key !== "Tab") return;
+      const focusables = focusableElements(dialog!);
+      if (focusables.length === 0) {
+        e.preventDefault();
+        return;
+      }
+      const first = focusables[0]!;
+      const last = focusables[focusables.length - 1]!;
+      const active = document.activeElement as HTMLElement | null;
+      if (e.shiftKey) {
+        if (active === first || !dialog!.contains(active)) {
+          e.preventDefault();
+          last.focus();
+        }
+      } else if (active === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    }
+    document.addEventListener("keydown", onKeyDown);
+
+    return () => {
+      window.clearTimeout(focusTimer);
+      document.removeEventListener("keydown", onKeyDown);
+      // Restore focus to wherever it was before the dialog opened.
+      previouslyFocused?.focus?.();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+}
+
+const FOCUSABLE_SELECTOR =
+  'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+function focusableElements(root: HTMLElement): HTMLElement[] {
+  return Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).filter(
+    (el) => el.offsetParent !== null,
+  );
+}
+
+function firstFocusable(root: HTMLElement): HTMLElement | null {
+  return focusableElements(root)[0] ?? null;
 }

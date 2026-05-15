@@ -4,6 +4,29 @@ All notable changes to Mr. Moneypenny are documented here. The format roughly fo
 
 ## [Unreleased]
 
+## [0.3.24] - 2026-05-14
+
+The last four audit-flagged Mediums ship together: SLSA build-provenance attestations on releases (B-3), focus-trap + ARIA dialog semantics on the CSV import modal (F-4), 200 ms slider debouncing on the Simulator + Debt Manager views (Pf-1), and an integration-test file for the Tauri IPC layer (T-1). With v0.3.24 every Medium-severity finding from `docs/audit-v0.3.7.md` is shipped.
+
+### Added
+
+- **SLSA build-provenance attestations on every release artifact** (audit B-3). The release matrix now runs `actions/attest-build-provenance@v2` after the artifact-upload step; each leg signs its own AppImage/deb/rpm/dmg/.app.tar.gz/msi/exe via Sigstore's keyless OIDC flow and registers the bundle with GitHub's attestation API. Users verify with `gh attestation verify <file> -R wyattts/Mr.-Moneypenny`. Complements the existing minisign updater signing (in-app auto-updates) and GPG-signed AppImage (manual downloads) — provenance defends against post-build tampering of the release page itself. Job permissions gained `id-token: write` + `attestations: write`.
+- **Focus-trap + ARIA dialog semantics on the CSV import modal** (audit F-4). New `useDialogFocusTrap` hook in `views/CsvImport.tsx` does the standard a11y move: on open, capture the previously-focused element and shift focus into the dialog; on Tab/Shift+Tab at the boundary, cycle within the modal so users can't fall back into the underlying app; on Escape, close; on close, restore the prior focus. The panel itself gets `role="dialog"`, `aria-modal="true"`, and `aria-labelledby` wired to the h2's new id. ~80 LOC, no new dependency.
+- **`tests/integration_commands.rs`** (audit T-1) covering the highest-value commands the audit called out: the `list_expenses` date-window filter (end-date inclusive of same-day rows; off-by-one regression test); `list_expenses` search + limit-clamp + ordering; `csv_import_commit` happy path (rules + profile-touch + insert) and rollback on mid-batch parse error; refund cascade behavior (the FK is `ON DELETE SET NULL`, not cascade, which the test now pins). 8 new tests.
+
+### Changed
+
+- **Slider-driven Simulator + Debt Manager recomputes are debounced 200 ms** (audit Pf-1). Dragging a slider used to fire one Tauri command per tick — at 60 fps a 1-second horizon-slider drag spawned ~60 Monte Carlo + heatmap pairs, each running to completion on the Rust side regardless of whether the JS-side cancellation flag dropped its result. New `useDebouncedValue` hook (in `src/lib/debounce.ts`) wraps the inputs to the three recompute effects (Simulator, single-debt, debt portfolio); the effect re-keys on the debounced values so a continuous drag fires one compute at the end instead of one per tick.
+- **`commands.rs::list_expenses` and `csv_import_commit`** each gained a plain-helper twin (`list_expenses_query(conn, &filters, tz)` and `csv_import_commit_inner(conn, &input, now)`). The `#[tauri::command]` wrapper is now a one-liner that forwards through the DbHandle actor. The split enables the T-1 tests above; no behavior change.
+
+### Internal
+
+- `release.yml` matrix job permissions go from `contents: write` only to `contents: write` + `id-token: write` + `attestations: write`. The new step is keyed on the platform-specific bundle paths so each leg attests its own artifacts.
+- `useDialogFocusTrap` is inline-implemented (no `focus-trap` npm dep) — the modal has one entry point and 40 lines of focus management are auditable.
+- Test-only `_shut_up_unused` helper in `integration_commands.rs` keeps a few imports referenced even when individual tests evolve. (Defensive — drops if anything actually needs them later.)
+
+After v0.3.24 the audit roadmap is fully shipped: every High and every Medium from `docs/audit-v0.3.7.md` is in `main`. The Low and Info findings remain as opportunistic cleanup.
+
 ## [0.3.23] - 2026-05-14
 
 Phase 4 of the audit CC-1/Pf-4 fix: the legacy `Arc<Mutex<Connection>>` field is gone. `DbHandle` is now the only DB-access primitive in the codebase. The migration that began with v0.3.19's phase 1 (actor abstraction + smoke-test handler) is complete.

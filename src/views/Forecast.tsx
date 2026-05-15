@@ -46,7 +46,14 @@ import type {
 } from "@/lib/tauri";
 import { ErrorBanner } from "@/wizard/components/Layout";
 import { formatMoney } from "@/lib/format";
+import { useDebouncedValue } from "@/lib/debounce";
 import { ViewHeader } from "./ViewHeader";
+
+/// Debounce delay for slider-driven Tauri commands (audit Pf-1). 200ms
+/// lands between "near-instant feedback" and "doesn't recompute on
+/// every drag tick." At 60fps a typical 1-second slider drag fires
+/// ~60 ticks; debounced, only the final value triggers a recompute.
+const SLIDER_DEBOUNCE_MS = 200;
 
 // Annualized volatility tied to the user's chosen return preset. See
 // `src-tauri/src/insights/monte_carlo.rs` for the rationale.
@@ -398,19 +405,32 @@ function Simulator({
   );
 
 
+  // Audit Pf-1: debounce slider-driven inputs so a single drag fires
+  // one compute pass at the end instead of one per tick. `common` is
+  // already memo-stable (changes only when one of its inputs does),
+  // so debouncing it is equivalent to debouncing every slider in the
+  // sidebar. The cancellation flag in the effect still protects
+  // against effect-cleanup races.
+  const debouncedCommon = useDebouncedValue(common, SLIDER_DEBOUNCE_MS);
+  const debouncedConfidence = useDebouncedValue(confidence, SLIDER_DEBOUNCE_MS);
+  const debouncedContribCents = useDebouncedValue(contribCents, SLIDER_DEBOUNCE_MS);
+
   // Recompute the active solver + heatmap when inputs change.
   useEffect(() => {
     let cancelled = false;
     const run = async () => {
       try {
         if (mode === "required") {
-          const r = await simulatorSolveRequired({ ...common, confidence });
+          const r = await simulatorSolveRequired({
+            ...debouncedCommon,
+            confidence: debouncedConfidence,
+          });
           if (cancelled) return;
           setRequired(r);
           setProbability(null);
           const x_max = Math.max(r.required_monthly_cents * 2, 100_000);
           const h = await simulatorHeatmap({
-            ...common,
+            ...debouncedCommon,
             contribution_min_cents: 0,
             contribution_max_cents: x_max,
             horizon_min_years: 1,
@@ -419,15 +439,15 @@ function Simulator({
           if (!cancelled) setHeatmap(h);
         } else {
           const p = await simulatorComputeProbability({
-            ...common,
-            monthly_contribution_cents: contribCents,
+            ...debouncedCommon,
+            monthly_contribution_cents: debouncedContribCents,
           });
           if (cancelled) return;
           setProbability(p);
           setRequired(null);
-          const x_max = Math.max(contribCents * 2, 100_000);
+          const x_max = Math.max(debouncedContribCents * 2, 100_000);
           const h = await simulatorHeatmap({
-            ...common,
+            ...debouncedCommon,
             contribution_min_cents: 0,
             contribution_max_cents: x_max,
             horizon_min_years: 1,
@@ -444,7 +464,7 @@ function Simulator({
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, common, confidence, contribCents]);
+  }, [mode, debouncedCommon, debouncedConfidence, debouncedContribCents]);
 
   const histogram = useMemo(() => {
     const lo = (required?.final_p_lo_cents ?? probability?.final_p_lo_cents) ?? null;
@@ -1172,23 +1192,40 @@ function DebtManager({
     [lumpSums],
   );
 
+  // Audit Pf-1: debounce the Debt-side slider inputs too. The
+  // schedule solver is cheap individually, but goal-seek bisects up
+  // to 50 iterations of a full month-by-month sim, so back-to-back
+  // drags add up. `compounding` is a select, not a slider, but
+  // debouncing it is harmless (and keeps the dependency array
+  // homogeneous).
+  const dDebtBalanceCents = useDebouncedValue(balanceCents, SLIDER_DEBOUNCE_MS);
+  const dDebtAprPct = useDebouncedValue(aprPct, SLIDER_DEBOUNCE_MS);
+  const dDebtCompounding = useDebouncedValue(compounding, SLIDER_DEBOUNCE_MS);
+  const dDebtMonthlyPaymentCents = useDebouncedValue(
+    monthlyPaymentCents,
+    SLIDER_DEBOUNCE_MS,
+  );
+  const dDebtTargetMonths = useDebouncedValue(targetMonthsTotal, SLIDER_DEBOUNCE_MS);
+  const dDebtInflation = useDebouncedValue(inflation, SLIDER_DEBOUNCE_MS);
+  const dDebtLumpSums = useDebouncedValue(lumpSumsPayload, SLIDER_DEBOUNCE_MS);
+
   // --- Single-debt fetches ---
   useEffect(() => {
     if (portfolioMode) return;
-    if (balanceCents <= 0) return;
+    if (dDebtBalanceCents <= 0) return;
     let cancelled = false;
     const run = async () => {
       try {
         if (mode === "forward") {
           const r = await debtSimulateSchedule({
             debt: {
-              balance_cents: balanceCents,
-              apr_pct: aprPct,
-              compounding,
+              balance_cents: dDebtBalanceCents,
+              apr_pct: dDebtAprPct,
+              compounding: dDebtCompounding,
             },
-            monthly_payment_cents: monthlyPaymentCents,
-            lump_sums: lumpSumsPayload,
-            annual_inflation_pct: inflation,
+            monthly_payment_cents: dDebtMonthlyPaymentCents,
+            lump_sums: dDebtLumpSums,
+            annual_inflation_pct: dDebtInflation,
           });
           if (!cancelled) {
             setForwardResult(r);
@@ -1197,13 +1234,13 @@ function DebtManager({
         } else {
           const r = await debtGoalSeek({
             debt: {
-              balance_cents: balanceCents,
-              apr_pct: aprPct,
-              compounding,
+              balance_cents: dDebtBalanceCents,
+              apr_pct: dDebtAprPct,
+              compounding: dDebtCompounding,
             },
-            target_months: targetMonthsTotal,
-            lump_sums: lumpSumsPayload,
-            annual_inflation_pct: inflation,
+            target_months: dDebtTargetMonths,
+            lump_sums: dDebtLumpSums,
+            annual_inflation_pct: dDebtInflation,
           });
           if (!cancelled) {
             setGoalResult(r);
@@ -1221,22 +1258,34 @@ function DebtManager({
   }, [
     portfolioMode,
     mode,
-    balanceCents,
-    aprPct,
-    compounding,
-    monthlyPaymentCents,
-    targetMonthsTotal,
-    inflation,
-    lumpSumsPayload,
+    dDebtBalanceCents,
+    dDebtAprPct,
+    dDebtCompounding,
+    dDebtMonthlyPaymentCents,
+    dDebtTargetMonths,
+    dDebtInflation,
+    dDebtLumpSums,
     onError,
   ]);
+
+  // Audit Pf-1: debounce portfolio-mode inputs. `debts` is a Vec
+  // edited via text fields (debounced naturally by typing speed); we
+  // still debounce it so a rapid burst of edits coalesces into one
+  // recompute. `portfolioBudgetCents` is the heaviest re-trigger
+  // because every change kicks off two parallel portfolio sims.
+  const dDebts = useDebouncedValue(debts, SLIDER_DEBOUNCE_MS);
+  const dPortfolioBudgetCents = useDebouncedValue(
+    portfolioBudgetCents,
+    SLIDER_DEBOUNCE_MS,
+  );
+  const dStrategy = useDebouncedValue(strategy, SLIDER_DEBOUNCE_MS);
 
   // --- Portfolio fetch (and parallel "other strategy" for comparison). ---
   useEffect(() => {
     if (!portfolioMode) return;
-    if (debts.length === 0) return;
+    if (dDebts.length === 0) return;
     let cancelled = false;
-    const debtPayload: DebtInput[] = debts.map((d) => ({
+    const debtPayload: DebtInput[] = dDebts.map((d) => ({
       label: d.label || null,
       balance_cents: Math.round((parseFloat(d.balance) || 0) * 100),
       apr_pct: parseFloat(d.apr) || 0,
@@ -1248,17 +1297,17 @@ function DebtManager({
         const [primary, other] = await Promise.all([
           debtSimulatePortfolio({
             debts: debtPayload,
-            total_monthly_budget_cents: portfolioBudgetCents,
-            strategy,
-            lump_sums: lumpSumsPayload,
-            annual_inflation_pct: inflation,
+            total_monthly_budget_cents: dPortfolioBudgetCents,
+            strategy: dStrategy,
+            lump_sums: dDebtLumpSums,
+            annual_inflation_pct: dDebtInflation,
           }),
           debtSimulatePortfolio({
             debts: debtPayload,
-            total_monthly_budget_cents: portfolioBudgetCents,
-            strategy: strategy === "snowball" ? "avalanche" : "snowball",
-            lump_sums: lumpSumsPayload,
-            annual_inflation_pct: inflation,
+            total_monthly_budget_cents: dPortfolioBudgetCents,
+            strategy: dStrategy === "snowball" ? "avalanche" : "snowball",
+            lump_sums: dDebtLumpSums,
+            annual_inflation_pct: dDebtInflation,
           }),
         ]);
         if (!cancelled) {
@@ -1275,11 +1324,11 @@ function DebtManager({
     };
   }, [
     portfolioMode,
-    debts,
-    portfolioBudgetCents,
-    strategy,
-    lumpSumsPayload,
-    inflation,
+    dDebts,
+    dPortfolioBudgetCents,
+    dStrategy,
+    dDebtLumpSums,
+    dDebtInflation,
     onError,
   ]);
 
