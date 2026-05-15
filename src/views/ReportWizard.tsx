@@ -7,15 +7,19 @@
 // structured report. PDF export is wired in Phase 4.
 import { useMemo, useState } from "react";
 
+import { save } from "@tauri-apps/plugin-dialog";
+
 import {
   reportEstimate,
   reportGenerate,
+  reportSavePdf,
   type GeneratedReportResponse,
   type ReportRequest,
   type ReportSections,
   type ReportTimeframe,
 } from "@/lib/tauri";
 import { formatMoney } from "@/lib/format";
+import { buildReportPdfBase64 } from "@/lib/reportPdf";
 
 /** Micro-dollars → display string, matching the Rust precision buckets. */
 function fmtMicros(micros: number): string {
@@ -438,13 +442,36 @@ function ReportView({
   locale: string | null;
 }) {
   const { report, figures } = result;
+  const [pdfBusy, setPdfBusy] = useState(false);
+  const [pdfError, setPdfError] = useState<string | null>(null);
+
+  async function onDownloadPdf() {
+    setPdfError(null);
+    setPdfBusy(true);
+    try {
+      const slug = result.timeframe_label.replace(/[^0-9A-Za-z]+/g, "-");
+      const path = await save({
+        defaultPath: `moneypenny-report-${slug}.pdf`,
+        filters: [{ name: "PDF", extensions: ["pdf"] }],
+      });
+      if (!path) return; // user cancelled the save dialog
+      const b64 = await buildReportPdfBase64(result, currency, locale);
+      await reportSavePdf(path, b64);
+    } catch (e) {
+      setPdfError(String(e));
+    } finally {
+      setPdfBusy(false);
+    }
+  }
+
   return (
     <article className="mt-6 rounded-md border border-graphite-700 bg-graphite-800 p-6">
-      <header className="border-b border-graphite-700 pb-3">
-        <h3 className="text-xl font-semibold text-graphite-50">
-          Spending report — {result.timeframe_label}
-        </h3>
-        <p className="mt-1 text-xs text-graphite-400">
+      <header className="flex items-start justify-between gap-4 border-b border-graphite-700 pb-3">
+        <div>
+          <h3 className="text-xl font-semibold text-graphite-50">
+            Spending report — {result.timeframe_label}
+          </h3>
+          <p className="mt-1 text-xs text-graphite-400">
           {result.provider === "ollama"
             ? `Generated locally (${result.model})`
             : `Generated with ${result.model}`}
@@ -456,7 +483,22 @@ function ReportView({
           total spend{" "}
           {formatMoney(figures.total_spent_cents, currency, locale)} over{" "}
           {figures.days} days
-        </p>
+          </p>
+        </div>
+        <div className="shrink-0 text-right">
+          <button
+            onClick={onDownloadPdf}
+            disabled={pdfBusy}
+            className="rounded-md border border-graphite-600 px-3 py-1.5 text-sm text-graphite-200 transition hover:border-graphite-400 disabled:opacity-50"
+          >
+            {pdfBusy ? "Saving…" : "Download PDF"}
+          </button>
+          {pdfError && (
+            <p className="mt-1 max-w-[16rem] text-[11px] text-red-300">
+              {pdfError}
+            </p>
+          )}
+        </div>
       </header>
 
       {report.overall_summary && (

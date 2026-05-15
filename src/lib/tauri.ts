@@ -995,3 +995,8 @@ export const reportEstimate = (
 export const reportGenerate = (
   input: ReportRequest,
 ): Promise<GeneratedReportResponse> => invoke("report_generate", { input });
+
+export const reportSavePdf = (
+  path: string,
+  base64Pdf: string,
+): Promise<void> => invoke("report_save_pdf", { path, base64Pdf });

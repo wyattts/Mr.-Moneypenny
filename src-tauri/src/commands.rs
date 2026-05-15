@@ -984,6 +984,22 @@ pub async fn report_generate(
     })
 }
 
+/// Persist a client-rendered PDF (base64) to a user-chosen path. The
+/// path comes from the dialog plugin's save picker; writing bytes
+/// through a command keeps the only filesystem touch inside the typed
+/// boundary rather than granting the webview a broad `fs` capability.
+#[tauri::command]
+pub async fn report_save_pdf(path: String, base64_pdf: String) -> Result<(), String> {
+    use base64::engine::general_purpose::STANDARD as B64;
+    use base64::Engine;
+    if path.trim().is_empty() {
+        return Err("no save path provided".into());
+    }
+    let bytes = B64.decode(base64_pdf.as_bytes()).map_err(err)?;
+    std::fs::write(&path, bytes).map_err(|e| format!("writing {path}: {e}"))?;
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn get_ollama_allow_remote(state: State<'_, AppState>) -> Result<bool, String> {
     state

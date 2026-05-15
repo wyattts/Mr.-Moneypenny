@@ -87,6 +87,7 @@ mod app {
                 Some(vec!["--silent"]),
             ))
             .plugin(tauri_plugin_updater::Builder::new().build())
+            .plugin(tauri_plugin_dialog::init())
             .manage(state)
             .manage(UserQuit(user_quit.clone()))
             .setup(move |app| {
@@ -148,6 +149,7 @@ mod app {
                 set_llm_daily_cost_cap_micros,
                 report_estimate,
                 report_generate,
+                report_save_pdf,
                 save_telegram_token,
                 generate_pairing_code,
                 list_authorized_chats,
