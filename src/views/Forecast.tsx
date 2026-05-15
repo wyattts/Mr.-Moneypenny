@@ -255,6 +255,10 @@ function Simulator({
   const [targetMode, setTargetMode] = useState<TargetMode>("todays_dollars");
   const [advanced, setAdvanced] = useState(false);
   const [sigmaOverride, setSigmaOverride] = useState<number | null>(null);
+  // Deterministic mode: drop return variance and project a single
+  // compound-growth path. Off by default — most users want the
+  // probability framing; this is the "just show me one number" toggle.
+  const [deterministic, setDeterministic] = useState(false);
 
   // Pre-fill from saved investing-kind categories.
   const [accounts, setAccounts] = useState<InvestmentSummary[]>([]);
@@ -390,6 +394,7 @@ function Simulator({
       seed: null as number | null,
       lump_sums: lumpSumsPayload,
       withdrawal_rate_pct: withdrawalRatePct,
+      deterministic,
     }),
     [
       targetCents,
@@ -401,6 +406,7 @@ function Simulator({
       targetMode,
       lumpSumsPayload,
       withdrawalRatePct,
+      deterministic,
     ],
   );
 
@@ -564,6 +570,18 @@ function Simulator({
             Show probability
           </button>
         </div>
+        <button
+          onClick={() => setDeterministic((s) => !s)}
+          aria-pressed={deterministic}
+          title="Drop return variance and project a single compound-growth path. Off by default."
+          className={`rounded-md border px-3 py-1 text-sm transition ${
+            deterministic
+              ? "border-forest-500 bg-forest-700/30 text-forest-100"
+              : "border-graphite-700 text-graphite-300 hover:border-graphite-500"
+          }`}
+        >
+          Deterministic mode{deterministic ? ": on" : ": off"}
+        </button>
         {accounts.length > 0 && (
           <label className="text-xs text-graphite-400">
             Pre-fill from account:&nbsp;
@@ -611,7 +629,12 @@ function Simulator({
             onChange={setStartingDollars}
             prefix="$"
           />
-          {mode === "required" ? (
+          {mode === "required" && deterministic ? (
+            <p className="text-[11px] text-graphite-500">
+              Deterministic mode: the required contribution is the exact
+              amount that reaches the target — no confidence level applies.
+            </p>
+          ) : mode === "required" ? (
             <div>
               <span className="text-xs uppercase tracking-wide text-graphite-400">
                 Confidence: {(confidence * 100).toFixed(2)}%
@@ -725,6 +748,7 @@ function Simulator({
               </button>
             </div>
           </div>
+          {!deterministic && (
           <div>
             <button
               onClick={() => setAdvanced((s) => !s)}
@@ -753,6 +777,7 @@ function Simulator({
               </div>
             )}
           </div>
+          )}
 
           <div className="space-y-2">
             <div className="text-xs uppercase tracking-wide text-graphite-400">
@@ -857,12 +882,24 @@ function Simulator({
                 <span className="ml-1 text-sm text-graphite-500">/ mo</span>
               </div>
               <div className="mt-1 text-xs text-graphite-400">
-                to hit {formatMoney(targetCents)}{" "}
+                to {deterministic ? "exactly reach" : "hit"}{" "}
+                {formatMoney(targetCents)}{" "}
                 {targetMode === "todays_dollars"
                   ? "(today's $)"
-                  : "(nominal $)"} in {horizon} years with{" "}
-                {(required.realized_probability * 100).toFixed(2)}% confidence
-                at {returnPct.toFixed(2)}% return / {sigma.toFixed(2)}% σ.
+                  : "(nominal $)"} in {horizon} years{" "}
+                {deterministic ? (
+                  <>
+                    at {returnPct.toFixed(2)}% return (deterministic — no
+                    variance).
+                  </>
+                ) : (
+                  <>
+                    with{" "}
+                    {(required.realized_probability * 100).toFixed(2)}%
+                    confidence at {returnPct.toFixed(2)}% return /{" "}
+                    {sigma.toFixed(2)}% σ.
+                  </>
+                )}
               </div>
               {targetMode === "todays_dollars" && (
                 <div className="mt-1 text-xs text-graphite-500">
@@ -871,7 +908,40 @@ function Simulator({
               )}
             </div>
           )}
-          {mode === "probability" && probability && (
+          {mode === "probability" && probability && deterministic && (
+            <div className="rounded-md border border-graphite-700 bg-graphite-800 p-4">
+              <div className="text-xs uppercase tracking-wide text-graphite-400">
+                Projected final value
+              </div>
+              <div className="mt-1 text-3xl font-semibold tabular-nums text-graphite-50">
+                {formatMoney(probability.final_p50_cents)}
+              </div>
+              {(() => {
+                const shortfall =
+                  probability.effective_target_cents -
+                  probability.final_p50_cents;
+                const reaches = shortfall <= 0;
+                return (
+                  <div
+                    className={`mt-1 text-sm font-medium ${
+                      reaches ? "text-forest-100" : "text-red-200"
+                    }`}
+                  >
+                    {reaches
+                      ? `Reaches target with ${formatMoney(-shortfall)} to spare`
+                      : `Short of target by ${formatMoney(shortfall)}`}
+                  </div>
+                );
+              })()}
+              <div className="mt-1 text-xs text-graphite-400">
+                at {formatMoney(contribCents)} / mo for {horizon} years toward{" "}
+                {formatMoney(targetCents)}{" "}
+                {targetMode === "todays_dollars" ? "(today's $)" : "(nominal $)"}{" "}
+                — deterministic projection, no variance.
+              </div>
+            </div>
+          )}
+          {mode === "probability" && probability && !deterministic && (
             <div className="rounded-md border border-graphite-700 bg-graphite-800 p-4">
               <div className="text-xs uppercase tracking-wide text-graphite-400">
                 Probability of hitting target
@@ -902,8 +972,9 @@ function Simulator({
                   Projection
                 </div>
                 <div className="text-xs text-graphite-500">
-                  {(bandPct * 100).toFixed(2)}% probability band ·
-                  hover for values
+                  {deterministic
+                    ? "deterministic projection · hover for values"
+                    : `${(bandPct * 100).toFixed(2)}% probability band · hover for values`}
                 </div>
               </div>
               <ResponsiveContainer width="100%" height={260}>
@@ -942,27 +1013,31 @@ function Simulator({
                       />
                     )}
                   />
-                  <Area
-                    type="monotone"
-                    dataKey="band_offset"
-                    stackId="band"
-                    stroke="none"
-                    fill="transparent"
-                    isAnimationActive={false}
-                    legendType="none"
-                    activeDot={false}
-                  />
-                  <Area
-                    type="monotone"
-                    dataKey="band_span"
-                    stackId="band"
-                    stroke="none"
-                    fill="#60a5fa"
-                    fillOpacity={0.18}
-                    isAnimationActive={false}
-                    legendType="none"
-                    activeDot={false}
-                  />
+                  {!deterministic && (
+                    <Area
+                      type="monotone"
+                      dataKey="band_offset"
+                      stackId="band"
+                      stroke="none"
+                      fill="transparent"
+                      isAnimationActive={false}
+                      legendType="none"
+                      activeDot={false}
+                    />
+                  )}
+                  {!deterministic && (
+                    <Area
+                      type="monotone"
+                      dataKey="band_span"
+                      stackId="band"
+                      stroke="none"
+                      fill="#60a5fa"
+                      fillOpacity={0.18}
+                      isAnimationActive={false}
+                      legendType="none"
+                      activeDot={false}
+                    />
+                  )}
                   <Line
                     type="monotone"
                     dataKey="Nominal"
@@ -1002,10 +1077,12 @@ function Simulator({
                     (today&apos;s $)
                   </span>
                 )}
-                <span className="flex items-center gap-1.5">
-                  <span className="inline-block h-2 w-4 rounded-sm bg-blue-400/30" />{" "}
-                  {(bandPct * 100).toFixed(2)}% band
-                </span>
+                {!deterministic && (
+                  <span className="flex items-center gap-1.5">
+                    <span className="inline-block h-2 w-4 rounded-sm bg-blue-400/30" />{" "}
+                    {(bandPct * 100).toFixed(2)}% band
+                  </span>
+                )}
                 <label className="ml-auto flex cursor-pointer items-center gap-1.5 select-none">
                   <input
                     type="checkbox"
@@ -1022,7 +1099,7 @@ function Simulator({
             </div>
           )}
 
-          {histogram && (
+          {histogram && !deterministic && (
             <div className="rounded-md border border-graphite-700 bg-graphite-800 p-3 text-xs text-graphite-300">
               <div className="mb-1 text-xs uppercase tracking-wide text-graphite-500">
                 Final-value distribution (1,000 paths,{" "}

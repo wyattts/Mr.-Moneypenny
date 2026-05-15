@@ -4,6 +4,16 @@ All notable changes to Mr. Moneypenny are documented here. The format roughly fo
 
 ## [Unreleased]
 
+## [0.3.26] - 2026-05-15
+
+New Simulator feature: an optional **deterministic mode** for users who want a single straight-line investment projection instead of the Monte Carlo probability framing. Off by default — the probability view is unchanged unless you turn this on.
+
+### Added
+
+- **Deterministic mode toggle in the Simulator** (off by default). A new `deterministic` flag on `SimulatorCommonInputs` (serde-default `false`, so every existing caller and the IPC wire format are unaffected). When on, the backend forces volatility to 0 and simulates a single path, which collapses the existing Monte Carlo engine to an exact closed-form compound-growth projection — no new math, the GBM path simply degenerates. Effects when enabled:
+  - **Backend** (`insights/simulator.rs`): two centralized helpers (`det_volatility`, `det_n_paths`) applied at all three `PathInput` build sites (`mc_input`, the `solve_required_contribution` final run, the `compute_probability` run). The 144-cell heatmap drops from 144 × n_paths sims to 144 single-path sims and becomes a sharp reach/short feasibility map. New unit test `deterministic_mode_collapses_variance` pins the guarantee: zero-width band, probability ∈ {0, 1}, and final value within $1 of the closed-form annuity FV — with a non-deterministic control asserting the band still spreads when the flag is off.
+  - **Frontend** (`views/Forecast.tsx`): the now-meaningless controls hide when the toggle is on — the volatility override disclosure, the confidence slider/presets (replaced with a one-line note in "Find required" mode), the zero-width chart band + its legend, and the final-value distribution histogram. In "Show probability" mode the 0%/100% percentage is replaced with a **"Projected final value"** readout plus a "Reaches target with $X to spare" / "Short of target by $X" status line. The "Find required" sub-line drops the confidence/σ phrasing and reads "exactly reach … (deterministic — no variance)". Chart caption switches to "deterministic projection".
+
 ## [0.3.25] - 2026-05-15
 
 Audit cleanup: the last Deferred-bucket item that could be closed without external dependencies. B-9 — `bundle.targets` was `"all"`, which built **both** NSIS and MSI installers on Windows, doubling the unsigned-binary footprint on the release page and confusing users about which to download.

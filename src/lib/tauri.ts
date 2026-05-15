@@ -450,6 +450,14 @@ export interface SimulatorCommonInputs {
    * for no recurring withdrawal.
    */
   withdrawal_rate_pct: number;
+  /**
+   * Deterministic mode. When true the simulator drops all return
+   * variance and projects a single compound-growth path: the confidence
+   * band collapses to zero width and goal-probability is exactly 0 or 1.
+   * Optional; the backend treats a missing field as `false`, so existing
+   * callers are unaffected. Off by default in the UI.
+   */
+  deterministic?: boolean;
 }
 
 export interface TrajectoryPoint {

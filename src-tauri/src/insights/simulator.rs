@@ -67,6 +67,37 @@ pub struct CommonInputs {
     /// Defaults to 0 (no recurring withdrawal).
     #[serde(default)]
     pub withdrawal_rate_pct: f64,
+    /// Deterministic mode. When true, all return variance is removed:
+    /// volatility is forced to 0 and a single path is simulated, which
+    /// collapses the Monte Carlo engine to a closed-form compound-growth
+    /// projection. The confidence band then has zero width and
+    /// goal-probability is exactly 0.0 or 1.0. Off by default; a missing
+    /// field deserializes to `false` so existing callers are unaffected.
+    #[serde(default)]
+    pub deterministic: bool,
+}
+
+/// Volatility actually fed to the path engine: zero in deterministic
+/// mode, the user's assumption otherwise. Centralized so every
+/// `PathInput` construction site honors the flag identically.
+fn det_volatility(common: &CommonInputs) -> f64 {
+    if common.deterministic {
+        0.0
+    } else {
+        common.annual_volatility_pct
+    }
+}
+
+/// Path count actually fed to the engine: one path suffices in
+/// deterministic mode (every path is identical once σ = 0), which also
+/// turns the 144-cell heatmap from 144 × n_paths sims into 144 trivial
+/// ones. Otherwise pass the requested count through unchanged.
+fn det_n_paths(common: &CommonInputs, requested: u32) -> u32 {
+    if common.deterministic {
+        1
+    } else {
+        requested
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -217,9 +248,9 @@ pub fn solve_required_contribution(
         starting_balance_cents: input.common.starting_balance_cents,
         monthly_contribution_cents: last_required,
         annual_return_pct: input.common.annual_return_pct,
-        annual_volatility_pct: input.common.annual_volatility_pct,
+        annual_volatility_pct: det_volatility(&input.common),
         horizon_years: input.common.horizon_years,
-        n_paths: 1000.max(input.common.n_paths),
+        n_paths: det_n_paths(&input.common, 1000.max(input.common.n_paths)),
         time_points: 30,
         band_pct: input.confidence,
         seed: input.common.seed,
@@ -258,9 +289,9 @@ pub fn compute_probability(input: &ProbabilityInput) -> ProbabilityResult {
         starting_balance_cents: input.common.starting_balance_cents,
         monthly_contribution_cents: input.monthly_contribution_cents,
         annual_return_pct: input.common.annual_return_pct,
-        annual_volatility_pct: input.common.annual_volatility_pct,
+        annual_volatility_pct: det_volatility(&input.common),
         horizon_years: input.common.horizon_years,
-        n_paths: 1000.max(input.common.n_paths),
+        n_paths: det_n_paths(&input.common, 1000.max(input.common.n_paths)),
         time_points: 30,
         band_pct,
         seed: input.common.seed,
@@ -321,13 +352,16 @@ fn mc_input(common: &CommonInputs, monthly_contribution_cents: i64) -> PathInput
         starting_balance_cents: common.starting_balance_cents,
         monthly_contribution_cents,
         annual_return_pct: common.annual_return_pct,
-        annual_volatility_pct: common.annual_volatility_pct,
+        annual_volatility_pct: det_volatility(common),
         horizon_years: common.horizon_years,
-        n_paths: if common.n_paths == 0 {
-            1000
-        } else {
-            common.n_paths
-        },
+        n_paths: det_n_paths(
+            common,
+            if common.n_paths == 0 {
+                1000
+            } else {
+                common.n_paths
+            },
+        ),
         time_points: 2,
         band_pct: 0.80,
         seed: common.seed,
@@ -436,6 +470,7 @@ mod tests {
             seed: Some(42),
             lump_sums: vec![],
             withdrawal_rate_pct: 0.0,
+            deterministic: false,
         }
     }
 
@@ -453,6 +488,54 @@ mod tests {
     fn effective_target_nominal_pass_through() {
         let c = common(100_000_000, 30);
         assert_eq!(effective_target(&c, 30), 100_000_000);
+    }
+
+    #[test]
+    fn deterministic_mode_collapses_variance() {
+        // Same inputs, σ = 10% asserted, but deterministic flag on.
+        let mut c = common(0, 30);
+        c.deterministic = true;
+        c.annual_return_pct = 7.0;
+        c.annual_volatility_pct = 10.0; // must be ignored
+        c.starting_balance_cents = 0;
+
+        let monthly = 100_000; // $1,000.00/mo, in cents
+        let prob = compute_probability(&ProbabilityInput {
+            common: c.clone(),
+            monthly_contribution_cents: monthly,
+        });
+
+        // Zero-width band: every percentile coincides.
+        assert_eq!(prob.final_p_lo_cents, prob.final_p50_cents);
+        assert_eq!(prob.final_p50_cents, prob.final_p_hi_cents);
+
+        // Closed-form FV of an end-of-month annuity, S = 0.
+        let r: f64 = 0.07 / 12.0;
+        let n = 360i32;
+        let factor = (1.0 + r).powi(n);
+        let fv = monthly as f64 * (factor - 1.0) / r;
+        let fv_cents = fv.round() as i64;
+        assert!(
+            (prob.final_p50_cents - fv_cents).abs() <= 100,
+            "deterministic final {} not within 1 dollar of closed-form FV {}",
+            prob.final_p50_cents,
+            fv_cents
+        );
+
+        // Goal probability is exactly 0 or 1 — never a fraction.
+        assert!(prob.probability == 0.0 || prob.probability == 1.0);
+
+        // Control: with the flag off, σ = 10% must spread the band.
+        let mut spread = c.clone();
+        spread.deterministic = false;
+        let stochastic = compute_probability(&ProbabilityInput {
+            common: spread,
+            monthly_contribution_cents: monthly,
+        });
+        assert!(
+            stochastic.final_p_lo_cents < stochastic.final_p_hi_cents,
+            "non-deterministic run should have a non-degenerate band"
+        );
     }
 
     #[test]
