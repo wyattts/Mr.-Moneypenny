@@ -167,13 +167,16 @@ fn make_deps(
     let conn = Arc::new(Mutex::new(conn));
     let db_actor = moneypenny_lib::db::DbHandle::spawn_from_path(&path).unwrap();
     let deps = RouterDeps {
-        conn: conn.clone(),
         db_actor,
         llm,
         client: telegram,
         state: Arc::new(BotState::new()),
         default_currency: "USD".into(),
     };
+    // Return the seed-side `conn` separately so tests can insert
+    // fixtures via SQL; production code no longer carries a Mutex
+    // over the connection. WAL keeps reads from the actor's separate
+    // Connection in sync with whatever the test writes here.
     (deps, conn, tmp)
 }
 

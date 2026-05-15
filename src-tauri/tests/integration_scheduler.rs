@@ -118,13 +118,14 @@ fn fresh_deps() -> (
     let db_actor = db::DbHandle::spawn_from_path(&path).unwrap();
     let tg = Arc::new(NoopTelegram::default());
     let deps = RouterDeps {
-        conn: conn.clone(),
         db_actor,
         llm: Arc::new(NoopLlm),
         client: tg.clone(),
         state: Arc::new(BotState::new()),
         default_currency: "USD".into(),
     };
+    // The seed-side Mutex `conn` is returned so the test can insert
+    // fixtures via SQL; production code no longer carries the Mutex.
     (deps, conn, tg, tmp)
 }
 

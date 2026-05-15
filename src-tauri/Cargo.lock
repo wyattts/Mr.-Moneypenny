@@ -2512,7 +2512,7 @@ dependencies = [
 
 [[package]]
 name = "moneypenny"
-version = "0.3.22"
+version = "0.3.23"
 dependencies = [
  "anyhow",
  "async-trait",

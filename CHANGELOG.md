@@ -4,6 +4,30 @@ All notable changes to Mr. Moneypenny are documented here. The format roughly fo
 
 ## [Unreleased]
 
+## [0.3.23] - 2026-05-14
+
+Phase 4 of the audit CC-1/Pf-4 fix: the legacy `Arc<Mutex<Connection>>` field is gone. `DbHandle` is now the only DB-access primitive in the codebase. The migration that began with v0.3.19's phase 1 (actor abstraction + smoke-test handler) is complete.
+
+### Added
+
+- **`DbHandle::blocking_run`** for sync callers — Tauri's `setup()` hook, the `RunEvent::ExitRequested` callback, and the `ensure_poller_running` / `ensure_scheduler_running` startup helpers all live outside the Tokio runtime and now go through this. Internally uses a `std::sync::mpsc::sync_channel` for the reply so it works without a Tokio context. New unit test (`blocking_run_returns_closure_value_without_a_tokio_runtime`) verifies it runs from a plain `#[test]`.
+
+### Removed
+
+- **`AppState.db: Arc<Mutex<Connection>>`** — gone. `AppState::new(db_actor: DbHandle)` is the new signature.
+- **`RouterDeps.conn: Arc<Mutex<Connection>>`** — gone. All telegram/scheduler/router code paths reach the DB via `deps.db_actor`.
+
+### Changed
+
+- **`lib.rs setup()`** — the `setup_complete` check and `apply_initial_defaults`'s settings reads/writes now route through `state.db_actor.blocking_run(...)`. The first-run defaults pass folds the bg-mode + autostart read/write into one actor round-trip so the two settings stay consistent across crashes mid-init.
+- **`lib.rs ExitRequested` handler** — `RUN_IN_BACKGROUND` lookup goes through the actor. On any DB error the handler falls back to `bg_mode = true` (keep tray alive), which is the safer default than letting the process exit silently.
+- **`app_state::ensure_poller_running` / `ensure_scheduler_running`** — each is one actor round-trip that builds the LLM provider, reads the default currency, and (for scheduler) ensures the singleton WeeklySummary + BudgetAlertSweep jobs exist. `secrets::retrieve` calls inside `build_llm_provider` run on the actor thread; that's safe because the secrets module has its own file mutex independent of the actor's channel.
+
+### Internal
+
+- Both integration test fixtures (`tests/integration_telegram.rs::make_deps`, `tests/integration_scheduler.rs::fresh_deps`) drop the `conn:` field from their `RouterDeps` construction. They still hold a Mutex-wrapped `Connection` separately so test code can seed fixtures via direct SQL — WAL keeps that in sync with the actor's separate Connection on the same on-disk file.
+- After this batch the codebase has a single DB-access API. Anyone wanting to read or write SQLite goes through `state.db_actor.run(...)` (async) or `state.db_actor.blocking_run(...)` (sync). The audit's CC-1, CC-4, and CC-6 findings are all closed.
+
 ## [0.3.22] - 2026-05-14
 
 Phase 3b of the audit CC-1/Pf-4 fix: the Telegram poller and the router's LLM agentic loop are migrated off `Arc<Mutex<Connection>>`. Every async-hot-path DB callsite in the app now flows through the `DbHandle` actor; phase 4 will retire the legacy Mutex field entirely.

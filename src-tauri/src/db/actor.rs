@@ -98,6 +98,35 @@ impl DbHandle {
         Ok(Self::spawn(conn))
     }
 
+    /// Synchronous version of [`run`] for callers that aren't on the
+    /// Tokio runtime — Tauri's `setup()` hook, the `ExitRequested`
+    /// run-loop callback, and the `ensure_poller_running` /
+    /// `ensure_scheduler_running` startup helpers all live there.
+    /// Blocks the calling thread until the actor finishes the closure.
+    ///
+    /// Don't call this from an async context — it would block the
+    /// Tokio worker. Use [`run`] there.
+    pub fn blocking_run<F, T>(&self, f: F) -> Result<T>
+    where
+        F: FnOnce(&mut Connection) -> Result<T> + Send + 'static,
+        T: Send + 'static,
+    {
+        let (otx, orx) = std::sync::mpsc::sync_channel::<Result<T>>(1);
+        let job: DbJob = Box::new(move |conn: &mut Connection| {
+            let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| f(conn)));
+            let result = match outcome {
+                Ok(r) => r,
+                Err(panic) => Err(panic_to_err(panic)),
+            };
+            let _ = otx.send(result);
+        });
+        self.sender
+            .blocking_send(job)
+            .map_err(|_| anyhow!("db actor shut down"))?;
+        orx.recv()
+            .map_err(|_| anyhow!("db job dropped before completion"))?
+    }
+
     /// Run a synchronous closure on the actor thread with exclusive
     /// access to the connection. Returns the closure's result as a
     /// future the caller awaits.
@@ -289,5 +318,16 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(n, 99);
+    }
+
+    // `blocking_run` doesn't use #[tokio::test] — it must work from a
+    // plain sync context (Tauri's setup() hook is one).
+    #[test]
+    fn blocking_run_returns_closure_value_without_a_tokio_runtime() {
+        let h = fresh_handle();
+        let v: i64 = h
+            .blocking_run(|conn| Ok(conn.query_row("SELECT 13", [], |r| r.get::<_, i64>(0))?))
+            .unwrap();
+        assert_eq!(v, 13);
     }
 }

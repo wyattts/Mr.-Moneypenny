@@ -57,15 +57,13 @@ mod app {
         let _ = tracing_subscriber::fmt::try_init();
 
         let path = db::default_db_path().expect("could not resolve db path");
-        let conn = db::open(&path).expect("could not open db");
-        db::migrate(&conn).expect("could not migrate db");
-        // Phase 1 of the audit CC-1/Pf-4 fix: spawn a single-writer
-        // actor that owns its own SQLite Connection. New handlers
-        // submit closures over this; legacy handlers continue to use
-        // the Mutex-wrapped `conn` until phases 2-3 migrate them.
-        // SQLite WAL handles two simultaneous connections cleanly.
+        // Spawn the single-writer DB actor. `spawn_from_path` opens
+        // the SQLite file, runs forward migrations, and hands the
+        // connection off to a dedicated OS thread. All app code from
+        // here on accesses the DB only through the actor (audit
+        // CC-1/Pf-4 phases 1–4).
         let db_actor = db::DbHandle::spawn_from_path(&path).expect("could not start db actor");
-        let state = AppState::new(conn, db_actor);
+        let state = AppState::new(db_actor);
 
         let silent = std::env::args().any(|a| a == "--silent");
         let user_quit = Arc::new(AtomicBool::new(false));
@@ -113,14 +111,13 @@ mod app {
                 // Tokio runtime is live by setup() so this is the right
                 // place to spawn the poller.
                 let state = app.state::<AppState>();
-                let setup_complete = {
-                    let conn = state.db.lock().unwrap();
-                    settings::get(&conn, settings::keys::SETUP_COMPLETE)
-                        .ok()
-                        .flatten()
-                        .as_deref()
-                        == Some("1")
-                };
+                let setup_complete = state
+                    .db_actor
+                    .blocking_run(|conn| {
+                        Ok(settings::get(conn, settings::keys::SETUP_COMPLETE)?.as_deref()
+                            == Some("1"))
+                    })
+                    .unwrap_or(false);
                 if setup_complete {
                     if let Err(e) = state.ensure_poller_running() {
                         tracing::warn!(target: "app::run", error=%e, "poller did not start at launch");
@@ -222,15 +219,16 @@ mod app {
                 if wants_quit {
                     return;
                 }
-                let bg_mode = {
-                    let state = app_handle.state::<AppState>();
-                    let conn = state.db.lock().unwrap();
-                    settings::get(&conn, settings::keys::RUN_IN_BACKGROUND)
-                        .ok()
-                        .flatten()
-                        .as_deref()
-                        != Some("0")
-                };
+                let state = app_handle.state::<AppState>();
+                let bg_mode = state
+                    .db_actor
+                    .blocking_run(|conn| {
+                        Ok(
+                            settings::get(conn, settings::keys::RUN_IN_BACKGROUND)?.as_deref()
+                                != Some("0"),
+                        )
+                    })
+                    .unwrap_or(true);
                 if bg_mode {
                     api.prevent_exit();
                 }
@@ -244,40 +242,31 @@ mod app {
     fn apply_initial_defaults(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         let state = app.state::<AppState>();
 
-        // RUN_IN_BACKGROUND default = 1 on every platform.
-        let bg_saved = {
-            let conn = state.db.lock().unwrap();
-            settings::get(&conn, settings::keys::RUN_IN_BACKGROUND)
-                .ok()
-                .flatten()
-        };
-        if bg_saved.is_none() {
-            let conn = state.db.lock().unwrap();
-            let _ = settings::set(&conn, settings::keys::RUN_IN_BACKGROUND, "1");
-        }
-
-        // AUTOSTART: default ON on macOS / Windows, OFF on Linux (because
-        // GNOME doesn't show tray icons without the AppIndicator extension).
-        let auto_saved = {
-            let conn = state.db.lock().unwrap();
-            settings::get(&conn, settings::keys::AUTOSTART)
-                .ok()
-                .flatten()
-        };
+        // First-run defaults: RUN_IN_BACKGROUND=1 everywhere; AUTOSTART
+        // defaults ON on macOS/Windows and OFF on Linux (GNOME doesn't
+        // show tray icons without the AppIndicator extension). One
+        // actor round-trip reads + writes both keys to keep them
+        // consistent across crashes mid-init.
         let auto_default = cfg!(any(target_os = "macos", target_os = "windows"));
-        let auto_desired = match auto_saved.as_deref() {
-            Some("1") => true,
-            Some("0") => false,
-            _ => {
-                let conn = state.db.lock().unwrap();
-                let _ = settings::set(
-                    &conn,
-                    settings::keys::AUTOSTART,
-                    if auto_default { "1" } else { "0" },
-                );
-                auto_default
+        let auto_desired = state.db_actor.blocking_run(move |conn| {
+            let bg_saved = settings::get(conn, settings::keys::RUN_IN_BACKGROUND)?;
+            if bg_saved.is_none() {
+                let _ = settings::set(conn, settings::keys::RUN_IN_BACKGROUND, "1");
             }
-        };
+            let auto_saved = settings::get(conn, settings::keys::AUTOSTART)?;
+            Ok(match auto_saved.as_deref() {
+                Some("1") => true,
+                Some("0") => false,
+                _ => {
+                    let _ = settings::set(
+                        conn,
+                        settings::keys::AUTOSTART,
+                        if auto_default { "1" } else { "0" },
+                    );
+                    auto_default
+                }
+            })
+        })?;
         let manager = app.autolaunch();
         let current = manager.is_enabled().unwrap_or(false);
         if current != auto_desired {

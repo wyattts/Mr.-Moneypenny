@@ -18,6 +18,7 @@ use std::sync::{Arc, Mutex};
 
 #[cfg(feature = "desktop")]
 use anyhow::{Context, Result};
+#[cfg(feature = "desktop")]
 use rusqlite::Connection;
 
 use crate::db::DbHandle;
@@ -41,13 +42,10 @@ use crate::telegram::router::RouterDeps;
 use crate::telegram::state::BotState;
 
 pub struct AppState {
-    pub db: Arc<Mutex<Connection>>,
-    /// Async DB handle backed by a dedicated OS thread (audit CC-1/Pf-4
-    /// phase 1). Ships alongside `db` during migration; new handlers
-    /// should reach for this instead of the Mutex. Both fields point at
-    /// the same SQLite file via independent Connections — WAL handles
-    /// the concurrency. Phase 4 will remove `db` once nothing else
-    /// references it.
+    /// Async DB handle backed by a dedicated OS thread (audit
+    /// CC-1/Pf-4). Sole DB-access path; the legacy
+    /// `Arc<Mutex<Connection>>` field that lived here through phase 3
+    /// was retired in v0.3.23.
     pub db_actor: DbHandle,
     pub bot: Arc<BotState>,
     #[allow(dead_code)] // only read by the desktop poller path
@@ -68,9 +66,8 @@ struct Inner {
 }
 
 impl AppState {
-    pub fn new(db: Connection, db_actor: DbHandle) -> Self {
+    pub fn new(db_actor: DbHandle) -> Self {
         Self {
-            db: Arc::new(Mutex::new(db)),
             db_actor,
             bot: Arc::new(BotState::new()),
             inner: Mutex::new(Inner {
@@ -95,15 +92,18 @@ impl AppState {
         let token = secrets::retrieve(secrets::keys::TELEGRAM_BOT_TOKEN)?
             .context("telegram bot token not configured")?;
         let client = TelegramClient::new(token).context("building telegram client")?;
-        let llm = build_llm_provider(&self.db.lock().unwrap())?;
-        let default_currency = settings::get_or_default(
-            &self.db.lock().unwrap(),
-            settings::keys::DEFAULT_CURRENCY,
-            "USD",
-        )?;
+        // One actor round-trip reads everything DB-backed: provider
+        // choice, the model/endpoint that match it, and the default
+        // currency. `secrets::retrieve` inside `build_llm_provider` is
+        // safe on the actor thread — it has its own file mutex,
+        // separate from the actor's channel.
+        let (llm, default_currency) = self.db_actor.blocking_run(|conn| {
+            let provider = build_llm_provider(conn)?;
+            let currency = settings::get_or_default(conn, settings::keys::DEFAULT_CURRENCY, "USD")?;
+            Ok((provider, currency))
+        })?;
 
         let deps = RouterDeps {
-            conn: Arc::clone(&self.db),
             db_actor: self.db_actor.clone(),
             llm,
             client: Arc::new(client),
@@ -151,43 +151,36 @@ impl AppState {
             None => return Ok(()), // setup incomplete; poller path will retry later
         };
         let client = TelegramClient::new(token).context("building telegram client")?;
-        let llm = build_llm_provider(&self.db.lock().unwrap())?;
-        let default_currency = settings::get_or_default(
-            &self.db.lock().unwrap(),
-            settings::keys::DEFAULT_CURRENCY,
-            "USD",
-        )?;
+        // One actor round-trip: build LLM provider, read currency, AND
+        // ensure singleton jobs in the same transaction-of-trust. The
+        // weekly summary fires a week from now (so the user doesn't get
+        // a "$0 in 0 expenses" DM immediately after pairing); the
+        // budget alert sweep starts firing within the next hour so it
+        // picks up new spend promptly.
+        let (llm, default_currency) = self.db_actor.blocking_run(|conn| {
+            let provider = build_llm_provider(conn)?;
+            let currency = settings::get_or_default(conn, settings::keys::DEFAULT_CURRENCY, "USD")?;
+            let now = time::OffsetDateTime::now_utc();
+            let _ = crate::scheduler::ensure_singleton(
+                conn,
+                crate::scheduler::JobKind::WeeklySummary,
+                now + time::Duration::days(7),
+            );
+            let _ = crate::scheduler::ensure_singleton(
+                conn,
+                crate::scheduler::JobKind::BudgetAlertSweep,
+                now + time::Duration::minutes(5),
+            );
+            Ok((provider, currency))
+        })?;
 
         let deps = crate::telegram::router::RouterDeps {
-            conn: Arc::clone(&self.db),
             db_actor: self.db_actor.clone(),
             llm,
             client: Arc::new(client),
             state: Arc::clone(&self.bot),
             default_currency,
         };
-
-        // Ensure the singleton jobs exist (weekly summary + budget alert
-        // sweep). Idempotent — re-launching doesn't duplicate.
-        {
-            let conn = self.db.lock().unwrap();
-            let now = time::OffsetDateTime::now_utc();
-            // Fire the first weekly summary one week from now (so the
-            // user doesn't get a "$0 in 0 expenses" DM immediately
-            // after pairing).
-            let _ = crate::scheduler::ensure_singleton(
-                &conn,
-                crate::scheduler::JobKind::WeeklySummary,
-                now + time::Duration::days(7),
-            );
-            // Budget alert sweep starts firing within the next hour so
-            // it picks up new spend promptly.
-            let _ = crate::scheduler::ensure_singleton(
-                &conn,
-                crate::scheduler::JobKind::BudgetAlertSweep,
-                now + time::Duration::minutes(5),
-            );
-        }
 
         let shutdown = Arc::clone(&inner.scheduler_shutdown);
         shutdown.store(false, Ordering::Relaxed);

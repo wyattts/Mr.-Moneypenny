@@ -8,10 +8,9 @@
 //! comes through `RouterDeps` so this module can be unit-tested with a
 //! stub `TelegramApi` and a stub `LLMProvider`.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
-use rusqlite::Connection;
 use time::OffsetDateTime;
 
 use crate::domain::{CategoryKind, ExpenseSource, NewExpense};
@@ -48,15 +47,10 @@ const DEFAULT_DAILY_COST_CAP_MICROS: i64 = 1_000_000; // $1.00
 
 #[derive(Clone)]
 pub struct RouterDeps {
-    /// Legacy sync-locked connection. Still used by the free-text LLM
-    /// loop (telegram router) — phase 3 of audit CC-1/Pf-4 will
-    /// migrate those callsites.
-    pub conn: Arc<Mutex<Connection>>,
-    /// Async DB actor handle (audit CC-1/Pf-4). The scheduler routes
-    /// all its DB work through this as of v0.3.20; the router will
-    /// follow in phase 3. Both pub fields share the AppState's
-    /// underlying actor — a single clone is forwarded here, so all
-    /// DB work app-wide is serialized on the actor thread.
+    /// Async DB actor handle. All DB access for the Telegram path
+    /// (poller, router, scheduler) routes through this; the legacy
+    /// `Arc<Mutex<Connection>>` field was retired in v0.3.23 after
+    /// the audit CC-1/Pf-4 migration completed.
     pub db_actor: crate::db::DbHandle,
     pub llm: Arc<dyn LLMProvider>,
     pub client: Arc<dyn TelegramApi>,
