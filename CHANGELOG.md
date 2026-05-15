@@ -4,6 +4,24 @@ All notable changes to Mr. Moneypenny are documented here. The format roughly fo
 
 ## [Unreleased]
 
+## [0.3.22] - 2026-05-14
+
+Phase 3b of the audit CC-1/Pf-4 fix: the Telegram poller and the router's LLM agentic loop are migrated off `Arc<Mutex<Connection>>`. Every async-hot-path DB callsite in the app now flows through the `DbHandle` actor; phase 4 will retire the legacy Mutex field entirely.
+
+### Changed
+
+- **`telegram/poller.rs`**: `read_offset`, `already_processed`, `persist_offset_and_mark`, and `gc_processed_updates` are now async and route through the actor. The `persist_offset_and_mark` transaction (idempotency row INSERT + `last_update_id` UPDATE in one atomic commit) runs entirely on the actor thread — Tokio workers no longer block on the poller's DB writes.
+- **`telegram/router.rs::handle_update`**: the auth gate (`auth::is_authorized`), `/cancel`'s pending-clear, `handle_start`'s pairing-code redemption, `handle_undo`'s find + delete, and the LLM-side callsites in `handle_free_text` (system-prompt build, `llm_usage::log`, dispatcher tool execution) all migrated. 14 lock sites total.
+- **`daily_cap_refusal_text`** became `async`. Both the cap setting read and the `llm_usage::today_cost_micros` rollup happen in one actor round-trip; the function returns `None` (let the call through) on any DB error, preserving the "best-effort" gate from v0.3.15.
+- **`try_resolve_pending_confirmation`** now serializes its DB work as 3 actor calls: load pending, load rule, then either the insert-expense-and-clear closure (yes path) or the clear-pending closure (no/skip path). User-visible reply text is composed in Rust after the actor returns to keep strings out of the SQL hot path.
+- **Tool dispatcher integration**: `dispatcher::execute(conn, ctx, ...)` is now invoked inside `deps.db_actor.run(move |conn| Ok(dispatcher::execute(conn, ...)))`. The dispatcher's sync signature is preserved — only the surrounding wrapper changed.
+
+### Internal
+
+- `tests/integration_telegram.rs::make_deps` rewritten to the shared-tempfile pattern (matching `integration_scheduler.rs` from v0.3.20). Both the Mutex Connection and the DbHandle open against the same on-disk SQLite file under a `TempDir`; SQLite WAL handles the two simultaneous writer-eligible connections. The old `fresh()` helper that returned a private in-memory Connection is gone; all 17 test sites updated to `let (deps, conn_arc, _tmp) = make_deps(llm, tg);` with the `_tmp` TempDir held on the test's stack to outlive the actor.
+- After this batch, the `db: Arc<Mutex<Connection>>` field on `AppState` + `RouterDeps` is still alive but only used by: `app_state::ensure_poller_running` / `ensure_scheduler_running` (startup-only sync code), `lib::run`'s setup hook (one-time at boot), the `ExitRequested` handler in the run callback, and various test fixtures that still hand a Connection around. Phase 4 removes the field once those last few startup paths migrate to the actor or accept a path argument.
+- One subtle `clippy::clone_on_copy` lint surfaced in the router's usage-logging closure (`Usage` derives `Copy`); fixed with a plain move.
+
 ## [0.3.21] - 2026-05-14
 
 Phase 3a of the audit CC-1/Pf-4 fix: every Tauri command in `commands.rs` now routes its DB work through the `DbHandle` actor instead of locking the legacy `Arc<Mutex<Connection>>`. Combined with phase 2's scheduler migration, the only async-hot-path code still on the Mutex is the telegram poller + the router's LLM agentic loop (queued for phase 3b).

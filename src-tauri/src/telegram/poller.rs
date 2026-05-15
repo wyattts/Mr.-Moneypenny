@@ -70,14 +70,17 @@ pub async fn run(deps: RouterDeps, shutdown: Arc<AtomicBool>) -> Result<()> {
 
         // Periodic housekeeping: drop expired pairing codes and aged
         // idempotency rows. Both are best-effort.
-        {
-            let conn = deps.conn.lock().unwrap();
-            let now = OffsetDateTime::now_utc();
-            let _ = auth::expire_old_pairings(&conn, now);
-            let _ = gc_processed_updates(&conn, now);
-        }
+        let now = OffsetDateTime::now_utc();
+        let _ = deps
+            .db_actor
+            .run(move |conn| {
+                let _ = auth::expire_old_pairings(conn, now);
+                let _ = gc_processed_updates(conn, now);
+                Ok(())
+            })
+            .await;
 
-        let offset = match read_offset(&deps) {
+        let offset = match read_offset(&deps).await {
             Ok(o) => o,
             Err(e) => {
                 tracing::error!(target: "telegram::poller", error=%e, "could not read last_update_id; aborting");
@@ -94,13 +97,16 @@ pub async fn run(deps: RouterDeps, shutdown: Arc<AtomicBool>) -> Result<()> {
                 backoff_secs = INITIAL_BACKOFF_SECS;
                 for upd in updates {
                     let now = OffsetDateTime::now_utc();
-                    if already_processed(&deps, upd.update_id).unwrap_or(false) {
+                    if already_processed(&deps, upd.update_id)
+                        .await
+                        .unwrap_or(false)
+                    {
                         tracing::debug!(
                             target: "telegram::poller",
                             update_id = upd.update_id,
                             "update already processed; advancing offset only",
                         );
-                        if let Err(e) = persist_offset_and_mark(&deps, upd.update_id) {
+                        if let Err(e) = persist_offset_and_mark(&deps, upd.update_id).await {
                             tracing::error!(
                                 target: "telegram::poller",
                                 error = %e,
@@ -122,7 +128,7 @@ pub async fn run(deps: RouterDeps, shutdown: Arc<AtomicBool>) -> Result<()> {
                     // errored: re-trying a buggy update next launch is
                     // worse than dropping one, and the user will get a
                     // user-visible failure on their phone anyway.
-                    if let Err(e) = persist_offset_and_mark(&deps, upd.update_id) {
+                    if let Err(e) = persist_offset_and_mark(&deps, upd.update_id).await {
                         tracing::error!(
                             target: "telegram::poller",
                             error = %e,
@@ -150,45 +156,54 @@ pub async fn run(deps: RouterDeps, shutdown: Arc<AtomicBool>) -> Result<()> {
     Ok(())
 }
 
-fn read_offset(deps: &RouterDeps) -> Result<i64> {
-    let conn = deps.conn.lock().unwrap();
-    let last: i64 = conn.query_row(
-        "SELECT last_update_id FROM telegram_state WHERE id = 1",
-        [],
-        |r| r.get(0),
-    )?;
-    // getUpdates uses `offset = last_processed + 1`.
-    Ok(last + 1)
+async fn read_offset(deps: &RouterDeps) -> Result<i64> {
+    deps.db_actor
+        .run(|conn| {
+            let last: i64 = conn.query_row(
+                "SELECT last_update_id FROM telegram_state WHERE id = 1",
+                [],
+                |r| r.get(0),
+            )?;
+            // getUpdates uses `offset = last_processed + 1`.
+            Ok(last + 1)
+        })
+        .await
 }
 
-fn already_processed(deps: &RouterDeps, update_id: i64) -> Result<bool> {
-    let conn = deps.conn.lock().unwrap();
-    let exists: i64 = conn
-        .query_row(
-            "SELECT 1 FROM processed_telegram_updates WHERE update_id = ?1",
-            params![update_id],
-            |r| r.get(0),
-        )
-        .unwrap_or(0);
-    Ok(exists == 1)
+async fn already_processed(deps: &RouterDeps, update_id: i64) -> Result<bool> {
+    deps.db_actor
+        .run(move |conn| {
+            let exists: i64 = conn
+                .query_row(
+                    "SELECT 1 FROM processed_telegram_updates WHERE update_id = ?1",
+                    params![update_id],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            Ok(exists == 1)
+        })
+        .await
 }
 
 /// Bump `telegram_state.last_update_id` AND insert the idempotency row
 /// in the same transaction. A crash between these two writes would
 /// re-open the duplicate-on-restart window this fix is closing.
-fn persist_offset_and_mark(deps: &RouterDeps, update_id: i64) -> Result<()> {
-    let conn = deps.conn.lock().unwrap();
-    let tx = conn.unchecked_transaction()?;
-    tx.execute(
-        "INSERT OR IGNORE INTO processed_telegram_updates (update_id) VALUES (?1)",
-        params![update_id],
-    )?;
-    tx.execute(
-        "UPDATE telegram_state SET last_update_id = ?1 WHERE id = 1",
-        params![update_id],
-    )?;
-    tx.commit()?;
-    Ok(())
+async fn persist_offset_and_mark(deps: &RouterDeps, update_id: i64) -> Result<()> {
+    deps.db_actor
+        .run(move |conn| {
+            let tx = conn.unchecked_transaction()?;
+            tx.execute(
+                "INSERT OR IGNORE INTO processed_telegram_updates (update_id) VALUES (?1)",
+                params![update_id],
+            )?;
+            tx.execute(
+                "UPDATE telegram_state SET last_update_id = ?1 WHERE id = 1",
+                params![update_id],
+            )?;
+            tx.commit()?;
+            Ok(())
+        })
+        .await
 }
 
 /// Drop processed-update rows older than `PROCESSED_GC_RETENTION_DAYS`.

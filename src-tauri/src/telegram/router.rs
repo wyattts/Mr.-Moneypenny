@@ -110,10 +110,10 @@ pub async fn handle_update(deps: &RouterDeps, update: &Update, now: OffsetDateTi
     // ------------------------------------------------------------------
     // Auth gate: every other interaction requires an authorized chat.
     // ------------------------------------------------------------------
-    let auth_chat = {
-        let conn = deps.conn.lock().unwrap();
-        auth::is_authorized(&conn, chat_id)?
-    };
+    let auth_chat = deps
+        .db_actor
+        .run(move |conn| auth::is_authorized(conn, chat_id))
+        .await?;
     let Some(auth_chat) = auth_chat else {
         // Polite refusal. The plan also allows "silently ignore"; we
         // chose polite-refusal as the default so users who accidentally
@@ -139,10 +139,13 @@ pub async fn handle_update(deps: &RouterDeps, update: &Update, now: OffsetDateTi
             deps.state.conversations.lock().unwrap().clear(chat_id);
             // Also clear any pending recurring-rule confirmation so the
             // user doesn't have a stale prompt hanging over the next chat.
-            {
-                let conn = deps.conn.lock().unwrap();
-                let _ = recurring_rules::delete_pending(&conn, chat_id);
-            }
+            let _ = deps
+                .db_actor
+                .run(move |conn| {
+                    let _ = recurring_rules::delete_pending(conn, chat_id);
+                    Ok(())
+                })
+                .await;
             return reply(deps, chat_id, "Cancelled. Anything else?".to_string()).await;
         }
         "/undo" => return handle_undo(deps, chat_id, &auth_chat, now).await,
@@ -169,10 +172,11 @@ async fn handle_start(
         // Bare `/start` — give them help.
         return reply(deps, chat_id, formatter::help_text()).await;
     }
-    let result = {
-        let conn = deps.conn.lock().unwrap();
-        auth::redeem_pairing_code(&conn, chat_id, arg, now)
-    };
+    let arg_owned = arg.to_string();
+    let result = deps
+        .db_actor
+        .run(move |conn| Ok(auth::redeem_pairing_code(conn, chat_id, &arg_owned, now)))
+        .await?;
     match result {
         Ok(authd) => {
             let txt = formatter::paired_text(&authd.display_name, authd.role.as_str());
@@ -195,21 +199,25 @@ async fn handle_undo(
     // 5 minutes. Older than that → ask them to delete via free-text
     // ("delete the $5 coffee from yesterday") so they don't accidentally
     // wipe something they meant to keep.
-    let target = {
-        let conn = deps.conn.lock().unwrap();
-        let mut stmt = conn.prepare_cached(
-            "SELECT e.id, e.amount_cents, e.currency, COALESCE(c.name, '(uncategorized)'), e.description
-             FROM expenses e LEFT JOIN categories c ON c.id = e.category_id
-             WHERE e.logged_by_chat_id = ?1
-               AND e.created_at > datetime('now', '-5 minutes')
-             ORDER BY e.id DESC LIMIT 1",
-        )?;
-        stmt.query_row::<(i64, i64, String, String, Option<String>), _, _>(
-            rusqlite::params![auth_chat.chat_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
-        )
-        .ok()
-    };
+    let auth_chat_id = auth_chat.chat_id;
+    let target: Option<(i64, i64, String, String, Option<String>)> = deps
+        .db_actor
+        .run(move |conn| {
+            let mut stmt = conn.prepare_cached(
+                "SELECT e.id, e.amount_cents, e.currency, COALESCE(c.name, '(uncategorized)'), e.description
+                 FROM expenses e LEFT JOIN categories c ON c.id = e.category_id
+                 WHERE e.logged_by_chat_id = ?1
+                   AND e.created_at > datetime('now', '-5 minutes')
+                 ORDER BY e.id DESC LIMIT 1",
+            )?;
+            Ok(stmt
+                .query_row::<(i64, i64, String, String, Option<String>), _, _>(
+                    rusqlite::params![auth_chat_id],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+                )
+                .ok())
+        })
+        .await?;
 
     let Some((id, amount_cents, currency, category, description)) = target else {
         return reply(
@@ -220,10 +228,10 @@ async fn handle_undo(
         .await;
     };
 
-    let removed = {
-        let conn = deps.conn.lock().unwrap();
-        expenses::delete(&conn, id)?
-    };
+    let removed = deps
+        .db_actor
+        .run(move |conn| expenses::delete(conn, id))
+        .await?;
     if !removed {
         return reply(deps, chat_id, "Couldn't undo (already gone?).".to_string()).await;
     }
@@ -249,27 +257,34 @@ async fn handle_free_text(
     // are allowed to finish so the user gets a complete reply for the
     // turn they already paid for. Ollama rows cost zero, so this is a
     // no-op for local-only setups.
-    if let Some(refusal) = daily_cap_refusal_text(deps, now) {
+    if let Some(refusal) = daily_cap_refusal_text(deps, now).await {
         return reply(deps, chat_id, refusal).await;
     }
 
-    // Build the system prompt once per turn (categories don't change mid-turn).
-    let (system_prompt, members) = {
-        let conn = deps.conn.lock().unwrap();
-        let cats = categories::list(&conn, false)?;
-        let cat_pairs: Vec<(String, CategoryKind)> =
-            cats.into_iter().map(|c| (c.name, c.kind)).collect();
-        let members = auth::list_members(&conn)?;
-        let prompt = build_system_prompt(&SystemPromptInput {
-            now,
-            authorized_chat_name: Some(auth_chat.display_name.clone()),
-            authorized_chat_role: Some(auth_chat.role.as_str().to_string()),
-            categories: cat_pairs,
-            user_currency: deps.default_currency.clone(),
-            household_members: members.iter().map(|m| m.display_name.clone()).collect(),
-        });
-        (prompt, members)
-    };
+    // Build the system prompt once per turn. One actor round-trip
+    // reads categories + household members; the closure assembles the
+    // prompt from CPU-only logic.
+    let auth_display_name = auth_chat.display_name.clone();
+    let auth_role_str = auth_chat.role.as_str().to_string();
+    let default_currency = deps.default_currency.clone();
+    let (system_prompt, members) = deps
+        .db_actor
+        .run(move |conn| {
+            let cats = categories::list(conn, false)?;
+            let cat_pairs: Vec<(String, CategoryKind)> =
+                cats.into_iter().map(|c| (c.name, c.kind)).collect();
+            let members = auth::list_members(conn)?;
+            let prompt = build_system_prompt(&SystemPromptInput {
+                now,
+                authorized_chat_name: Some(auth_display_name),
+                authorized_chat_role: Some(auth_role_str),
+                categories: cat_pairs,
+                user_currency: default_currency,
+                household_members: members.iter().map(|m| m.display_name.clone()).collect(),
+            });
+            Ok((prompt, members))
+        })
+        .await?;
     let _ = members; // currently unused outside the prompt; keep for future per-member handlers
 
     // Append the user's message to history.
@@ -311,17 +326,15 @@ async fn handle_free_text(
 
         // Persist usage row for the cost tracker. Best-effort: a DB blip
         // here must not fail the user's chat turn.
+        let provider_name = deps.llm.provider_name().to_string();
+        let model_name = deps.llm.model().to_string();
+        let usage = response.usage;
+        if let Err(e) = deps
+            .db_actor
+            .run(move |conn| llm_usage::log(conn, &provider_name, &model_name, &usage, now))
+            .await
         {
-            let conn = deps.conn.lock().unwrap();
-            if let Err(e) = llm_usage::log(
-                &conn,
-                deps.llm.provider_name(),
-                deps.llm.model(),
-                &response.usage,
-                now,
-            ) {
-                tracing::warn!(target: "telegram::router", error=%e, "logging llm usage failed");
-            }
+            tracing::warn!(target: "telegram::router", error=%e, "logging llm usage failed");
         }
 
         // Persist the assistant turn into history before doing anything else
@@ -354,16 +367,16 @@ async fn handle_free_text(
 
         // Execute each tool call and append its result to history.
         for (id, name, input) in tool_uses {
-            let output = {
-                let conn = deps.conn.lock().unwrap();
-                let ctx = CallContext {
-                    now,
-                    authorized_chat_id: Some(auth_chat.chat_id),
-                    authorized_chat_name: Some(auth_chat.display_name.clone()),
-                    default_currency: deps.default_currency.clone(),
-                };
-                dispatcher::execute(&conn, &ctx, &id, &name, &input)
+            let ctx = CallContext {
+                now,
+                authorized_chat_id: Some(auth_chat.chat_id),
+                authorized_chat_name: Some(auth_chat.display_name.clone()),
+                default_currency: deps.default_currency.clone(),
             };
+            let output = deps
+                .db_actor
+                .run(move |conn| Ok(dispatcher::execute(conn, &ctx, &id, &name, &input)))
+                .await?;
             let tool_msg = if output.is_error {
                 Message::tool_error(output.tool_use_id, output.content)
             } else {
@@ -407,18 +420,23 @@ async fn try_resolve_pending_confirmation(
     if text.starts_with('/') {
         return Ok(false);
     }
-    let pending = {
-        let conn = deps.conn.lock().unwrap();
-        recurring_rules::get_pending(&conn, chat_id)?
-    };
+    let pending = deps
+        .db_actor
+        .run(move |conn| recurring_rules::get_pending(conn, chat_id))
+        .await?;
     let Some(pending) = pending else {
         return Ok(false);
     };
 
     // Expired? Drop it silently and let the message go through normally.
     if pending.expires_at <= now {
-        let conn = deps.conn.lock().unwrap();
-        let _ = recurring_rules::delete_pending(&conn, chat_id);
+        let _ = deps
+            .db_actor
+            .run(move |conn| {
+                let _ = recurring_rules::delete_pending(conn, chat_id);
+                Ok(())
+            })
+            .await;
         return Ok(false);
     }
 
@@ -443,15 +461,19 @@ async fn try_resolve_pending_confirmation(
 
     // Load the rule (it may have been deleted between ask and answer —
     // treat as a polite "never mind").
-    let rule = {
-        let conn = deps.conn.lock().unwrap();
-        recurring_rules::get(&conn, pending.rule_id)?
-    };
+    let rule_id = pending.rule_id;
+    let rule = deps
+        .db_actor
+        .run(move |conn| recurring_rules::get(conn, rule_id))
+        .await?;
     let Some(rule) = rule else {
-        {
-            let conn = deps.conn.lock().unwrap();
-            let _ = recurring_rules::delete_pending(&conn, chat_id);
-        }
+        let _ = deps
+            .db_actor
+            .run(move |conn| {
+                let _ = recurring_rules::delete_pending(conn, chat_id);
+                Ok(())
+            })
+            .await;
         reply(
             deps,
             chat_id,
@@ -461,37 +483,44 @@ async fn try_resolve_pending_confirmation(
         return Ok(true);
     };
 
-    // Compute the response text *and* drop the connection guard before
-    // the await — Send-safety on the spawned task requires no
-    // MutexGuard to be live across .await.
-    let response_text = {
-        let conn = deps.conn.lock().unwrap();
-        let text = if should_log {
-            let amount = super::formatter::format_money(rule.amount_cents, &rule.currency);
-            expenses::insert(
-                &conn,
-                &NewExpense {
-                    amount_cents: rule.amount_cents,
-                    currency: rule.currency.clone(),
-                    category_id: Some(rule.category_id),
-                    description: Some(rule.label.clone()),
-                    occurred_at: now,
-                    source: ExpenseSource::Telegram,
-                    raw_message: Some(format!("recurring rule #{} (confirmed)", rule.id)),
-                    llm_confidence: None,
-                    logged_by_chat_id: Some(chat_id),
-                    is_refund: false,
-                    refund_for_expense_id: None,
-                },
-            )?;
-            let _ = recurring_rules::delete_pending(&conn, chat_id);
-            format!("Logged {amount} for {label}.", label = rule.label)
-        } else {
-            let _ = recurring_rules::delete_pending(&conn, chat_id);
-            format!("Skipped {} this time.", rule.label)
-        };
-        drop(conn);
-        text
+    // Insert (or just clear) inside a single actor closure. Composing
+    // the user-visible reply text happens after the actor returns so we
+    // don't hold the connection while preparing strings.
+    let amount_str = super::formatter::format_money(rule.amount_cents, &rule.currency);
+    let rule_label = rule.label.clone();
+    let response_text = if should_log {
+        deps.db_actor
+            .run(move |conn| {
+                expenses::insert(
+                    conn,
+                    &NewExpense {
+                        amount_cents: rule.amount_cents,
+                        currency: rule.currency.clone(),
+                        category_id: Some(rule.category_id),
+                        description: Some(rule.label.clone()),
+                        occurred_at: now,
+                        source: ExpenseSource::Telegram,
+                        raw_message: Some(format!("recurring rule #{} (confirmed)", rule.id)),
+                        llm_confidence: None,
+                        logged_by_chat_id: Some(chat_id),
+                        is_refund: false,
+                        refund_for_expense_id: None,
+                    },
+                )?;
+                let _ = recurring_rules::delete_pending(conn, chat_id);
+                Ok(())
+            })
+            .await?;
+        format!("Logged {amount_str} for {rule_label}.")
+    } else {
+        let _ = deps
+            .db_actor
+            .run(move |conn| {
+                let _ = recurring_rules::delete_pending(conn, chat_id);
+                Ok(())
+            })
+            .await;
+        format!("Skipped {rule_label} this time.")
     };
 
     reply(deps, chat_id, response_text).await?;
@@ -517,26 +546,31 @@ async fn reply(deps: &RouterDeps, chat_id: i64, text: String) -> Result<()> {
 /// Best-effort: any DB error here logs and lets the call through —
 /// failing the cost cap closed would silently lock the user out of the
 /// bot.
-fn daily_cap_refusal_text(deps: &RouterDeps, now: OffsetDateTime) -> Option<String> {
-    let conn = deps.conn.lock().unwrap();
-    let cap_micros: i64 = match settings::get(&conn, settings::keys::LLM_DAILY_COST_CAP_MICROS) {
-        Ok(Some(s)) => s.parse().unwrap_or(DEFAULT_DAILY_COST_CAP_MICROS),
-        Ok(None) => DEFAULT_DAILY_COST_CAP_MICROS,
+async fn daily_cap_refusal_text(deps: &RouterDeps, now: OffsetDateTime) -> Option<String> {
+    // One actor round-trip reads both the cap and today's spend. If
+    // either query errors we surface None (best-effort policy) so the
+    // user can still chat with the bot.
+    let (cap_micros, today_micros): (i64, i64) = match deps
+        .db_actor
+        .run(move |conn| {
+            let raw = settings::get(conn, settings::keys::LLM_DAILY_COST_CAP_MICROS)?;
+            let cap = raw
+                .and_then(|s| s.parse::<i64>().ok())
+                .unwrap_or(DEFAULT_DAILY_COST_CAP_MICROS);
+            let today = llm_usage::today_cost_micros(conn, now)?;
+            Ok((cap, today))
+        })
+        .await
+    {
+        Ok(pair) => pair,
         Err(e) => {
-            tracing::warn!(target: "telegram::router", error = %e, "could not read llm_daily_cost_cap_micros");
+            tracing::warn!(target: "telegram::router", error = %e, "could not read daily cost cap state");
             return None;
         }
     };
     if cap_micros <= 0 {
         return None; // explicit disable
     }
-    let today_micros = match llm_usage::today_cost_micros(&conn, now) {
-        Ok(m) => m,
-        Err(e) => {
-            tracing::warn!(target: "telegram::router", error = %e, "could not compute today's llm cost");
-            return None;
-        }
-    };
     if today_micros < cap_micros {
         return None;
     }

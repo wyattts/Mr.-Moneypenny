@@ -143,31 +143,29 @@ fn tool_use_response(name: &str, input: serde_json::Value) -> ChatResponse {
 // Helpers
 // ---------------------------------------------------------------------
 
-fn fresh() -> Connection {
-    let c = db::open_in_memory().unwrap();
-    db::migrate(&c).unwrap();
+/// Set up a router test bench. The Mutex `conn` and the actor's
+/// Connection both point at the same on-disk SQLite file (under
+/// `TempDir`) so the router — which now routes every DB read through
+/// the actor — sees the rows the test seeds via the Mutex connection.
+/// In-memory DBs are per-connection-private, so this on-disk setup is
+/// necessary. The returned `TempDir` must outlive the test (held on
+/// the caller's stack).
+fn make_deps(
+    llm: Arc<StubLlm>,
+    telegram: Arc<StubTelegram>,
+) -> (RouterDeps, Arc<Mutex<Connection>>, tempfile::TempDir) {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let path = tmp.path().join("test.sqlite");
+    let conn = db::open(&path).unwrap();
+    db::migrate(&conn).unwrap();
     // Migration 0003 disables most seed categories (only 14 active by
     // default). These router tests use Coffee as the canonical example
     // for the LLM tool path; reactivate everything seeded so they
     // don't depend on the curated default-active list.
-    c.execute("UPDATE categories SET is_active = 1 WHERE is_seed = 1", [])
+    conn.execute("UPDATE categories SET is_active = 1 WHERE is_seed = 1", [])
         .unwrap();
-    c
-}
-
-fn make_deps(
-    conn: Connection,
-    llm: Arc<StubLlm>,
-    telegram: Arc<StubTelegram>,
-) -> (RouterDeps, Arc<Mutex<Connection>>) {
     let conn = Arc::new(Mutex::new(conn));
-    // The telegram router is still on the Mutex path (phase 2 only
-    // migrated the scheduler). We populate `db_actor` with a separate
-    // in-memory Connection because RouterDeps requires the field; no
-    // test code here invokes the actor, so it can hold an empty DB.
-    let actor_conn = moneypenny_lib::db::open_in_memory().unwrap();
-    moneypenny_lib::db::migrate(&actor_conn).unwrap();
-    let db_actor = moneypenny_lib::db::DbHandle::spawn(actor_conn);
+    let db_actor = moneypenny_lib::db::DbHandle::spawn_from_path(&path).unwrap();
     let deps = RouterDeps {
         conn: conn.clone(),
         db_actor,
@@ -176,7 +174,7 @@ fn make_deps(
         state: Arc::new(BotState::new()),
         default_currency: "USD".into(),
     };
-    (deps, conn)
+    (deps, conn, tmp)
 }
 
 fn message_update(update_id: i64, chat_id: i64, text: &str) -> Update {
@@ -216,10 +214,9 @@ fn pair_owner(conn: &Mutex<Connection>, chat_id: i64, name: &str, now: OffsetDat
 
 #[tokio::test]
 async fn unauthorized_chat_gets_polite_refusal() {
-    let conn = fresh();
     let llm = Arc::new(StubLlm::default());
     let tg = Arc::new(StubTelegram::default());
-    let (deps, _conn) = make_deps(conn, llm.clone(), tg.clone());
+    let (deps, _conn, _tmp) = make_deps(llm.clone(), tg.clone());
     let now = datetime!(2026-04-28 12:00:00 UTC);
 
     handle_update(&deps, &message_update(1, 999, "$5 coffee"), now)
@@ -235,11 +232,10 @@ async fn unauthorized_chat_gets_polite_refusal() {
 
 #[tokio::test]
 async fn start_with_valid_code_pairs_owner() {
-    let conn = fresh();
     let now = datetime!(2026-04-28 12:00:00 UTC);
     let llm = Arc::new(StubLlm::default());
     let tg = Arc::new(StubTelegram::default());
-    let (deps, conn_arc) = make_deps(conn, llm.clone(), tg.clone());
+    let (deps, conn_arc, _tmp) = make_deps(llm.clone(), tg.clone());
 
     // Pre-issue a pairing code outside the router.
     let code = {
@@ -268,11 +264,10 @@ async fn start_with_valid_code_pairs_owner() {
 
 #[tokio::test]
 async fn start_with_invalid_code_refuses() {
-    let conn = fresh();
     let now = datetime!(2026-04-28 12:00:00 UTC);
     let llm = Arc::new(StubLlm::default());
     let tg = Arc::new(StubTelegram::default());
-    let (deps, _) = make_deps(conn, llm.clone(), tg.clone());
+    let (deps, _, _tmp) = make_deps(llm.clone(), tg.clone());
 
     handle_update(&deps, &message_update(1, 111, "/start 999999"), now)
         .await
@@ -284,11 +279,10 @@ async fn start_with_invalid_code_refuses() {
 #[tokio::test]
 async fn help_command_works_for_unpaired_chat() {
     // /help is auth-bypass so users can discover how to pair.
-    let conn = fresh();
     let now = datetime!(2026-04-28 12:00:00 UTC);
     let llm = Arc::new(StubLlm::default());
     let tg = Arc::new(StubTelegram::default());
-    let (deps, _) = make_deps(conn, llm, tg.clone());
+    let (deps, _, _tmp) = make_deps(llm, tg.clone());
     handle_update(&deps, &message_update(1, 999, "/help"), now)
         .await
         .unwrap();
@@ -298,11 +292,10 @@ async fn help_command_works_for_unpaired_chat() {
 
 #[tokio::test]
 async fn free_text_logs_expense_via_llm_tool_call() {
-    let conn = fresh();
     let now = datetime!(2026-04-15 12:00:00 UTC);
     let llm = Arc::new(StubLlm::default());
     let tg = Arc::new(StubTelegram::default());
-    let (deps, conn_arc) = make_deps(conn, llm.clone(), tg.clone());
+    let (deps, conn_arc, _tmp) = make_deps(llm.clone(), tg.clone());
     pair_owner(&conn_arc, 111, "Wyatt", now);
 
     // Two-turn: tool_use → tool result → final text.
@@ -345,11 +338,10 @@ async fn free_text_logs_expense_via_llm_tool_call() {
 
 #[tokio::test]
 async fn agent_loop_caps_at_max_iterations() {
-    let conn = fresh();
     let now = datetime!(2026-04-15 12:00:00 UTC);
     let llm = Arc::new(StubLlm::default());
     let tg = Arc::new(StubTelegram::default());
-    let (deps, conn_arc) = make_deps(conn, llm.clone(), tg.clone());
+    let (deps, conn_arc, _tmp) = make_deps(llm.clone(), tg.clone());
     pair_owner(&conn_arc, 111, "Wyatt", now);
 
     // Endlessly emit tool_use to test the iteration cap.
@@ -369,11 +361,10 @@ async fn agent_loop_caps_at_max_iterations() {
 
 #[tokio::test]
 async fn undo_removes_recent_expense() {
-    let conn = fresh();
     let now = datetime!(2026-04-15 12:00:00 UTC);
     let llm = Arc::new(StubLlm::default());
     let tg = Arc::new(StubTelegram::default());
-    let (deps, conn_arc) = make_deps(conn, llm.clone(), tg.clone());
+    let (deps, conn_arc, _tmp) = make_deps(llm.clone(), tg.clone());
     pair_owner(&conn_arc, 111, "Wyatt", now);
 
     // First log an expense via LLM
@@ -403,11 +394,10 @@ async fn undo_removes_recent_expense() {
 
 #[tokio::test]
 async fn undo_with_nothing_recent_replies_politely() {
-    let conn = fresh();
     let now = datetime!(2026-04-15 12:00:00 UTC);
     let llm = Arc::new(StubLlm::default());
     let tg = Arc::new(StubTelegram::default());
-    let (deps, conn_arc) = make_deps(conn, llm.clone(), tg.clone());
+    let (deps, conn_arc, _tmp) = make_deps(llm.clone(), tg.clone());
     pair_owner(&conn_arc, 111, "Wyatt", now);
 
     handle_update(&deps, &message_update(1, 111, "/undo"), now)
@@ -419,11 +409,10 @@ async fn undo_with_nothing_recent_replies_politely() {
 
 #[tokio::test]
 async fn cancel_clears_conversation_history() {
-    let conn = fresh();
     let now = datetime!(2026-04-15 12:00:00 UTC);
     let llm = Arc::new(StubLlm::default());
     let tg = Arc::new(StubTelegram::default());
-    let (deps, conn_arc) = make_deps(conn, llm.clone(), tg.clone());
+    let (deps, conn_arc, _tmp) = make_deps(llm.clone(), tg.clone());
     pair_owner(&conn_arc, 111, "Wyatt", now);
 
     // Send a message so history populates.
@@ -480,11 +469,10 @@ fn insert_test_recurring_rule(conn: &Mutex<Connection>, label: &str) -> i64 {
 
 #[tokio::test]
 async fn pending_yes_inserts_expense_and_clears_pending() {
-    let conn = fresh();
     let now = datetime!(2026-04-15 12:00:00 UTC);
     let llm = Arc::new(StubLlm::default()); // intentionally empty: must NOT be called
     let tg = Arc::new(StubTelegram::default());
-    let (deps, conn_arc) = make_deps(conn, llm.clone(), tg.clone());
+    let (deps, conn_arc, _tmp) = make_deps(llm.clone(), tg.clone());
     pair_owner(&conn_arc, 111, "Wyatt", now);
     let rule_id = insert_test_recurring_rule(&conn_arc, "Netflix");
     insert_pending_for_test(&conn_arc, 111, rule_id, now);
@@ -529,11 +517,10 @@ async fn pending_yes_inserts_expense_and_clears_pending() {
 
 #[tokio::test]
 async fn pending_skip_clears_without_inserting() {
-    let conn = fresh();
     let now = datetime!(2026-04-15 12:00:00 UTC);
     let llm = Arc::new(StubLlm::default());
     let tg = Arc::new(StubTelegram::default());
-    let (deps, conn_arc) = make_deps(conn, llm.clone(), tg.clone());
+    let (deps, conn_arc, _tmp) = make_deps(llm.clone(), tg.clone());
     pair_owner(&conn_arc, 111, "Wyatt", now);
     let rule_id = insert_test_recurring_rule(&conn_arc, "Netflix");
     insert_pending_for_test(&conn_arc, 111, rule_id, now);
@@ -555,11 +542,10 @@ async fn pending_skip_clears_without_inserting() {
 
 #[tokio::test]
 async fn pending_unknown_reply_re_prompts_without_dropping_pending() {
-    let conn = fresh();
     let now = datetime!(2026-04-15 12:00:00 UTC);
     let llm = Arc::new(StubLlm::default());
     let tg = Arc::new(StubTelegram::default());
-    let (deps, conn_arc) = make_deps(conn, llm.clone(), tg.clone());
+    let (deps, conn_arc, _tmp) = make_deps(llm.clone(), tg.clone());
     pair_owner(&conn_arc, 111, "Wyatt", now);
     let rule_id = insert_test_recurring_rule(&conn_arc, "Netflix");
     insert_pending_for_test(&conn_arc, 111, rule_id, now);
@@ -586,12 +572,11 @@ async fn pending_unknown_reply_re_prompts_without_dropping_pending() {
 
 #[tokio::test]
 async fn expired_pending_falls_through_to_llm() {
-    let conn = fresh();
     let asked_at = datetime!(2026-04-10 12:00:00 UTC);
     let now = datetime!(2026-04-15 12:00:00 UTC); // 5 days later, well past 36h TTL
     let llm = Arc::new(StubLlm::default());
     let tg = Arc::new(StubTelegram::default());
-    let (deps, conn_arc) = make_deps(conn, llm.clone(), tg.clone());
+    let (deps, conn_arc, _tmp) = make_deps(llm.clone(), tg.clone());
     pair_owner(&conn_arc, 111, "Wyatt", now);
     let rule_id = insert_test_recurring_rule(&conn_arc, "Netflix");
     insert_pending_for_test(&conn_arc, 111, rule_id, asked_at);
@@ -620,11 +605,10 @@ async fn expired_pending_falls_through_to_llm() {
 
 #[tokio::test]
 async fn cancel_clears_pending_confirmation() {
-    let conn = fresh();
     let now = datetime!(2026-04-15 12:00:00 UTC);
     let llm = Arc::new(StubLlm::default());
     let tg = Arc::new(StubTelegram::default());
-    let (deps, conn_arc) = make_deps(conn, llm.clone(), tg.clone());
+    let (deps, conn_arc, _tmp) = make_deps(llm.clone(), tg.clone());
     pair_owner(&conn_arc, 111, "Wyatt", now);
     let rule_id = insert_test_recurring_rule(&conn_arc, "Netflix");
     insert_pending_for_test(&conn_arc, 111, rule_id, now);
@@ -650,11 +634,10 @@ async fn oversize_text_message_refused_without_llm_call() {
     // Audit Pf-6: messages over 2 KB get a friendly refusal and never
     // reach the LLM. Slash commands are exempt; we test a non-slash
     // free-text input.
-    let conn = fresh();
     let now = datetime!(2026-04-15 12:00:00 UTC);
     let llm = Arc::new(StubLlm::default());
     let tg = Arc::new(StubTelegram::default());
-    let (deps, conn_arc) = make_deps(conn, llm.clone(), tg.clone());
+    let (deps, conn_arc, _tmp) = make_deps(llm.clone(), tg.clone());
     pair_owner(&conn_arc, 111, "Wyatt", now);
 
     let huge = "x".repeat(3_000);
@@ -676,11 +659,10 @@ async fn daily_cost_cap_refuses_with_friendly_message() {
     // Audit Pf-6: once today's llm_usage cost exceeds the cap, the next
     // free-text turn is refused with a Settings pointer and the LLM is
     // never called. Slash commands keep working (covered elsewhere).
-    let conn = fresh();
     let now = datetime!(2026-04-15 12:00:00 UTC);
     let llm = Arc::new(StubLlm::default());
     let tg = Arc::new(StubTelegram::default());
-    let (deps, conn_arc) = make_deps(conn, llm.clone(), tg.clone());
+    let (deps, conn_arc, _tmp) = make_deps(llm.clone(), tg.clone());
     pair_owner(&conn_arc, 111, "Wyatt", now);
 
     // Seed an llm_usage row that meets the default $1.00 cap.
@@ -713,11 +695,10 @@ async fn daily_cost_cap_refuses_with_friendly_message() {
 
 #[tokio::test]
 async fn empty_text_message_ignored() {
-    let conn = fresh();
     let now = datetime!(2026-04-15 12:00:00 UTC);
     let llm = Arc::new(StubLlm::default());
     let tg = Arc::new(StubTelegram::default());
-    let (deps, conn_arc) = make_deps(conn, llm.clone(), tg.clone());
+    let (deps, conn_arc, _tmp) = make_deps(llm.clone(), tg.clone());
     pair_owner(&conn_arc, 111, "Wyatt", now);
 
     let mut upd = message_update(1, 111, "");
