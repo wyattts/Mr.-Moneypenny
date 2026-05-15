@@ -29,6 +29,7 @@ import type {
   SetupState,
 } from "@/lib/tauri";
 import { ViewHeader } from "./ViewHeader";
+import { ReportWizard } from "./ReportWizard";
 import { ErrorBanner } from "@/wizard/components/Layout";
 import { formatDate, formatDelta, formatMoney } from "@/lib/format";
 
@@ -153,6 +154,11 @@ export function Insights() {
         ) : (
           <p className="text-sm text-graphite-400">Loading…</p>
         )}
+        <ReportWizard
+          provider={setup?.llm_provider ?? null}
+          currency={currency}
+          locale={locale}
+        />
       </div>
     </div>
   );

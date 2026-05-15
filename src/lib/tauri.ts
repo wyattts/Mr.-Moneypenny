@@ -856,3 +856,142 @@ export const listMerchantRules = (): Promise<MerchantRule[]> =>
 
 export const deleteMerchantRule = (id: number): Promise<void> =>
   invoke("delete_merchant_rule", { id });
+
+// ---------------------------------------------------------------------
+// AI Report Wizard (v0.4.0). The four presets resolve server-side to the
+// previous *complete* calendar period; custom dates are ISO yyyy-mm-dd.
+// ---------------------------------------------------------------------
+
+export type ReportTimeframe =
+  | { kind: "last_week" | "last_month" | "last_quarter" | "last_year" }
+  | { kind: "custom"; from: string; to: string };
+
+export interface ReportSections {
+  rebalance: boolean;
+  spend_cycles: boolean;
+  cuts: boolean;
+  subscriptions: boolean;
+  savings: boolean;
+  anomalies: boolean;
+  wins: boolean;
+}
+
+export interface ReportRequest {
+  timeframe: ReportTimeframe;
+  sections: ReportSections;
+  include_merchant_samples: boolean;
+  blurb?: string;
+  include_goals_summary: boolean;
+  monthly_income_cents?: number;
+}
+
+export interface ReportEstimate {
+  provider: string;
+  model: string;
+  estimate_micros: number;
+  today_micros: number;
+  cap_micros: number;
+  would_exceed_cap: boolean;
+}
+
+export interface ReportSection {
+  id: string;
+  heading: string;
+  summary: string;
+  bullets: string[];
+}
+
+export interface GeneratedReport {
+  sections: ReportSection[];
+  overall_summary: string;
+}
+
+/** Deterministic figures the narrative is built on (insights::report
+ * ReportData). Typed loosely where the UI doesn't render it directly;
+ * the PDF (Phase 4) consumes the full structure. */
+export interface ReportFigures {
+  timeframe_label: string;
+  start: string;
+  end: string;
+  days: number;
+  months_in_window: number;
+  currency: string;
+  total_spent_cents: number;
+  rebalance: {
+    category_id: number;
+    name: string;
+    kind: "fixed" | "variable" | "investing";
+    monthly_target_cents: number | null;
+    prorated_budget_cents: number | null;
+    actual_cents: number;
+    delta_cents: number | null;
+    suggested_monthly_target_cents: number | null;
+  }[];
+  spend_cycles: {
+    by_weekday: { weekday: number; total_cents: number; occurrences: number }[];
+    early_month_cents: number;
+    mid_month_cents: number;
+    late_month_cents: number;
+  };
+  cut_candidates: {
+    category_id: number;
+    name: string;
+    total_cents: number;
+    pct_of_total: number;
+    over_budget_cents: number | null;
+  }[];
+  subscriptions: {
+    category_id: number;
+    category_name: string;
+    amount_cents: number;
+    occurrences: number;
+    total_cents: number;
+    source: string;
+  }[];
+  savings: {
+    monthly_income_cents: number;
+    months_in_window: number;
+    income_for_window_cents: number;
+    spent_cents: number;
+    saved_cents: number;
+    savings_rate_pct: number | null;
+    monthly_net_cents: number;
+  } | null;
+  anomalies: {
+    category_id: number;
+    name: string;
+    current_cents: number;
+    prior_cents: number;
+    delta_cents: number;
+    delta_pct: number | null;
+  }[];
+  wins: {
+    category_id: number;
+    name: string;
+    reason: string;
+    detail_cents: number;
+  }[];
+  merchant_samples: {
+    category_id: number;
+    category_name: string;
+    merchants: { label: string; total_cents: number; count: number }[];
+  }[];
+}
+
+export interface GeneratedReportResponse {
+  report: GeneratedReport;
+  figures: ReportFigures;
+  provider: string;
+  model: string;
+  cost_micros: number;
+  generated_at: string;
+  timeframe_label: string;
+}
+
+export const reportEstimate = (
+  input: ReportRequest,
+): Promise<ReportEstimate> => invoke("report_estimate", { input });
+
+export const reportGenerate = (
+  input: ReportRequest,
+): Promise<GeneratedReportResponse> => invoke("report_generate", { input });
