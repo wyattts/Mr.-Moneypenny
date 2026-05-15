@@ -53,49 +53,55 @@ pub struct SetupState {
 
 #[tauri::command]
 pub async fn get_setup_state(state: State<'_, AppState>) -> Result<SetupState, String> {
-    let conn = state.db.lock().unwrap();
-    let setup_complete = settings::get(&conn, settings::keys::SETUP_COMPLETE)
-        .map_err(err)?
-        .as_deref()
-        == Some("1");
-    let last_completed_step = settings::get(&conn, settings::keys::SETUP_STEP)
-        .map_err(err)?
-        .and_then(|s| s.parse::<u8>().ok())
-        .unwrap_or(0);
-    let llm_provider = settings::get(&conn, settings::keys::LLM_PROVIDER).map_err(err)?;
-    let default_currency =
-        settings::get_or_default(&conn, settings::keys::DEFAULT_CURRENCY, "USD").map_err(err)?;
-    let locale = settings::get(&conn, settings::keys::LOCALE).map_err(err)?;
-    let ollama_endpoint = settings::get(&conn, settings::keys::OLLAMA_ENDPOINT).map_err(err)?;
-    let ollama_model = settings::get(&conn, settings::keys::OLLAMA_MODEL).map_err(err)?;
-
-    let authorized_chat_count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM telegram_authorized_chats", [], |r| {
-            r.get(0)
-        })
-        .map_err(err)?;
-
+    // Anthropic + Telegram secret checks happen outside the actor —
+    // they go through the secrets module which has its own concurrency
+    // model. Everything else folds into one actor round-trip.
     let anthropic_key_set = secrets::exists(secrets::keys::ANTHROPIC_API_KEY).map_err(err)?;
     let telegram_token_set = secrets::exists(secrets::keys::TELEGRAM_BOT_TOKEN).map_err(err)?;
+    state
+        .db_actor
+        .run(move |conn| {
+            let setup_complete =
+                settings::get(conn, settings::keys::SETUP_COMPLETE)?.as_deref() == Some("1");
+            let last_completed_step = settings::get(conn, settings::keys::SETUP_STEP)?
+                .and_then(|s| s.parse::<u8>().ok())
+                .unwrap_or(0);
+            let llm_provider = settings::get(conn, settings::keys::LLM_PROVIDER)?;
+            let default_currency =
+                settings::get_or_default(conn, settings::keys::DEFAULT_CURRENCY, "USD")?;
+            let locale = settings::get(conn, settings::keys::LOCALE)?;
+            let ollama_endpoint = settings::get(conn, settings::keys::OLLAMA_ENDPOINT)?;
+            let ollama_model = settings::get(conn, settings::keys::OLLAMA_MODEL)?;
 
-    Ok(SetupState {
-        setup_complete,
-        last_completed_step,
-        llm_provider,
-        anthropic_key_set,
-        telegram_token_set,
-        authorized_chat_count,
-        default_currency,
-        locale,
-        ollama_endpoint,
-        ollama_model,
-    })
+            let authorized_chat_count: i64 =
+                conn.query_row("SELECT COUNT(*) FROM telegram_authorized_chats", [], |r| {
+                    r.get(0)
+                })?;
+
+            Ok(SetupState {
+                setup_complete,
+                last_completed_step,
+                llm_provider,
+                anthropic_key_set,
+                telegram_token_set,
+                authorized_chat_count,
+                default_currency,
+                locale,
+                ollama_endpoint,
+                ollama_model,
+            })
+        })
+        .await
+        .map_err(err)
 }
 
 #[tauri::command]
 pub async fn set_setup_step(step: u8, state: State<'_, AppState>) -> Result<(), String> {
-    let conn = state.db.lock().unwrap();
-    settings::set(&conn, settings::keys::SETUP_STEP, &step.to_string()).map_err(err)
+    state
+        .db_actor
+        .run(move |conn| settings::set(conn, settings::keys::SETUP_STEP, &step.to_string()))
+        .await
+        .map_err(err)
 }
 
 // ---------------------------------------------------------------------
@@ -107,8 +113,11 @@ pub async fn save_llm_provider(provider: String, state: State<'_, AppState>) -> 
     if provider != "anthropic" && provider != "ollama" {
         return Err(format!("invalid provider: {provider}"));
     }
-    let conn = state.db.lock().unwrap();
-    settings::set(&conn, settings::keys::LLM_PROVIDER, &provider).map_err(err)
+    state
+        .db_actor
+        .run(move |conn| settings::set(conn, settings::keys::LLM_PROVIDER, &provider))
+        .await
+        .map_err(err)
 }
 
 #[tauri::command]
@@ -125,15 +134,17 @@ pub async fn test_anthropic(state: State<'_, AppState>) -> Result<String, String
     let key = secrets::retrieve(secrets::keys::ANTHROPIC_API_KEY)
         .map_err(err)?
         .ok_or_else(|| "no Anthropic API key saved".to_string())?;
-    let model = {
-        let conn = state.db.lock().unwrap();
-        settings::get_or_default(
-            &conn,
-            settings::keys::ANTHROPIC_MODEL,
-            DEFAULT_ANTHROPIC_MODEL,
-        )
-        .map_err(err)?
-    };
+    let model = state
+        .db_actor
+        .run(|conn| {
+            settings::get_or_default(
+                conn,
+                settings::keys::ANTHROPIC_MODEL,
+                DEFAULT_ANTHROPIC_MODEL,
+            )
+        })
+        .await
+        .map_err(err)?;
     let provider =
         AnthropicProvider::with_options(key, &model, "https://api.anthropic.com").map_err(err)?;
     // Minimal probe: 1-output-token call. Costs ~$0.0001 but validates auth + model.
@@ -156,14 +167,26 @@ pub async fn save_ollama_config(
     model: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let conn = state.db.lock().unwrap();
-    let allow_remote = settings::get_or_default(&conn, settings::keys::OLLAMA_ALLOW_REMOTE, "0")
-        .map_err(err)?
-        == "1";
+    // Validation needs the allow_remote setting; one actor round-trip
+    // reads it. We validate outside the actor (CPU-only) and the
+    // second round-trip writes both keys together.
+    let allow_remote = state
+        .db_actor
+        .run(|conn| {
+            Ok(settings::get_or_default(conn, settings::keys::OLLAMA_ALLOW_REMOTE, "0")? == "1")
+        })
+        .await
+        .map_err(err)?;
     let cleaned = crate::llm::ollama::validate_endpoint(&endpoint, allow_remote).map_err(err)?;
-    settings::set(&conn, settings::keys::OLLAMA_ENDPOINT, &cleaned).map_err(err)?;
-    settings::set(&conn, settings::keys::OLLAMA_MODEL, &model).map_err(err)?;
-    Ok(())
+    state
+        .db_actor
+        .run(move |conn| {
+            settings::set(conn, settings::keys::OLLAMA_ENDPOINT, &cleaned)?;
+            settings::set(conn, settings::keys::OLLAMA_MODEL, &model)?;
+            Ok(())
+        })
+        .await
+        .map_err(err)
 }
 
 #[tauri::command]
@@ -171,11 +194,13 @@ pub async fn list_ollama_models(
     endpoint: String,
     state: State<'_, AppState>,
 ) -> Result<Vec<String>, String> {
-    let allow_remote = {
-        let conn = state.db.lock().unwrap();
-        settings::get_or_default(&conn, settings::keys::OLLAMA_ALLOW_REMOTE, "0").map_err(err)?
-            == "1"
-    };
+    let allow_remote = state
+        .db_actor
+        .run(|conn| {
+            Ok(settings::get_or_default(conn, settings::keys::OLLAMA_ALLOW_REMOTE, "0")? == "1")
+        })
+        .await
+        .map_err(err)?;
     let cleaned = crate::llm::ollama::validate_endpoint(&endpoint, allow_remote).map_err(err)?;
     let url = format!("{}/api/tags", cleaned.trim_end_matches('/'));
     let resp = reqwest::Client::new().get(&url).send().await.map_err(err)?;
@@ -196,18 +221,19 @@ pub async fn list_ollama_models(
 
 #[tauri::command]
 pub async fn test_ollama(state: State<'_, AppState>) -> Result<String, String> {
-    let (endpoint, model) = {
-        let conn = state.db.lock().unwrap();
-        let endpoint = settings::get_or_default(
-            &conn,
-            settings::keys::OLLAMA_ENDPOINT,
-            "http://localhost:11434",
-        )
+    let (endpoint, model): (String, String) = state
+        .db_actor
+        .run(|conn| {
+            let endpoint = settings::get_or_default(
+                conn,
+                settings::keys::OLLAMA_ENDPOINT,
+                "http://localhost:11434",
+            )?;
+            let model = settings::get_or_default(conn, settings::keys::OLLAMA_MODEL, "llama3:8b")?;
+            Ok((endpoint, model))
+        })
+        .await
         .map_err(err)?;
-        let model = settings::get_or_default(&conn, settings::keys::OLLAMA_MODEL, "llama3:8b")
-            .map_err(err)?;
-        (endpoint, model)
-    };
     let provider = OllamaProvider::with_base_url(model.clone(), endpoint).map_err(err)?;
     let request = ChatRequest {
         system_prompt: SystemPrompt {
@@ -273,13 +299,17 @@ pub async fn generate_pairing_code(
     is_owner_invite: bool,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
-    let conn = state.db.lock().unwrap();
     let kind = if is_owner_invite {
         auth::PairingKind::Owner
     } else {
         auth::PairingKind::Member
     };
-    auth::generate_pairing_code(&conn, &display_name, kind, time::OffsetDateTime::now_utc())
+    state
+        .db_actor
+        .run(move |conn| {
+            auth::generate_pairing_code(conn, &display_name, kind, time::OffsetDateTime::now_utc())
+        })
+        .await
         .map_err(err)
 }
 
@@ -287,8 +317,11 @@ pub async fn generate_pairing_code(
 pub async fn list_authorized_chats(
     state: State<'_, AppState>,
 ) -> Result<Vec<AuthorizedChat>, String> {
-    let conn = state.db.lock().unwrap();
-    auth::list_members(&conn).map_err(err)
+    state
+        .db_actor
+        .run(|conn| auth::list_members(conn))
+        .await
+        .map_err(err)
 }
 
 /// Wipe every authorized chat and pending pairing code. Used by the
@@ -296,8 +329,11 @@ pub async fn list_authorized_chats(
 /// Returns the number of authorized chats that were removed.
 #[tauri::command]
 pub async fn clear_authorized_chats(state: State<'_, AppState>) -> Result<usize, String> {
-    let conn = state.db.lock().unwrap();
-    auth::clear_all(&conn).map_err(err)
+    state
+        .db_actor
+        .run(|conn| auth::clear_all(conn))
+        .await
+        .map_err(err)
 }
 
 // ---------------------------------------------------------------------
@@ -310,10 +346,15 @@ pub async fn save_currency_locale(
     locale: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let conn = state.db.lock().unwrap();
-    settings::set(&conn, settings::keys::DEFAULT_CURRENCY, &currency).map_err(err)?;
-    settings::set(&conn, settings::keys::LOCALE, &locale).map_err(err)?;
-    Ok(())
+    state
+        .db_actor
+        .run(move |conn| {
+            settings::set(conn, settings::keys::DEFAULT_CURRENCY, &currency)?;
+            settings::set(conn, settings::keys::LOCALE, &locale)?;
+            Ok(())
+        })
+        .await
+        .map_err(err)
 }
 
 #[derive(Debug, Serialize)]
@@ -333,8 +374,11 @@ pub async fn list_categories(
     include_inactive: bool,
     state: State<'_, AppState>,
 ) -> Result<Vec<CategoryView>, String> {
-    let conn = state.db.lock().unwrap();
-    let cats = categories::list(&conn, include_inactive).map_err(err)?;
+    let cats = state
+        .db_actor
+        .run(move |conn| categories::list(conn, include_inactive))
+        .await
+        .map_err(err)?;
     Ok(cats
         .into_iter()
         .map(|c| CategoryView {
@@ -356,9 +400,14 @@ pub async fn set_category_target(
     monthly_target_cents: Option<i64>,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let conn = state.db.lock().unwrap();
-    categories::set_monthly_target(&conn, id, monthly_target_cents).map_err(err)?;
-    Ok(())
+    state
+        .db_actor
+        .run(move |conn| {
+            categories::set_monthly_target(conn, id, monthly_target_cents)?;
+            Ok(())
+        })
+        .await
+        .map_err(err)
 }
 
 #[tauri::command]
@@ -367,9 +416,14 @@ pub async fn set_category_active(
     is_active: bool,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let conn = state.db.lock().unwrap();
-    categories::set_active(&conn, id, is_active).map_err(err)?;
-    Ok(())
+    state
+        .db_actor
+        .run(move |conn| {
+            categories::set_active(conn, id, is_active)?;
+            Ok(())
+        })
+        .await
+        .map_err(err)
 }
 
 // ---------------------------------------------------------------------
@@ -379,41 +433,45 @@ pub async fn set_category_active(
 #[tauri::command]
 #[allow(clippy::collapsible_match)]
 pub async fn finalize_setup(state: State<'_, AppState>) -> Result<(), String> {
-    {
-        let conn = state.db.lock().unwrap();
-        // Sanity: refuse to finalize if prerequisites are missing.
-        let provider = settings::get(&conn, settings::keys::LLM_PROVIDER)
-            .map_err(err)?
-            .ok_or_else(|| "pick an LLM provider first".to_string())?;
-        match provider.as_str() {
-            "anthropic" => {
-                if !secrets::exists(secrets::keys::ANTHROPIC_API_KEY).map_err(err)? {
-                    return Err("save your Anthropic API key first".into());
-                }
-            }
-            "ollama" => {
-                if settings::get(&conn, settings::keys::OLLAMA_ENDPOINT)
-                    .map_err(err)?
-                    .is_none()
-                {
-                    return Err("save your Ollama endpoint first".into());
-                }
-            }
-            _ => {}
-        }
-        if !secrets::exists(secrets::keys::TELEGRAM_BOT_TOKEN).map_err(err)? {
-            return Err("save your Telegram bot token first".into());
-        }
-        let auth_count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM telegram_authorized_chats", [], |r| {
-                r.get(0)
-            })
-            .map_err(err)?;
-        if auth_count == 0 {
-            return Err("pair a chat first (send /start <code> to your bot)".into());
-        }
-        settings::set(&conn, settings::keys::SETUP_COMPLETE, "1").map_err(err)?;
+    // The secrets:: checks have their own sync model; do them outside
+    // the actor so they don't tie up the writer thread on a slow file
+    // read.
+    let has_anthropic = secrets::exists(secrets::keys::ANTHROPIC_API_KEY).map_err(err)?;
+    let has_tg_token = secrets::exists(secrets::keys::TELEGRAM_BOT_TOKEN).map_err(err)?;
+    if !has_tg_token {
+        return Err("save your Telegram bot token first".into());
     }
+    state
+        .db_actor
+        .run(move |conn| {
+            // Sanity: refuse to finalize if prerequisites are missing.
+            let provider = settings::get(conn, settings::keys::LLM_PROVIDER)?
+                .ok_or_else(|| anyhow::anyhow!("pick an LLM provider first"))?;
+            match provider.as_str() {
+                "anthropic" => {
+                    if !has_anthropic {
+                        anyhow::bail!("save your Anthropic API key first");
+                    }
+                }
+                "ollama" => {
+                    if settings::get(conn, settings::keys::OLLAMA_ENDPOINT)?.is_none() {
+                        anyhow::bail!("save your Ollama endpoint first");
+                    }
+                }
+                _ => {}
+            }
+            let auth_count: i64 =
+                conn.query_row("SELECT COUNT(*) FROM telegram_authorized_chats", [], |r| {
+                    r.get(0)
+                })?;
+            if auth_count == 0 {
+                anyhow::bail!("pair a chat first (send /start <code> to your bot)");
+            }
+            settings::set(conn, settings::keys::SETUP_COMPLETE, "1")?;
+            Ok(())
+        })
+        .await
+        .map_err(err)?;
     // Make sure the poller is running with the final config.
     state.ensure_poller_running().map_err(err)?;
     Ok(())
@@ -454,8 +512,11 @@ pub async fn get_dashboard(
     range: RangeArg,
     state: State<'_, AppState>,
 ) -> Result<DashboardSnapshot, String> {
-    let conn = state.db.lock().unwrap();
-    dashboard(&conn, range.into(), OffsetDateTime::now_utc()).map_err(err)
+    state
+        .db_actor
+        .run(move |conn| dashboard(conn, range.into(), OffsetDateTime::now_utc()))
+        .await
+        .map_err(err)
 }
 
 // ---------------------------------------------------------------------
@@ -504,68 +565,74 @@ pub async fn list_expenses(
     let now = OffsetDateTime::now_utc();
     let tz = now.offset();
 
-    let conn = state.db.lock().unwrap();
-    let mut sql = String::from(
-        "SELECT e.id, e.amount_cents, e.currency, e.category_id, c.name, c.kind, e.description,
-                e.occurred_at, e.source, e.logged_by_chat_id, t.display_name
-         FROM expenses e
-         LEFT JOIN categories c ON c.id = e.category_id
-         LEFT JOIN telegram_authorized_chats t ON t.chat_id = e.logged_by_chat_id
-         WHERE 1=1",
-    );
-    let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+    state
+        .db_actor
+        .run(move |conn| {
+            let mut sql = String::from(
+                "SELECT e.id, e.amount_cents, e.currency, e.category_id, c.name, c.kind, e.description,
+                        e.occurred_at, e.source, e.logged_by_chat_id, t.display_name
+                 FROM expenses e
+                 LEFT JOIN categories c ON c.id = e.category_id
+                 LEFT JOIN telegram_authorized_chats t ON t.chat_id = e.logged_by_chat_id
+                 WHERE 1=1",
+            );
+            let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
 
-    if let Some(id) = filters.category_id {
-        sql.push_str(" AND e.category_id = ?");
-        params.push(Box::new(id));
-    }
-    if let Some(d) = filters.start_date {
-        sql.push_str(" AND e.occurred_at >= ?");
-        params.push(Box::new(d.with_time(Time::MIDNIGHT).assume_offset(tz)));
-    }
-    if let Some(d) = filters.end_date {
-        let next = d + Duration::days(1);
-        sql.push_str(" AND e.occurred_at < ?");
-        params.push(Box::new(next.with_time(Time::MIDNIGHT).assume_offset(tz)));
-    }
-    if let Some(s) = filters.search.as_ref().filter(|s| !s.trim().is_empty()) {
-        sql.push_str(" AND (e.description LIKE ? OR e.raw_message LIKE ?)");
-        let pattern = format!("%{}%", s.trim());
-        params.push(Box::new(pattern.clone()));
-        params.push(Box::new(pattern));
-    }
-    sql.push_str(" ORDER BY e.occurred_at DESC, e.id DESC LIMIT ? OFFSET ?");
-    params.push(Box::new(limit));
-    params.push(Box::new(offset));
+            if let Some(id) = filters.category_id {
+                sql.push_str(" AND e.category_id = ?");
+                params.push(Box::new(id));
+            }
+            if let Some(d) = filters.start_date {
+                sql.push_str(" AND e.occurred_at >= ?");
+                params.push(Box::new(d.with_time(Time::MIDNIGHT).assume_offset(tz)));
+            }
+            if let Some(d) = filters.end_date {
+                let next = d + Duration::days(1);
+                sql.push_str(" AND e.occurred_at < ?");
+                params.push(Box::new(next.with_time(Time::MIDNIGHT).assume_offset(tz)));
+            }
+            if let Some(s) = filters.search.as_ref().filter(|s| !s.trim().is_empty()) {
+                sql.push_str(" AND (e.description LIKE ? OR e.raw_message LIKE ?)");
+                let pattern = format!("%{}%", s.trim());
+                params.push(Box::new(pattern.clone()));
+                params.push(Box::new(pattern));
+            }
+            sql.push_str(" ORDER BY e.occurred_at DESC, e.id DESC LIMIT ? OFFSET ?");
+            params.push(Box::new(limit));
+            params.push(Box::new(offset));
 
-    let mut stmt = conn.prepare(&sql).map_err(err)?;
-    let rows = stmt
-        .query_map(rusqlite::params_from_iter(params.iter()), |r| {
-            let kind: Option<CategoryKind> = r.get(5)?;
-            Ok(LedgerRow {
-                id: r.get(0)?,
-                amount_cents: r.get(1)?,
-                currency: r.get(2)?,
-                category_id: r.get(3)?,
-                category_name: r.get(4)?,
-                category_kind: kind.map(|k| k.as_str().to_string()),
-                description: r.get(6)?,
-                occurred_at: r.get(7)?,
-                source: r.get::<_, ExpenseSource>(8)?.as_str().to_string(),
-                logged_by_chat_id: r.get(9)?,
-                logged_by_name: r.get(10)?,
-            })
+            let mut stmt = conn.prepare(&sql)?;
+            let rows = stmt
+                .query_map(rusqlite::params_from_iter(params.iter()), |r| {
+                    let kind: Option<CategoryKind> = r.get(5)?;
+                    Ok(LedgerRow {
+                        id: r.get(0)?,
+                        amount_cents: r.get(1)?,
+                        currency: r.get(2)?,
+                        category_id: r.get(3)?,
+                        category_name: r.get(4)?,
+                        category_kind: kind.map(|k| k.as_str().to_string()),
+                        description: r.get(6)?,
+                        occurred_at: r.get(7)?,
+                        source: r.get::<_, ExpenseSource>(8)?.as_str().to_string(),
+                        logged_by_chat_id: r.get(9)?,
+                        logged_by_name: r.get(10)?,
+                    })
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(rows)
         })
-        .map_err(err)?
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(err)?;
-    Ok(rows)
+        .await
+        .map_err(err)
 }
 
 #[tauri::command]
 pub async fn delete_expense(id: i64, state: State<'_, AppState>) -> Result<bool, String> {
-    let conn = state.db.lock().unwrap();
-    expenses::delete(&conn, id).map_err(err)
+    state
+        .db_actor
+        .run(move |conn| expenses::delete(conn, id))
+        .await
+        .map_err(err)
 }
 
 // ---------------------------------------------------------------------
@@ -590,24 +657,31 @@ pub async fn create_category(
     state: State<'_, AppState>,
 ) -> Result<i64, String> {
     let kind: CategoryKind = arg.kind.parse().map_err(err)?;
-    let conn = state.db.lock().unwrap();
-    categories::insert(
-        &conn,
-        &NewCategory {
-            name: arg.name,
-            kind,
-            monthly_target_cents: arg.monthly_target_cents,
-            is_recurring: arg.is_recurring,
-            recurrence_day_of_month: arg.recurrence_day_of_month,
-        },
-    )
-    .map_err(err)
+    state
+        .db_actor
+        .run(move |conn| {
+            categories::insert(
+                conn,
+                &NewCategory {
+                    name: arg.name,
+                    kind,
+                    monthly_target_cents: arg.monthly_target_cents,
+                    is_recurring: arg.is_recurring,
+                    recurrence_day_of_month: arg.recurrence_day_of_month,
+                },
+            )
+        })
+        .await
+        .map_err(err)
 }
 
 #[tauri::command]
 pub async fn delete_category(id: i64, state: State<'_, AppState>) -> Result<bool, String> {
-    let conn = state.db.lock().unwrap();
-    categories::delete(&conn, id).map_err(err)
+    state
+        .db_actor
+        .run(move |conn| categories::delete(conn, id))
+        .await
+        .map_err(err)
 }
 
 // ---------------------------------------------------------------------
@@ -619,8 +693,11 @@ pub async fn remove_household_member(
     chat_id: i64,
     state: State<'_, AppState>,
 ) -> Result<bool, String> {
-    let conn = state.db.lock().unwrap();
-    auth::remove_member(&conn, chat_id).map_err(err)
+    state
+        .db_actor
+        .run(move |conn| auth::remove_member(conn, chat_id))
+        .await
+        .map_err(err)
 }
 
 // ---------------------------------------------------------------------
@@ -629,11 +706,13 @@ pub async fn remove_household_member(
 
 #[tauri::command]
 pub async fn get_run_in_background(state: State<'_, AppState>) -> Result<bool, String> {
-    let conn = state.db.lock().unwrap();
-    Ok(settings::get(&conn, settings::keys::RUN_IN_BACKGROUND)
-        .map_err(err)?
-        .as_deref()
-        != Some("0"))
+    state
+        .db_actor
+        .run(|conn| {
+            Ok(settings::get(conn, settings::keys::RUN_IN_BACKGROUND)?.as_deref() != Some("0"))
+        })
+        .await
+        .map_err(err)
 }
 
 #[tauri::command]
@@ -641,13 +720,17 @@ pub async fn set_run_in_background(
     enabled: bool,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let conn = state.db.lock().unwrap();
-    settings::set(
-        &conn,
-        settings::keys::RUN_IN_BACKGROUND,
-        if enabled { "1" } else { "0" },
-    )
-    .map_err(err)
+    state
+        .db_actor
+        .run(move |conn| {
+            settings::set(
+                conn,
+                settings::keys::RUN_IN_BACKGROUND,
+                if enabled { "1" } else { "0" },
+            )
+        })
+        .await
+        .map_err(err)
 }
 
 /// Default in micros (1e-6 USD) — keep in sync with
@@ -657,11 +740,16 @@ const DEFAULT_DAILY_COST_CAP_MICROS: i64 = 1_000_000;
 
 #[tauri::command]
 pub async fn get_llm_daily_cost_cap_micros(state: State<'_, AppState>) -> Result<i64, String> {
-    let conn = state.db.lock().unwrap();
-    let raw = settings::get(&conn, settings::keys::LLM_DAILY_COST_CAP_MICROS).map_err(err)?;
-    Ok(raw
-        .and_then(|s| s.parse::<i64>().ok())
-        .unwrap_or(DEFAULT_DAILY_COST_CAP_MICROS))
+    state
+        .db_actor
+        .run(|conn| {
+            let raw = settings::get(conn, settings::keys::LLM_DAILY_COST_CAP_MICROS)?;
+            Ok(raw
+                .and_then(|s| s.parse::<i64>().ok())
+                .unwrap_or(DEFAULT_DAILY_COST_CAP_MICROS))
+        })
+        .await
+        .map_err(err)
 }
 
 #[tauri::command]
@@ -675,22 +763,28 @@ pub async fn set_llm_daily_cost_cap_micros(
     if cap_micros > 10_000_000_000 {
         return Err("Cap is unreasonably large (max $10,000/day)".into());
     }
-    let conn = state.db.lock().unwrap();
-    settings::set(
-        &conn,
-        settings::keys::LLM_DAILY_COST_CAP_MICROS,
-        &cap_micros.to_string(),
-    )
-    .map_err(err)
+    state
+        .db_actor
+        .run(move |conn| {
+            settings::set(
+                conn,
+                settings::keys::LLM_DAILY_COST_CAP_MICROS,
+                &cap_micros.to_string(),
+            )
+        })
+        .await
+        .map_err(err)
 }
 
 #[tauri::command]
 pub async fn get_ollama_allow_remote(state: State<'_, AppState>) -> Result<bool, String> {
-    let conn = state.db.lock().unwrap();
-    Ok(settings::get(&conn, settings::keys::OLLAMA_ALLOW_REMOTE)
-        .map_err(err)?
-        .as_deref()
-        == Some("1"))
+    state
+        .db_actor
+        .run(|conn| {
+            Ok(settings::get(conn, settings::keys::OLLAMA_ALLOW_REMOTE)?.as_deref() == Some("1"))
+        })
+        .await
+        .map_err(err)
 }
 
 #[tauri::command]
@@ -698,13 +792,17 @@ pub async fn set_ollama_allow_remote(
     enabled: bool,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let conn = state.db.lock().unwrap();
-    settings::set(
-        &conn,
-        settings::keys::OLLAMA_ALLOW_REMOTE,
-        if enabled { "1" } else { "0" },
-    )
-    .map_err(err)
+    state
+        .db_actor
+        .run(move |conn| {
+            settings::set(
+                conn,
+                settings::keys::OLLAMA_ALLOW_REMOTE,
+                if enabled { "1" } else { "0" },
+            )
+        })
+        .await
+        .map_err(err)
 }
 
 #[tauri::command]
@@ -726,13 +824,17 @@ pub async fn set_autostart(
     } else {
         manager.disable().map_err(err)?;
     }
-    let conn = state.db.lock().unwrap();
-    settings::set(
-        &conn,
-        settings::keys::AUTOSTART,
-        if enabled { "1" } else { "0" },
-    )
-    .map_err(err)
+    state
+        .db_actor
+        .run(move |conn| {
+            settings::set(
+                conn,
+                settings::keys::AUTOSTART,
+                if enabled { "1" } else { "0" },
+            )
+        })
+        .await
+        .map_err(err)
 }
 
 // ---------------------------------------------------------------------
@@ -797,11 +899,6 @@ pub async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
     app.restart();
 }
 
-// Phase-1 smoke-test migration to the new DbHandle actor (audit
-// CC-1/Pf-4). These two handlers route through `state.db_actor` while
-// every other handler in this file still uses the legacy
-// `state.db.lock()` path. Future phases migrate the rest in batches.
-
 #[tauri::command]
 pub async fn get_check_updates_on_launch(state: State<'_, AppState>) -> Result<bool, String> {
     state
@@ -836,11 +933,16 @@ pub async fn set_check_updates_on_launch(
 
 #[tauri::command]
 pub async fn get_weekly_summary_enabled(state: State<'_, AppState>) -> Result<bool, String> {
-    let conn = state.db.lock().unwrap();
-    Ok(settings::get(&conn, settings::keys::WEEKLY_SUMMARY_ENABLED)
-        .map_err(err)?
-        .as_deref()
-        != Some("0"))
+    state
+        .db_actor
+        .run(|conn| {
+            Ok(
+                settings::get(conn, settings::keys::WEEKLY_SUMMARY_ENABLED)?.as_deref()
+                    != Some("0"),
+            )
+        })
+        .await
+        .map_err(err)
 }
 
 #[tauri::command]
@@ -848,22 +950,28 @@ pub async fn set_weekly_summary_enabled(
     enabled: bool,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let conn = state.db.lock().unwrap();
-    settings::set(
-        &conn,
-        settings::keys::WEEKLY_SUMMARY_ENABLED,
-        if enabled { "1" } else { "0" },
-    )
-    .map_err(err)
+    state
+        .db_actor
+        .run(move |conn| {
+            settings::set(
+                conn,
+                settings::keys::WEEKLY_SUMMARY_ENABLED,
+                if enabled { "1" } else { "0" },
+            )
+        })
+        .await
+        .map_err(err)
 }
 
 #[tauri::command]
 pub async fn get_budget_alerts_enabled(state: State<'_, AppState>) -> Result<bool, String> {
-    let conn = state.db.lock().unwrap();
-    Ok(settings::get(&conn, settings::keys::BUDGET_ALERTS_ENABLED)
-        .map_err(err)?
-        .as_deref()
-        != Some("0"))
+    state
+        .db_actor
+        .run(|conn| {
+            Ok(settings::get(conn, settings::keys::BUDGET_ALERTS_ENABLED)?.as_deref() != Some("0"))
+        })
+        .await
+        .map_err(err)
 }
 
 #[tauri::command]
@@ -871,22 +979,29 @@ pub async fn set_budget_alerts_enabled(
     enabled: bool,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let conn = state.db.lock().unwrap();
-    settings::set(
-        &conn,
-        settings::keys::BUDGET_ALERTS_ENABLED,
-        if enabled { "1" } else { "0" },
-    )
-    .map_err(err)
+    state
+        .db_actor
+        .run(move |conn| {
+            settings::set(
+                conn,
+                settings::keys::BUDGET_ALERTS_ENABLED,
+                if enabled { "1" } else { "0" },
+            )
+        })
+        .await
+        .map_err(err)
 }
 
 #[tauri::command]
 pub async fn get_llm_usage_summary(
     state: State<'_, AppState>,
 ) -> Result<llm_usage::UsageSummary, String> {
-    let conn = state.db.lock().unwrap();
     let now = OffsetDateTime::now_utc();
-    llm_usage::summary(&conn, now).map_err(err)
+    state
+        .db_actor
+        .run(move |conn| llm_usage::summary(conn, now))
+        .await
+        .map_err(err)
 }
 
 // ---------------------------------------------------------------------
@@ -908,10 +1023,13 @@ pub async fn get_category_stats(
     months_back: u32,
     state: State<'_, AppState>,
 ) -> Result<CategoryStatsResponse, String> {
-    let conn = state.db.lock().unwrap();
     let now = OffsetDateTime::now_utc();
     let n = months_back.clamp(1, 120);
-    let totals = expenses::monthly_totals_for_category(&conn, category_id, now, n).map_err(err)?;
+    let totals = state
+        .db_actor
+        .run(move |conn| expenses::monthly_totals_for_category(conn, category_id, now, n))
+        .await
+        .map_err(err)?;
     let stats = stats_mod::describe(&totals);
     let histogram = stats_mod::histogram(&totals, 10);
     Ok(CategoryStatsResponse {
@@ -933,21 +1051,22 @@ pub async fn run_scenario(
     input: ScenarioInput,
     state: State<'_, AppState>,
 ) -> Result<ScenarioResult, String> {
-    let conn = state.db.lock().unwrap();
-    // Pull active variable categories with monthly_target_cents set.
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, COALESCE(monthly_target_cents, 0)
-             FROM categories
-             WHERE kind = 'variable' AND is_active = 1
-               AND monthly_target_cents IS NOT NULL
-               AND monthly_target_cents > 0",
-        )
-        .map_err(err)?;
-    let rows = stmt
-        .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))
-        .map_err(err)?
-        .collect::<rusqlite::Result<Vec<_>>>()
+    let rows: Vec<(i64, i64)> = state
+        .db_actor
+        .run(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT id, COALESCE(monthly_target_cents, 0)
+                 FROM categories
+                 WHERE kind = 'variable' AND is_active = 1
+                   AND monthly_target_cents IS NOT NULL
+                   AND monthly_target_cents > 0",
+            )?;
+            let rows = stmt
+                .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(rows)
+        })
+        .await
         .map_err(err)?;
     Ok(forecast_mod::scenario_delta(&rows, &input.cuts))
 }
@@ -966,15 +1085,19 @@ pub async fn set_starting_balance(
     input: SetStartingBalanceInput,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let conn = state.db.lock().unwrap();
-    categories::set_starting_balance(
-        &conn,
-        input.category_id,
-        input.starting_balance_cents,
-        input.balance_as_of.as_deref(),
-    )
-    .map_err(err)?;
-    Ok(())
+    state
+        .db_actor
+        .run(move |conn| {
+            categories::set_starting_balance(
+                conn,
+                input.category_id,
+                input.starting_balance_cents,
+                input.balance_as_of.as_deref(),
+            )?;
+            Ok(())
+        })
+        .await
+        .map_err(err)
 }
 
 #[derive(Debug, Serialize)]
@@ -994,48 +1117,49 @@ pub struct InvestmentSummary {
 pub async fn list_investment_categories(
     state: State<'_, AppState>,
 ) -> Result<Vec<InvestmentSummary>, String> {
-    let conn = state.db.lock().unwrap();
     let now = OffsetDateTime::now_utc();
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, name, starting_balance_cents, balance_as_of
-             FROM categories
-             WHERE kind = 'investing' AND is_active = 1
-             ORDER BY name ASC",
-        )
-        .map_err(err)?;
-    let cats = stmt
-        .query_map([], |r| {
-            Ok((
-                r.get::<_, i64>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, Option<i64>>(2)?,
-                r.get::<_, Option<String>>(3)?,
-            ))
+    state
+        .db_actor
+        .run(move |conn| {
+            let mut stmt = conn.prepare(
+                "SELECT id, name, starting_balance_cents, balance_as_of
+                 FROM categories
+                 WHERE kind = 'investing' AND is_active = 1
+                 ORDER BY name ASC",
+            )?;
+            let cats = stmt
+                .query_map([], |r| {
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, Option<i64>>(2)?,
+                        r.get::<_, Option<String>>(3)?,
+                    ))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            drop(stmt);
+            let mut out = Vec::with_capacity(cats.len());
+            for (id, name, balance, as_of) in cats {
+                let totals = expenses::monthly_totals_for_category(conn, id, now, 12)?;
+                let total_12mo: i64 = totals.iter().sum();
+                let avg = if totals.is_empty() {
+                    None
+                } else {
+                    Some(total_12mo / totals.len() as i64)
+                };
+                out.push(InvestmentSummary {
+                    category_id: id,
+                    name,
+                    starting_balance_cents: balance,
+                    balance_as_of: as_of,
+                    avg_monthly_contribution_cents: avg,
+                    last_12mo_contribution_cents: total_12mo,
+                });
+            }
+            Ok(out)
         })
-        .map_err(err)?
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(err)?;
-    drop(stmt);
-    let mut out = Vec::with_capacity(cats.len());
-    for (id, name, balance, as_of) in cats {
-        let totals = expenses::monthly_totals_for_category(&conn, id, now, 12).map_err(err)?;
-        let total_12mo: i64 = totals.iter().sum();
-        let avg = if totals.is_empty() {
-            None
-        } else {
-            Some(total_12mo / totals.len() as i64)
-        };
-        out.push(InvestmentSummary {
-            category_id: id,
-            name,
-            starting_balance_cents: balance,
-            balance_as_of: as_of,
-            avg_monthly_contribution_cents: avg,
-            last_12mo_contribution_cents: total_12mo,
-        });
-    }
-    Ok(out)
+        .await
+        .map_err(err)
 }
 
 // ---------------------------------------------------------------------
@@ -1076,8 +1200,13 @@ pub async fn analyze_category(
     window: AnalysisWindow,
     state: State<'_, AppState>,
 ) -> Result<CategoryAnalysis, String> {
-    let conn = state.db.lock().unwrap();
-    cat_analyzer_mod::analyze(&conn, category_id, window, OffsetDateTime::now_utc()).map_err(err)
+    state
+        .db_actor
+        .run(move |conn| {
+            cat_analyzer_mod::analyze(conn, category_id, window, OffsetDateTime::now_utc())
+        })
+        .await
+        .map_err(err)
 }
 
 // ---------------------------------------------------------------------
@@ -1145,10 +1274,16 @@ pub async fn csv_import_preview(
     state: State<'_, AppState>,
 ) -> Result<CsvPreview, String> {
     let preview = csv_parser::parse_preview(&content).map_err(err)?;
-    let conn = state.db.lock().unwrap();
-    let suggested =
-        csv_profiles::find_by_signature(&conn, &preview.header_signature).map_err(err)?;
-    let profiles = csv_profiles::list(&conn).map_err(err)?;
+    let header_signature = preview.header_signature.clone();
+    let (suggested, profiles) = state
+        .db_actor
+        .run(move |conn| {
+            let suggested = csv_profiles::find_by_signature(conn, &header_signature)?;
+            let profiles = csv_profiles::list(conn)?;
+            Ok((suggested, profiles))
+        })
+        .await
+        .map_err(err)?;
     Ok(CsvPreview {
         preview,
         suggested_profile: suggested,
@@ -1168,16 +1303,20 @@ pub async fn csv_import_save_profile(
     input: SaveProfileInput,
     state: State<'_, AppState>,
 ) -> Result<i64, String> {
-    let conn = state.db.lock().unwrap();
     let now = OffsetDateTime::now_utc();
-    csv_profiles::create(
-        &conn,
-        &input.name,
-        input.header_signature.as_deref(),
-        &input.mapping,
-        now,
-    )
-    .map_err(err)
+    state
+        .db_actor
+        .run(move |conn| {
+            csv_profiles::create(
+                conn,
+                &input.name,
+                input.header_signature.as_deref(),
+                &input.mapping,
+                now,
+            )
+        })
+        .await
+        .map_err(err)
 }
 
 #[derive(Debug, Deserialize)]
@@ -1209,13 +1348,18 @@ pub async fn csv_import_categorize_and_dedupe(
     input: CategorizeInput,
     state: State<'_, AppState>,
 ) -> Result<CategorizeAndDedupeResult, String> {
-    let conn = state.db.lock().unwrap();
-    let decisions = categorize_mod::categorize_all(&conn, &input.rows).map_err(err)?;
-    let duplicates = dedupe::find_probable_duplicates(&conn, &input.rows).map_err(err)?;
-    Ok(CategorizeAndDedupeResult {
-        decisions,
-        duplicates,
-    })
+    state
+        .db_actor
+        .run(move |conn| {
+            let decisions = categorize_mod::categorize_all(conn, &input.rows)?;
+            let duplicates = dedupe::find_probable_duplicates(conn, &input.rows)?;
+            Ok(CategorizeAndDedupeResult {
+                decisions,
+                duplicates,
+            })
+        })
+        .await
+        .map_err(err)
 }
 
 #[derive(Debug, Deserialize)]
@@ -1236,44 +1380,49 @@ pub async fn csv_import_ai_suggest(
     state: State<'_, AppState>,
 ) -> Result<AiSuggestResponse, String> {
     // Build a category-hint list from the user's active categories.
-    let (hints, provider_choice, anth_model, ollama_endpoint, ollama_model) = {
-        let conn = state.db.lock().unwrap();
-        let cats = categories::list(&conn, false).map_err(err)?;
-        let hints: Vec<CategoryHint> = cats
-            .into_iter()
-            .filter(|c| c.is_active)
-            .map(|c| CategoryHint {
-                id: c.id,
-                name: c.name,
-                hint: Some(format!("{:?}", c.kind).to_lowercase()),
-            })
-            .collect();
-        let provider_choice = settings::get(&conn, settings::keys::LLM_PROVIDER)
-            .map_err(err)?
-            .unwrap_or_else(|| "anthropic".into());
-        let anth_model = settings::get_or_default(
-            &conn,
-            settings::keys::ANTHROPIC_MODEL,
-            DEFAULT_ANTHROPIC_MODEL,
-        )
+    let (hints, provider_choice, anth_model, ollama_endpoint, ollama_model): (
+        Vec<CategoryHint>,
+        String,
+        String,
+        String,
+        String,
+    ) = state
+        .db_actor
+        .run(|conn| {
+            let cats = categories::list(conn, false)?;
+            let hints: Vec<CategoryHint> = cats
+                .into_iter()
+                .filter(|c| c.is_active)
+                .map(|c| CategoryHint {
+                    id: c.id,
+                    name: c.name,
+                    hint: Some(format!("{:?}", c.kind).to_lowercase()),
+                })
+                .collect();
+            let provider_choice = settings::get(conn, settings::keys::LLM_PROVIDER)?
+                .unwrap_or_else(|| "anthropic".into());
+            let anth_model = settings::get_or_default(
+                conn,
+                settings::keys::ANTHROPIC_MODEL,
+                DEFAULT_ANTHROPIC_MODEL,
+            )?;
+            let ollama_endpoint = settings::get_or_default(
+                conn,
+                settings::keys::OLLAMA_ENDPOINT,
+                "http://localhost:11434",
+            )?;
+            let ollama_model =
+                settings::get_or_default(conn, settings::keys::OLLAMA_MODEL, "llama3:8b")?;
+            Ok((
+                hints,
+                provider_choice,
+                anth_model,
+                ollama_endpoint,
+                ollama_model,
+            ))
+        })
+        .await
         .map_err(err)?;
-        let ollama_endpoint = settings::get_or_default(
-            &conn,
-            settings::keys::OLLAMA_ENDPOINT,
-            "http://localhost:11434",
-        )
-        .map_err(err)?;
-        let ollama_model =
-            settings::get_or_default(&conn, settings::keys::OLLAMA_MODEL, "llama3:8b")
-                .map_err(err)?;
-        (
-            hints,
-            provider_choice,
-            anth_model,
-            ollama_endpoint,
-            ollama_model,
-        )
-    };
 
     let result = if provider_choice == "ollama" {
         let provider = OllamaProvider::with_base_url(ollama_model, ollama_endpoint).map_err(err)?;
@@ -1340,71 +1489,71 @@ pub async fn csv_import_commit(
     input: CommitInput,
     state: State<'_, AppState>,
 ) -> Result<CommitResult, String> {
-    let conn = state.db.lock().unwrap();
     let now = OffsetDateTime::now_utc();
-    let currency =
-        settings::get_or_default(&conn, settings::keys::DEFAULT_CURRENCY, "USD").map_err(err)?;
+    state
+        .db_actor
+        .run(move |conn| {
+            let currency = settings::get_or_default(conn, settings::keys::DEFAULT_CURRENCY, "USD")?;
+            // Wrap the entire commit (expense inserts + merchant-rule
+            // writes + profile touch) in a single transaction so a
+            // mid-batch failure (bogus date parse, FK violation,
+            // rusqlite Busy on WAL contention) rolls back cleanly
+            // instead of leaving a partial import on disk.
+            let tx = conn.unchecked_transaction()?;
 
-    // Wrap the entire commit (expense inserts + merchant-rule writes +
-    // profile touch) in a single transaction so a mid-batch failure
-    // (bogus date parse, FK violation, rusqlite Busy on WAL contention)
-    // rolls back cleanly instead of leaving a partial import on disk.
-    let tx = conn.unchecked_transaction().map_err(err)?;
+            let mut inserted = 0usize;
+            for row in &input.rows {
+                let occurred_at = OffsetDateTime::parse(
+                    &row.occurred_at,
+                    &time::format_description::well_known::Rfc3339,
+                )?;
+                expenses::insert(
+                    &tx,
+                    &crate::domain::NewExpense {
+                        amount_cents: row.amount_cents,
+                        currency: currency.clone(),
+                        category_id: row.category_id,
+                        description: row
+                            .description
+                            .clone()
+                            .or_else(|| Some(row.merchant.clone())),
+                        occurred_at,
+                        source: ExpenseSource::Csv,
+                        raw_message: Some(row.merchant.clone()),
+                        llm_confidence: None,
+                        logged_by_chat_id: None,
+                        is_refund: row.is_refund,
+                        refund_for_expense_id: None,
+                    },
+                )?;
+                inserted += 1;
+            }
 
-    let mut inserted = 0usize;
-    for row in &input.rows {
-        let occurred_at = OffsetDateTime::parse(
-            &row.occurred_at,
-            &time::format_description::well_known::Rfc3339,
-        )
-        .map_err(err)?;
-        expenses::insert(
-            &tx,
-            &crate::domain::NewExpense {
-                amount_cents: row.amount_cents,
-                currency: currency.clone(),
-                category_id: row.category_id,
-                description: row
-                    .description
-                    .clone()
-                    .or_else(|| Some(row.merchant.clone())),
-                occurred_at,
-                source: ExpenseSource::Csv,
-                raw_message: Some(row.merchant.clone()),
-                llm_confidence: None,
-                logged_by_chat_id: None,
-                is_refund: row.is_refund,
-                refund_for_expense_id: None,
-            },
-        )
-        .map_err(err)?;
-        inserted += 1;
-    }
+            let mut rules_added = 0usize;
+            for rule in &input.rules_to_save {
+                merchant_rules::create(
+                    &tx,
+                    &rule.pattern,
+                    rule.category_id,
+                    rule.default_is_refund,
+                    0,
+                    now,
+                )?;
+                rules_added += 1;
+            }
 
-    let mut rules_added = 0usize;
-    for rule in &input.rules_to_save {
-        merchant_rules::create(
-            &tx,
-            &rule.pattern,
-            rule.category_id,
-            rule.default_is_refund,
-            0,
-            now,
-        )
-        .map_err(err)?;
-        rules_added += 1;
-    }
+            if let Some(id) = input.profile_id {
+                let _ = csv_profiles::touch(&tx, id, now);
+            }
 
-    if let Some(id) = input.profile_id {
-        let _ = csv_profiles::touch(&tx, id, now);
-    }
-
-    tx.commit().map_err(err)?;
-
-    Ok(CommitResult {
-        inserted,
-        rules_added,
-    })
+            tx.commit()?;
+            Ok(CommitResult {
+                inserted,
+                rules_added,
+            })
+        })
+        .await
+        .map_err(err)
 }
 
 // --- Settings management for profiles + rules ----------------------
@@ -1413,26 +1562,44 @@ pub async fn csv_import_commit(
 pub async fn list_csv_import_profiles(
     state: State<'_, AppState>,
 ) -> Result<Vec<CsvImportProfile>, String> {
-    let conn = state.db.lock().unwrap();
-    csv_profiles::list(&conn).map_err(err)
+    state
+        .db_actor
+        .run(|conn| csv_profiles::list(conn))
+        .await
+        .map_err(err)
 }
 
 #[tauri::command]
 pub async fn delete_csv_import_profile(id: i64, state: State<'_, AppState>) -> Result<(), String> {
-    let conn = state.db.lock().unwrap();
-    csv_profiles::delete(&conn, id).map_err(err)
+    state
+        .db_actor
+        .run(move |conn| {
+            csv_profiles::delete(conn, id)?;
+            Ok(())
+        })
+        .await
+        .map_err(err)
 }
 
 #[tauri::command]
 pub async fn list_merchant_rules(state: State<'_, AppState>) -> Result<Vec<MerchantRule>, String> {
-    let conn = state.db.lock().unwrap();
-    merchant_rules::list(&conn).map_err(err)
+    state
+        .db_actor
+        .run(|conn| merchant_rules::list(conn))
+        .await
+        .map_err(err)
 }
 
 #[tauri::command]
 pub async fn delete_merchant_rule(id: i64, state: State<'_, AppState>) -> Result<(), String> {
-    let conn = state.db.lock().unwrap();
-    merchant_rules::delete(&conn, id).map_err(err)
+    state
+        .db_actor
+        .run(move |conn| {
+            merchant_rules::delete(conn, id)?;
+            Ok(())
+        })
+        .await
+        .map_err(err)
 }
 
 // ---------------------------------------------------------------------

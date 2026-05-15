@@ -4,6 +4,23 @@ All notable changes to Mr. Moneypenny are documented here. The format roughly fo
 
 ## [Unreleased]
 
+## [0.3.21] - 2026-05-14
+
+Phase 3a of the audit CC-1/Pf-4 fix: every Tauri command in `commands.rs` now routes its DB work through the `DbHandle` actor instead of locking the legacy `Arc<Mutex<Connection>>`. Combined with phase 2's scheduler migration, the only async-hot-path code still on the Mutex is the telegram poller + the router's LLM agentic loop (queued for phase 3b).
+
+### Changed
+
+- **All 48 lock sites in `commands.rs` migrated.** Roughly 40 Tauri commands now look like `state.db_actor.run(move |conn| { /* sync body */ }).await.map_err(err)` instead of `let conn = state.db.lock().unwrap(); /* sync body */`. The migration is type-level only — no semantic change for callers.
+- **Multi-query handlers fold their reads into one closure.** Pre-migration, handlers like `get_setup_state`, `finalize_setup`, `csv_import_preview`, and `csv_import_ai_suggest` issued multiple sequential SQL statements while holding the lock. Each now becomes a single actor round-trip whose closure runs the queries against `&mut Connection`. Same total work, one trip across the Tokio↔actor boundary instead of N.
+- **`csv_import_commit`** keeps its transaction wrapper, now inside the actor closure: `let tx = conn.unchecked_transaction()?; … tx.commit()?`. The transactional INSERT loop for bulk imports happens entirely on the actor thread without blocking any Tokio worker.
+
+### Internal
+
+- The actor handles every command-side query type: simple settings reads/writes, FK-cascading deletes, multi-row aggregations (`list_investment_categories`, `run_scenario`), the bulk CSV import transaction, and complex closures like `csv_import_ai_suggest` that read 5 settings + a category list before any LLM round-trip happens.
+- Handler return-type quirks worth noting: `set_category_target`, `set_category_active`, `set_starting_balance`, `delete_csv_import_profile`, and `delete_merchant_rule` all wrap repository functions that return `Result<bool>` but the commands surface `Result<()>` — those callsites now do `repo_fn(conn, …)?; Ok(())` inside the closure to discard the bool.
+- `secrets::*` calls remain outside the actor (they go through a separate concurrency model — disk-encrypted file with its own internal mutex), so handlers that mix secrets + settings (e.g., `get_setup_state`, `finalize_setup`) do their secret checks before/after the actor round-trip.
+- Phase 3b (telegram poller + router LLM loop) is queued as a separate ship to keep the diffs reviewable.
+
 ## [0.3.20] - 2026-05-14
 
 Phase 2 of the audit CC-1/Pf-4 fix: the entire scheduler subsystem is migrated off `Arc<Mutex<Connection>>` and onto the v0.3.19 `DbHandle` actor. Tokio worker threads no longer block on sync rusqlite for any scheduler-side work — the actor thread serializes SQL while workers await a `oneshot`. 16 lock-and-query sites identified by the audit are gone.
