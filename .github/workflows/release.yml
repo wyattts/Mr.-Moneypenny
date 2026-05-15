@@ -156,7 +156,7 @@ jobs:
       # statements registered with GitHub's attestation API. The
       # subject-path glob covers every artifact this matrix leg
       # produces — AppImage/deb/rpm on Linux, dmg/.app.tar.gz on
-      # macOS, msi/exe on Windows. Users verify with:
+      # macOS, exe on Windows. Users verify with:
       #   gh attestation verify <downloaded-file> \
       #       -R wyattts/Mr.-Moneypenny
       # This complements the existing minisign-signed Tauri updater
@@ -175,7 +175,6 @@ jobs:
             src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
             src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz
             src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*.exe
-            src-tauri/target/${{ matrix.target }}/release/bundle/msi/*.msi
 
   promote:
     name: Promote draft to latest

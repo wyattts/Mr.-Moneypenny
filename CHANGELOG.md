@@ -4,6 +4,14 @@ All notable changes to Mr. Moneypenny are documented here. The format roughly fo
 
 ## [Unreleased]
 
+## [0.3.25] - 2026-05-15
+
+Audit cleanup: the last Deferred-bucket item that could be closed without external dependencies. B-9 — `bundle.targets` was `"all"`, which built **both** NSIS and MSI installers on Windows, doubling the unsigned-binary footprint on the release page and confusing users about which to download.
+
+### Changed
+
+- **`bundle.targets` constrained to `["app", "dmg", "appimage", "deb", "rpm", "nsis"]`** (audit B-9). Windows now ships a single installer (NSIS `.exe`) instead of NSIS + MSI; macOS still gets `.app`/`.dmg`, Linux still gets AppImage/deb/rpm. The release-attestation `subject-path` glob dropped its now-dead `msi/*.msi` line accordingly. No change to the in-app auto-updater (driven by the minisign-signed `.AppImage.tar.gz`/`.app.tar.gz`/`.nsis.zip` bundles, all still produced).
+
 ## [0.3.24] - 2026-05-14
 
 The last four audit-flagged Mediums ship together: SLSA build-provenance attestations on releases (B-3), focus-trap + ARIA dialog semantics on the CSV import modal (F-4), 200 ms slider debouncing on the Simulator + Debt Manager views (Pf-1), and an integration-test file for the Tauri IPC layer (T-1). With v0.3.24 every Medium-severity finding from `docs/audit-v0.3.7.md` is shipped.
