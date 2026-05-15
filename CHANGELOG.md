@@ -4,7 +4,20 @@ All notable changes to Mr. Moneypenny are documented here. The format roughly fo
 
 ## [Unreleased]
 
-## [0.3.26] - 2026-05-15
+## [0.4.0] - 2026-05-15
+
+**AI Report Wizard.** A new section at the bottom of the Insights tab generates a written analysis of a chosen period. Every number in a report is computed deterministically in Rust from your local data; the language model only narrates and advises over those figures, so the quantitative content is reproducible and cannot be hallucinated. Off the critical path — the rest of Insights is unchanged until you use it.
+
+### Added
+
+- **Deterministic report engine** (`insights/report.rs`). `ReportTimeframe` (Last week / Last month / Last quarter / Last year → the *previous complete* calendar period; or a custom date range). Pure, read-only computation of eight sections: spending rebalance (actual vs. prorated budget, with a suggested revised target), variable spend cycles (by weekday and early/mid/late month), suggested cuts, a subscription/recurring radar, savings rate (when a monthly income is supplied), anomalies vs. the prior equal-length window, wins, and an optional goals input. 10 unit tests.
+- **LLM report generation** (`llm/report.rs` + `report_estimate` / `report_generate` commands). Constrained-JSON output contract (the UI renders structured fields, never raw model markup; the PDF layout is deterministic). The optional financial-situation blurb is wrapped in `<user_data>` tags and the system prompt treats it — and user-defined labels in the figures — as data, never instructions (the LLM-1 prompt-injection stance). Anthropic generation is fixed to Claude **Sonnet**; Ollama users generate locally with their configured model at no cost. A **pre-flight cost estimate** is shown and confirmed before any API call; report spend is logged to `llm_usage` and refused server-side once the existing daily cost cap is reached, exactly like the bot.
+- **Report Wizard UI** (`views/ReportWizard.tsx`). Timeframe presets + custom range, section checkboxes, optional monthly-income field, and an enable-gated financial-situation note. Provider-aware: the merchant-names opt-in (off by default, with a disclaimer that names would be sent to Anthropic) is hidden and auto-enabled under Ollama since nothing leaves the machine; the blurb disclaimer and the cost summary likewise adapt (Ollama reads "no API cost"). Pre-flight estimate → confirm → render, with a local-figures provenance footer.
+- **PDF export.** Client-side `pdf-lib` renders the report (paginated A4, word-wrapped headings/bullets, API-use cost summary, provenance footer); `@tauri-apps/plugin-dialog`'s save dialog picks the path; the bytes are persisted through a new typed `report_save_pdf` command rather than granting the webview a broad filesystem capability. New permission: `dialog:allow-save`.
+
+### Notes
+
+- Carry-over deferred audit items remain external-gated (B-8 code signing — funding; F-22 CSP nonce — Recharts upstream; T-6 proptest/fuzz — separate effort).
 
 New Simulator feature: an optional **deterministic mode** for users who want a single straight-line investment projection instead of the Monte Carlo probability framing. Off by default — the probability view is unchanged unless you turn this on.
 
