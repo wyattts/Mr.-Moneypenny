@@ -12,6 +12,7 @@ pub mod debt;
 pub mod forecast;
 pub mod monte_carlo;
 pub mod range;
+pub mod report;
 pub mod simulator;
 pub mod stats;
 
