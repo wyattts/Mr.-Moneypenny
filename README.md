@@ -1,18 +1,18 @@
 # Mr. Moneypenny
 
-> A FOSS personal-budgeting app you talk to in plain English. Your data lives only on your computer.
+> A FOSS personal-budgeting app you talk to in plain English. Your data stays on your computer.
 
-Mr. Moneypenny is a desktop app that pairs with a personal Telegram bot. You log expenses by chatting with the bot ("$5 coffee," "paid rent $1500"), and the bot — powered by your choice of Anthropic's Claude API or a local Ollama LLM — parses, stores, and queries them in a local SQLite database on your own machine. The project operates **zero servers** and keeps **zero copies** of your data.
+Mr. Moneypenny is a desktop app that pairs with a Telegram bot you create yourself. You log expenses by messaging the bot ("$5 coffee", "paid rent $1500"); the bot parses, stores, and queries them in a local SQLite database on your machine. Parsing runs through either Anthropic's Claude API (your key) or a local Ollama model. No servers, no copies of your data.
 
 ## Status
 
-🚧 **0.1.0 — early alpha.** End-to-end works on Linux (smoke-tested on Fedora 43 + Mutter/Wayland). macOS and Windows builds are produced by CI but unsigned until [project sponsorship](https://github.com/sponsors/wyattts) covers code-signing certificates. The branding pass is still pending.
+**0.4.1 — alpha.** End-to-end works on Linux (tested on Fedora + Wayland). macOS and Windows builds are produced by CI but unsigned until [sponsorship](https://github.com/sponsors/wyattts) covers code-signing certificates.
 
 ## Install
 
-Pre-built artifacts are at [Releases](https://github.com/wyattts/Mr.-Moneypenny/releases). See [`docs/distribution.md`](docs/distribution.md) for per-platform install steps + signature verification.
+Pre-built artifacts are on the [Releases](https://github.com/wyattts/Mr.-Moneypenny/releases) page. See [`docs/distribution.md`](docs/distribution.md) for per-platform install steps and signature verification.
 
-If you'd rather build from source:
+Build from source:
 
 ```bash
 git clone https://github.com/wyattts/Mr.-Moneypenny.git
@@ -25,47 +25,43 @@ npm run tauri:dev                       # development with hot-reload
 
 Full prerequisites in [`BUILDING.md`](BUILDING.md).
 
-## Goals
-
-- **Plain-English expense logging** via a personal Telegram bot you create yourself with @BotFather. The bot is yours; we never see your messages.
-- **Insights dashboard** built into the desktop app — KPIs, category breakdowns, daily trends, fixed-vs-variable pacing, per-household-member attribution. Pulls 100% from your local SQLite database.
-- **Shared-household support** — partners can both chat with the same bot and contribute to the same database, with attribution preserved per expense.
-- **Privacy by architecture** — no relay, no telemetry, no analytics. Outbound network traffic is limited to (1) Telegram's API using your bot token, (2) your chosen LLM provider (Anthropic with your API key, or your own local Ollama), and (3) optionally a release-update check (off in privacy mode).
-- **Plug-and-play install** for non-technical users on Linux, macOS, and Windows. The Anthropic path requires no terminal, no shell commands, and no prerequisite installs.
-
 ## How it works
 
 ```
-You ────────►  Telegram (your bot)  ────────►  Mr. Moneypenny on your desktop  ────────►  SQLite (your machine)
-                                                       │
-                                                       ▼
-                                       Anthropic API  or  local Ollama
+You ──►  Telegram (your bot)  ──►  Mr. Moneypenny on your desktop  ──►  SQLite (your machine)
+                                            │
+                                            ▼
+                            Anthropic API  or  local Ollama
 ```
 
-Mr. Moneypenny on your desktop holds an open long-poll connection to Telegram. When you message the bot from any device (phone, laptop, web), the desktop receives the message, asks the LLM to parse it into a structured operation, applies the operation to your local database, and sends a response back through Telegram.
+The desktop app holds a long-poll connection to Telegram. When you message the bot from any device, the desktop receives the message, asks the LLM to parse it into a structured operation (never raw SQL), applies it to your local database, and replies through Telegram. Money is formatted server-side, so the bot never does its own arithmetic on amounts.
 
-Closing the window minimizes to the system tray so the bot stays online without a visible window. Auto-start on login is opt-in.
+Closing the window minimizes to the system tray so the bot stays online. Auto-start on login is opt-in.
 
-## What you get in the desktop app
+## Features
 
-- **Insights dashboard** — KPI strip with budget pacing, category donut, daily trend (variable + fixed), per-household-member attribution, top expenses, over-budget warnings, upcoming-fixed list, month-over-month delta.
-- **Ledger** — searchable / filterable list of every expense with inline delete.
-- **Categories** — edit defaults, add new, toggle activation, set monthly budgets.
-- **Household** — invite a partner via a 6-digit pairing code; per-member spend shown on the dashboard.
+- **Plain-English logging** via your own Telegram bot (created with @BotFather). The bot is yours; the project never sees your messages.
+- **Insights dashboard** — budget pacing, category breakdown, daily trends (fixed vs. variable), per-household-member attribution, top expenses, over-budget and upcoming-fixed warnings, month-over-month delta.
+- **Ledger** — searchable, filterable list of every expense with inline delete.
+- **Categories** — edit defaults, add categories, toggle activation, set monthly budgets.
+- **Household** — share one bot and database with a partner via a 6-digit pairing code; spend is attributed per member.
+- **CSV import** — parse a bank export, dedupe, and categorize (optionally with AI suggestions).
+- **Forecast / Simulator** — Monte Carlo investment projection, with an optional deterministic single-path mode.
+- **AI Report Wizard** — a written analysis of a chosen period. All figures are computed deterministically in Rust from local data; the model only narrates over them. Includes PDF export.
 - **Settings** — rotate keys, switch LLM provider, toggle background mode and auto-start.
+
+## Privacy
+
+No relay, no telemetry, no analytics. Outbound traffic is limited to: (1) Telegram's API with your bot token, (2) your chosen LLM provider (Anthropic with your key, or local Ollama), and (3) an optional release-update check (off in privacy mode). The list is enforced by a CSP allowlist; adding an endpoint requires a documented change.
 
 ## License
 
-[GNU Affero General Public License v3.0](LICENSE). The AGPL is chosen specifically so that any forked or hosted version must also publish source — protecting the privacy thesis from being eroded by a closed-source SaaS clone.
+[GNU Affero General Public License v3.0](LICENSE). AGPL is used so that any forked or hosted version must also publish its source.
 
-## Contributing
+## More
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). All contributions are welcome — bug reports, code, docs, design, translations.
-
-## Security
-
-See [SECURITY.md](SECURITY.md) for the responsible-disclosure process.
-
-## Code of Conduct
-
-This project follows the [Contributor Covenant](CODE_OF_CONDUCT.md).
+- [CONTRIBUTING.md](CONTRIBUTING.md) — bug reports, code, docs, design, translations all welcome.
+- [SECURITY.md](SECURITY.md) — responsible-disclosure process.
+- [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) — Contributor Covenant.
+</content>
+</invoke>
