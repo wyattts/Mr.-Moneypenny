@@ -11,6 +11,7 @@ import {
 import type { CategoryView, LedgerRow, SetupState } from "@/lib/tauri";
 import { ViewHeader } from "./ViewHeader";
 import { DataExportPanel } from "@/components/DataExportPanel";
+import { CsvImportPanel } from "@/components/CsvImportPanel";
 import { ErrorBanner } from "@/wizard/components/Layout";
 import { GhostButton, SecondaryButton } from "@/wizard/components/Buttons";
 import { formatDateTime, formatMoney } from "@/lib/format";
@@ -86,6 +87,9 @@ export function Ledger() {
       <ViewHeader title="Ledger" subtitle="Every recorded expense." />
       <div className="mx-auto max-w-5xl space-y-4 px-8 py-8">
         {error ? <ErrorBanner>{error}</ErrorBanner> : null}
+
+        <DataExportPanel />
+        <CsvImportPanel />
 
         <div className="flex items-center gap-3">
           <select
@@ -181,8 +185,6 @@ export function Ledger() {
             </SecondaryButton>
           </div>
         ) : null}
-
-        <DataExportPanel />
       </div>
     </div>
   );

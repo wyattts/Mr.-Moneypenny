@@ -6,7 +6,7 @@ Mr. Moneypenny is a desktop app that pairs with a Telegram bot you create yourse
 
 ## Status
 
-**0.5.0 — alpha.** End-to-end works on Linux (tested on Fedora + Wayland). macOS and Windows builds are produced by CI but unsigned until [sponsorship](https://github.com/sponsors/wyattts) covers code-signing certificates.
+**0.5.1 — alpha.** End-to-end works on Linux (tested on Fedora + Wayland). macOS and Windows builds are produced by CI but unsigned until [sponsorship](https://github.com/sponsors/wyattts) covers code-signing certificates.
 
 ## Install
 

@@ -4,6 +4,12 @@ All notable changes to Mr. Moneypenny are documented here. The format roughly fo
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-05-17
+
+### Changed
+
+- **Import and export now live at the top of the Ledger tab.** The CSV importer moved out of Settings, and the exporter moved from the bottom of the Ledger to the top, so the two bulk data flows — in and out — sit together where the ledger they act on is. Both panels are now self-contained components (`src/components/CsvImportPanel.tsx`, `DataExportPanel.tsx`) with their own status lines. Settings no longer has a "CSV import" section. No behavior or data-format changes.
+
 ## [0.5.0] - 2026-05-17
 
 **The open hub — data export.** Your data is yours, and now that ownership is exercisable: a complete, faithful, one-way copy of the ledger to a file you choose. A local, user-initiated *snapshot* (no server, no live feed, no re-import), desktop-only (the Telegram bot never carries the file), reading a stable published view so the internal schema can evolve without breaking exports.
