@@ -4,6 +4,21 @@ All notable changes to Mr. Moneypenny are documented here. The format roughly fo
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-05-17
+
+**The open hub — data export.** Your data is yours, and now that ownership is exercisable: a complete, faithful, one-way copy of the ledger to a file you choose. A local, user-initiated *snapshot* (no server, no live feed, no re-import), desktop-only (the Telegram bot never carries the file), reading a stable published view so the internal schema can evolve without breaking exports.
+
+### Added
+
+- **Ledger → Export your data.** Pick one format — ordinary **spreadsheet (CSV)**, **programmer file (JSON Lines)**, or **plain-text accounting (Beancount)** for the Fava ecosystem — and a timeframe: **All time** (the full portability copy, and the default) or this **year / quarter / month** for taxes / an accountant. Money stays exact (integer cents plus a signed decimal); refunds are signed negative. Timeframe bounds reuse the same `DateRange` logic as the dashboard and bot, so an exported "this year" matches what the app shows. The panel lives at the bottom of the Ledger tab.
+  - **CSV** carries derived `date` (YYYY-MM-DD) and `month` (YYYY-MM) columns beside the exact timestamp, so a monthly pivot is one drag with zero formulas.
+  - **Beancount** is balanced double-entry with every account opened, refunds tagged `#refund`, and `expense_id` / `source` / `logged_by` attached as metadata for Fava filtering and reconciliation. A self-describing provenance header (app version, schema, timeframe, generated-at, row count) is embedded as comments so the file stays understandable years from now — CSV and JSON Lines stay pure (provenance lives in the filename + docs) so their parsers don't choke.
+- **`v_ledger_v1` view (DB migration 0017).** The published, versioned export contract — expenses resolved with category name/kind, budget context, refund sign, source, and who logged it. Exports read only this view, never the raw tables; a future breaking change would add `v_ledger_v2` and keep `v1`.
+
+### Privacy
+
+- Export is documented in `docs/privacy.md` and `docs/threat-model.md` as a deliberate, user-initiated, local-only egress that adds no new outbound path or attack surface. The stale "encrypted JSON or CSV" backup note was corrected to match the shipped feature.
+
 ## [0.4.2] - 2026-05-17
 
 **Telegram bot budget answers.** "How am I doing this month" could come back as a raw transaction dump that asked the user for a budget the app already had, and category questions ("how's my gas budget") sometimes invented the wrong timeframe. Two underlying bugs were fixed and the bot's status/category handling was made consistent.

@@ -10,6 +10,7 @@ import {
 } from "@/lib/tauri";
 import type { CategoryView, LedgerRow, SetupState } from "@/lib/tauri";
 import { ViewHeader } from "./ViewHeader";
+import { DataExportPanel } from "@/components/DataExportPanel";
 import { ErrorBanner } from "@/wizard/components/Layout";
 import { GhostButton, SecondaryButton } from "@/wizard/components/Buttons";
 import { formatDateTime, formatMoney } from "@/lib/format";
@@ -180,6 +181,8 @@ export function Ledger() {
             </SecondaryButton>
           </div>
         ) : null}
+
+        <DataExportPanel />
       </div>
     </div>
   );

@@ -1836,6 +1836,62 @@ pub async fn delete_merchant_rule(id: i64, state: State<'_, AppState>) -> Result
 }
 
 // ---------------------------------------------------------------------
+// Data export — the "open hub" (v0.5.0).
+//
+// A complete, faithful one-way photocopy of the ledger. Reads only the
+// stable `v_ledger_v1` view; snapshot, never a live feed; desktop-only,
+// no bot path. The frontend's save dialog supplies `path`; we write the
+// bytes through this command so the only filesystem touch stays inside
+// the typed boundary (same pattern as `report_save_pdf`).
+// ---------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct ExportDataInput {
+    pub path: String,
+    /// "csv" | "jsonl" | "beancount"
+    pub format: String,
+    /// "all" | "month" | "quarter" | "year"
+    pub timeframe: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ExportSummary {
+    pub row_count: usize,
+    pub byte_count: usize,
+    pub path: String,
+}
+
+#[tauri::command]
+pub async fn export_data(
+    input: ExportDataInput,
+    state: State<'_, AppState>,
+) -> Result<ExportSummary, String> {
+    use crate::export::{self, ExportFormat, ExportTimeframe};
+
+    if input.path.trim().is_empty() {
+        return Err("no save path provided".into());
+    }
+    let format: ExportFormat = input.format.parse().map_err(err)?;
+    let timeframe: ExportTimeframe = input.timeframe.parse().map_err(err)?;
+    let now = OffsetDateTime::now_utc();
+
+    let result = state
+        .db_actor
+        .run(move |conn| export::export(conn, format, timeframe, now))
+        .await
+        .map_err(err)?;
+
+    std::fs::write(&input.path, &result.bytes)
+        .map_err(|e| format!("writing {}: {e}", input.path))?;
+
+    Ok(ExportSummary {
+        row_count: result.row_count,
+        byte_count: result.bytes.len(),
+        path: input.path,
+    })
+}
+
+// ---------------------------------------------------------------------
 // Misc.
 // ---------------------------------------------------------------------
 

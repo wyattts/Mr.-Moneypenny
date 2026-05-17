@@ -28,6 +28,20 @@ If your machine is destroyed and you have no backup, the project cannot help you
   - Linux: Secret Service (libsecret), with `keyutils` fallback for headless setups.
 - **Settings, category preferences, budgets:** in the same SQLite file as your expenses.
 
+## Exporting your data (the open hub)
+
+Your data is yours, and that ownership is meant to be *exercisable*, not just asserted. Ledger → **Export your data** writes a complete, faithful copy to a file you choose.
+
+Deliberate properties of this feature:
+
+- **User-initiated and desktop-only.** Nothing exports on its own, on a schedule, or in the background. The Telegram bot has no part in it — a full ledger is a large, sensitive payload and is never sent through Telegram. You run it, on your machine, when you want it.
+- **A snapshot, not a live feed.** Each export is a point-in-time photocopy taken when you ask. There is no server, no port, and nothing listening.
+- **One-way.** Export is a portability guarantee — you can always leave with a perfect copy. It is not a re-import pipeline; nothing reads an edited file back in.
+- **No network, no third party.** The export is read locally and written to a local path. It involves no outbound call and does not touch the CSP allowlist.
+- **Reads a stable, published contract.** All formats read the `v_ledger_v1` SQL view (DB migration 0017), never the raw tables, so the internal schema can evolve without breaking your exports or silently changing their shape.
+
+Formats: an ordinary **spreadsheet (CSV)**, a **programmer file (JSON Lines)**, and **plain-text accounting (Beancount)** for the Fava/Beancount ecosystem. Timeframes: **All time** (the full portability copy, and the default) or this **year / quarter / month** (for taxes or an accountant). Caveat: a non–"All time" Beancount slice is valid but less self-contained than a full history, since it omits earlier context.
+
 ## What goes over the network
 
 The desktop app makes outbound HTTPS calls to exactly three classes of endpoint:
@@ -65,7 +79,7 @@ Crash dumps are written locally to `<data dir>/crashes/`. They are **never autom
 
 You are responsible for backing up your SQLite database. The app provides:
 
-- **Manual export** to encrypted JSON or CSV (Settings → Export).
+- **Manual export** to CSV, JSON Lines, or Beancount (Ledger → Export your data — see [the open hub](#exporting-your-data-the-open-hub) above). A faithful one-way copy; not encrypted, so store the file somewhere you trust.
 - **Optional auto-backup** to a folder of your choice. You can point this at iCloud Drive, Dropbox, OneDrive, Syncthing, or any other folder. This is your choice; the project does not provide its own sync.
 
 ## Changes to this policy

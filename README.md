@@ -48,6 +48,7 @@ Closing the window minimizes to the system tray so the bot stays online. Auto-st
 - **CSV import** — parse a bank export, dedupe, and categorize (optionally with AI suggestions).
 - **Forecast / Simulator** — Monte Carlo investment projection, with an optional deterministic single-path mode.
 - **AI Report Wizard** — a written analysis of a chosen period. All figures are computed deterministically in Rust from local data; the model only narrates over them. Includes PDF export.
+- **Open hub (data export)** — a complete, faithful one-way copy of your ledger to CSV, JSON Lines, or Beancount, for all-time or a chosen year/quarter/month. A local, user-initiated snapshot read from a stable view; no server, no third party. Your data is yours, and you can always leave with it.
 - **Settings** — rotate keys, switch LLM provider, toggle background mode and auto-start.
 
 ## Privacy

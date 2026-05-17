@@ -1000,3 +1000,23 @@ export const reportSavePdf = (
   path: string,
   base64Pdf: string,
 ): Promise<void> => invoke("report_save_pdf", { path, base64Pdf });
+
+// Data export — the "open hub" (v0.5.0). A complete, faithful one-way
+// photocopy of the ledger to a user-chosen file. Snapshot, desktop-only,
+// no third party. `all` is the default, primary timeframe.
+
+export type ExportFormat = "csv" | "jsonl" | "beancount";
+export type ExportTimeframe = "all" | "month" | "quarter" | "year";
+
+export interface ExportSummary {
+  row_count: number;
+  byte_count: number;
+  path: string;
+}
+
+export const exportData = (
+  path: string,
+  format: ExportFormat,
+  timeframe: ExportTimeframe,
+): Promise<ExportSummary> =>
+  invoke("export_data", { input: { path, format, timeframe } });

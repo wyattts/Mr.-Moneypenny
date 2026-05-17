@@ -6,6 +6,7 @@ pub mod app_state;
 pub mod csv_import;
 pub mod db;
 pub mod domain;
+pub mod export;
 pub mod insights;
 pub mod llm;
 pub mod repository;
@@ -200,6 +201,7 @@ mod app {
                 delete_csv_import_profile,
                 list_merchant_rules,
                 delete_merchant_rule,
+                export_data,
             ])
             .build(tauri::generate_context!())
             .expect("error while building tauri application");

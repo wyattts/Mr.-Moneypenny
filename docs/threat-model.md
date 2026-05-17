@@ -92,6 +92,7 @@ What if the maintainer (or an attacker who compromises the maintainer's account)
 - Defending against the user voluntarily pasting their bot token into a phishing site.
 - Privacy of metadata visible to network observers about the *fact* that you use Mr. Moneypenny (no anti-fingerprinting measures).
 - Multi-host database synchronization (v1 is single-host).
+- Protecting **exported files** after they leave the app. Ledger → Export your data writes an unencrypted, user-initiated snapshot to a path the user chooses (reading only the stable `v_ledger_v1` view; no network, no Telegram, no third party). Once written, the file is the user's responsibility — the same trust boundary as any document they save. Export adds no new outbound path and no new surface against A1–A3; against A4 (local malware with session privileges) the database itself was already readable, so a user-triggered export does not widen that exposure.
 
 ## Open questions / future work
 

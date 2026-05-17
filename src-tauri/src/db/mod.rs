@@ -129,6 +129,12 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("migrations/0016_expenses_category_occurred_index.sql"),
         recreate: false,
     },
+    Migration {
+        version: 17,
+        name: "0017_export_view",
+        sql: include_str!("migrations/0017_export_view.sql"),
+        recreate: false,
+    },
 ];
 
 /// Open a SQLite connection at the given path, creating the file if
@@ -327,7 +333,7 @@ mod tests {
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 16);
+        assert_eq!(v, 17);
 
         let active = collect_active_seed_names(&conn);
         let mut expected: Vec<String> = EXPECTED_DEFAULT_ACTIVE
