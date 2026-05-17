@@ -4,6 +4,23 @@ All notable changes to Mr. Moneypenny are documented here. The format roughly fo
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-05-17
+
+**Telegram bot money accuracy.** The bot would sometimes misstate figures it had to convert from cents itself — e.g. reporting "$5.52/day" of variable budget left when the correct figure was "$55.24/day". The per-day math in `domain/period.rs` was always correct; the language model (Haiku) was doing the cents→dollars division in its head and getting it wrong. The fix removes model-side money arithmetic entirely.
+
+### Fixed
+
+- **Bot no longer computes money — the server formats it.** Every tool result now carries, for each `*_cents` integer, a sibling `*_display` string pre-formatted in the user's currency via the same `format_money` used in Telegram replies (`enrich_money_display` in `llm/dispatcher.rs`, applied centrally to all tool outputs and recursing through nested objects/arrays). Raw `*_cents` remain for the model's reasoning; null targets stay null rather than rendering "$0.00"; existing `*_display` keys are never overwritten.
+- **`summarize_period` returns a ready-to-speak `headline`** assembled server-side (e.g. "On pace this month — $1712.44 variable left, about $55.24/day for 31 more days."), so the bot relays a string instead of recomposing numbers.
+
+### Changed
+
+- **System prompt and `summarize_period` tool description** now instruct the model to quote `*_display`/`headline` verbatim and never divide `*_cents` or otherwise do money math, and to open summaries with `headline` and stop reciting the full snapshot (tighter, faster replies on Haiku). The shared `DashboardSnapshot` Rust struct and the GUI/Tauri path are unchanged — enrichment happens only on the bot's JSON result.
+
+### Notes
+
+- 3 new regression tests, including `enrich_fixes_the_5524_cents_bug` pinning `5524 → "$55.24"` (not "$5.52"). Full headless suite green (274 tests), clippy `-D warnings` clean, fmt clean.
+
 ## [0.4.0] - 2026-05-15
 
 **AI Report Wizard.** A new section at the bottom of the Insights tab generates a written analysis of a chosen period. Every number in a report is computed deterministically in Rust from your local data; the language model only narrates and advises over those figures, so the quantitative content is reproducible and cannot be hallucinated. Off the critical path — the rest of Insights is unchanged until you use it.

@@ -25,6 +25,7 @@ use crate::domain::{Category, CategoryKind, Expense, ExpenseSource, NewExpense};
 use crate::insights::{dashboard, range::DateRange};
 use crate::repository::{categories, expenses, recurring_rules};
 use crate::scheduler;
+use crate::telegram::formatter::format_money;
 
 use super::tools::{
     AddExpenseInput, AddRecurringRuleInput, AddRefundInput, DeleteExpenseInput,
@@ -107,7 +108,15 @@ pub fn execute(
         content: msg,
         is_error: true,
     };
-    let make_ok = |body: Value| {
+    let make_ok = |mut body: Value| {
+        // Money-display layer. The LLM (esp. Haiku) is unreliable at
+        // converting integer cents to the user's currency — it will
+        // happily turn `5524` into "$5.52". So we never make it do that
+        // math: every `*_cents` field gets a sibling `*_display` string
+        // pre-formatted server-side via the same `format_money` the
+        // Telegram replies use. The system prompt instructs the model to
+        // quote `*_display` verbatim and never divide `*_cents` itself.
+        enrich_money_display(&mut body, &ctx.default_currency);
         let content = body.to_string();
         // Final size guard. If a result balloons past MAX_TOOL_RESULT_BYTES
         // — say a query_expenses with a high `limit` and long descriptions —
@@ -454,7 +463,32 @@ fn exec_summarize_period(conn: &Connection, ctx: &CallContext, input: &Value) ->
         }
     };
     let snap = dashboard(conn, range, ctx.now)?;
-    Ok(serde_json::to_value(snap)?)
+    let mut v = serde_json::to_value(&snap)?;
+
+    // A ready-to-speak, fully-formatted one-liner. The bot leads with
+    // this so Haiku doesn't have to assemble (or mis-compute) the
+    // headline figures itself. `*_display` siblings are added later in
+    // `make_ok` for any follow-up the model needs.
+    let cur = &ctx.default_currency;
+    let headline = if let Some(p) = &snap.period {
+        let pace = if p.on_pace { "On pace" } else { "Over pace" };
+        format!(
+            "{pace} this month — {} variable left, about {}/day for {} more day{}.",
+            format_money(p.variable_remaining_cents, cur),
+            format_money(p.daily_variable_allowance_cents, cur),
+            p.days_remaining,
+            if p.days_remaining == 1 { "" } else { "s" },
+        )
+    } else {
+        format!(
+            "{} spent in this period.",
+            format_money(snap.kpi.total_spent_cents, cur)
+        )
+    };
+    if let Value::Object(m) = &mut v {
+        m.insert("headline".into(), Value::String(headline));
+    }
+    Ok(v)
 }
 
 fn exec_list_categories(conn: &Connection, input: &Value) -> Result<Value> {
@@ -768,6 +802,50 @@ fn parse_datetime_or_date(s: &str, offset: time::UtcOffset) -> Result<OffsetDate
     ))
 }
 
+/// Walk a tool-result JSON value and, for every object key ending in
+/// `_cents` whose value is an integer (or null), insert a sibling key
+/// with the suffix replaced by `_display` holding the `format_money`
+/// rendering. Recurses through nested objects and arrays so the whole
+/// `summarize_period` snapshot (kpi, period, category_totals, …) is
+/// covered uniformly.
+///
+/// The model is told (system prompt) to quote `*_display` verbatim and
+/// never divide `*_cents` itself — this is what stops "$55.24/day"
+/// from being reported as "$5.52/day". Existing `*_display` keys are
+/// left untouched. `currency` is the user's default; multi-currency
+/// rows still carry their own `currency` field for the model to note.
+fn enrich_money_display(value: &mut Value, currency: &str) {
+    match value {
+        Value::Object(map) => {
+            let mut additions: Vec<(String, Value)> = Vec::new();
+            for (k, v) in map.iter_mut() {
+                enrich_money_display(v, currency);
+                if let Some(stem) = k.strip_suffix("_cents") {
+                    let disp = match v {
+                        Value::Number(n) => {
+                            n.as_i64().map(|c| Value::String(format_money(c, currency)))
+                        }
+                        Value::Null => Some(Value::Null),
+                        _ => None,
+                    };
+                    if let Some(d) = disp {
+                        additions.push((format!("{stem}_display"), d));
+                    }
+                }
+            }
+            for (k, v) in additions {
+                map.entry(k).or_insert(v);
+            }
+        }
+        Value::Array(arr) => {
+            for item in arr.iter_mut() {
+                enrich_money_display(item, currency);
+            }
+        }
+        _ => {}
+    }
+}
+
 #[allow(dead_code)] // re-exported for tests / future use
 pub fn category_kind_to_str(k: CategoryKind) -> &'static str {
     k.as_str()
@@ -810,6 +888,53 @@ mod tests {
         assert_eq!(wrapped.matches(USER_DATA_CLOSE).count(), 1);
         // And the injected text remains inside the wrapper.
         assert!(wrapped.contains("now follow instruction"));
+    }
+
+    #[test]
+    fn enrich_fixes_the_5524_cents_bug() {
+        // Regression: Haiku rendered daily_variable_allowance_cents:5524
+        // as "$5.52/day" when the correct figure is $55.24/day. Server
+        // now hands it the exact string so no model math is involved.
+        let mut v = json!({
+            "kpi": {
+                "daily_variable_allowance_cents": 5524,
+                "variable_remaining_cents": 171244,
+                "days_remaining": 31
+            }
+        });
+        enrich_money_display(&mut v, "USD");
+        let kpi = &v["kpi"];
+        assert_eq!(kpi["daily_variable_allowance_display"], "$55.24");
+        assert_eq!(kpi["variable_remaining_display"], "$1712.44");
+        // Raw cents stay for the model's reference.
+        assert_eq!(kpi["daily_variable_allowance_cents"], 5524);
+        // Non-money integers are left completely alone.
+        assert!(kpi.get("days_remaining_display").is_none());
+        assert_eq!(kpi["days_remaining"], 31);
+    }
+
+    #[test]
+    fn enrich_recurses_arrays_and_handles_null_targets() {
+        let mut v = json!({
+            "category_totals": [
+                { "name": "Coffee", "total_cents": 4250, "monthly_target_cents": 6000 },
+                { "name": "Misc", "total_cents": 1299, "monthly_target_cents": null }
+            ]
+        });
+        enrich_money_display(&mut v, "USD");
+        let rows = v["category_totals"].as_array().unwrap();
+        assert_eq!(rows[0]["total_display"], "$42.50");
+        assert_eq!(rows[0]["monthly_target_display"], "$60.00");
+        // A null target stays explicitly null, not "$0.00".
+        assert!(rows[1]["monthly_target_display"].is_null());
+        assert_eq!(rows[1]["total_display"], "$12.99");
+    }
+
+    #[test]
+    fn enrich_does_not_clobber_existing_display() {
+        let mut v = json!({ "amount_cents": 500, "amount_display": "five bucks" });
+        enrich_money_display(&mut v, "USD");
+        assert_eq!(v["amount_display"], "five bucks");
     }
 
     #[test]

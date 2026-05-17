@@ -394,10 +394,15 @@ fn summarize_period_spec() -> ToolSpec {
         name: ToolName::SummarizePeriod.as_str().into(),
         description: "Get a structured budget summary. The dashboard and you \
                       use the same math, so call this whenever the user asks \
-                      \"how am I doing\". Pace VARIABLE spending against \
-                      the variable budget — fixed expenses (rent, insurance, \
-                      etc.) are inevitable and must NOT make the user look \
-                      \"over\". Only count discretionary overspend."
+                      \"how am I doing\". The result includes a ready-to-speak \
+                      `headline` string and `*_display` money strings already \
+                      formatted in the user's currency — open your reply with \
+                      `headline` and quote `*_display` verbatim; never compute \
+                      figures from the `*_cents` integers yourself. Pace \
+                      VARIABLE spending against the variable budget — fixed \
+                      expenses (rent, insurance, etc.) are inevitable and must \
+                      NOT make the user look \"over\". Only count discretionary \
+                      overspend."
             .into(),
         input_schema: json!({
             "type": "object",
