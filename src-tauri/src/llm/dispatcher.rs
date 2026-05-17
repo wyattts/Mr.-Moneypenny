@@ -442,7 +442,10 @@ fn exec_summarize_period(conn: &Connection, ctx: &CallContext, input: &Value) ->
         serde_json::from_value(input.clone()).context("summarize_period: invalid arguments")?;
     let range = match parsed.period.as_str() {
         "this_week" => DateRange::ThisWeek,
-        "this_month" => DateRange::ThisMonth,
+        // Empty string: the model emitted the key but left it blank. A
+        // casual "how am I doing" is a this-month question, and the
+        // budget only loads for monthly ranges — default here too.
+        "this_month" | "" => DateRange::ThisMonth,
         "this_quarter" => DateRange::ThisQuarter,
         "this_year" => DateRange::ThisYear,
         "ytd" => DateRange::Ytd,
@@ -464,13 +467,38 @@ fn exec_summarize_period(conn: &Connection, ctx: &CallContext, input: &Value) ->
     };
     let snap = dashboard(conn, range, ctx.now)?;
     let mut v = serde_json::to_value(&snap)?;
+    let cur = &ctx.default_currency;
+
+    // Category-scoped query ("how's my dining out budget?"). The result
+    // carries a focused block + a headline about ONLY that category; the
+    // tool description tells the model to drop everything else.
+    if let Some(name) = parsed
+        .category
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        let cat = resolve_category(conn, name)?;
+        let spent_cents: i64 = snap
+            .category_totals
+            .iter()
+            .filter(|c| c.category_id == cat.id)
+            .map(|c| c.total_cents)
+            .sum();
+        let period_label = period_label(&range);
+        let (focus, headline) = build_category_focus(&cat, spent_cents, period_label, cur);
+        if let Value::Object(m) = &mut v {
+            m.insert("category_focus".into(), focus);
+            m.insert("headline".into(), Value::String(headline));
+        }
+        return Ok(v);
+    }
 
     // A ready-to-speak, fully-formatted one-liner. The bot leads with
     // this so Haiku doesn't have to assemble (or mis-compute) the
     // headline figures itself. `*_display` siblings are added later in
     // `make_ok` for any follow-up the model needs.
-    let cur = &ctx.default_currency;
-    let headline = if let Some(p) = &snap.period {
+    let mut headline = if let Some(p) = &snap.period {
         let pace = if p.on_pace { "On pace" } else { "Over pace" };
         format!(
             "{pace} this month — {} variable left, about {}/day for {} more day{}.",
@@ -485,10 +513,141 @@ fn exec_summarize_period(conn: &Connection, ctx: &CallContext, input: &Value) ->
             format_money(snap.kpi.total_spent_cents, cur)
         )
     };
+    // If the user met an investing/savings goal this period, celebrate it.
+    if let Some(note) = investing_goal_note(&snap.category_totals, cur) {
+        headline.push(' ');
+        headline.push_str(&note);
+    }
     if let Value::Object(m) = &mut v {
         m.insert("headline".into(), Value::String(headline));
     }
     Ok(v)
+}
+
+/// Human label for the spend window, so the model never has to guess
+/// (and never invents "for the week" on a monthly query). Budgets are
+/// always *monthly* targets regardless of this window.
+fn period_label(range: &DateRange) -> &'static str {
+    match range {
+        DateRange::ThisWeek => "this week",
+        DateRange::ThisMonth | DateRange::Month { .. } => "this month",
+        DateRange::ThisQuarter => "this quarter",
+        DateRange::ThisYear => "this year",
+        DateRange::Ytd => "year to date",
+        DateRange::Custom { .. } => "in the selected range",
+    }
+}
+
+/// Server-built focus block for a single category. Returns
+/// `(json_block, ready-to-speak headline)`. All money is pre-formatted so
+/// the model never does arithmetic, and the spend window is stated
+/// explicitly so it can't be misreported. Category names come from the
+/// user's own config (same provenance as names in `category_totals`).
+fn build_category_focus(
+    cat: &Category,
+    spent_cents: i64,
+    period: &str,
+    cur: &str,
+) -> (Value, String) {
+    let kind = category_kind_to_str(cat.kind);
+    match cat.monthly_target_cents {
+        Some(target) if target > 0 => {
+            let remaining = target - spent_cents;
+            let headline = if cat.kind == CategoryKind::Investing {
+                if spent_cents >= target {
+                    format!(
+                        "{}: {} of your {} monthly goal {period} — goal met. Nicely done.",
+                        cat.name,
+                        format_money(spent_cents, cur),
+                        format_money(target, cur),
+                    )
+                } else {
+                    format!(
+                        "{}: {} of your {} monthly goal {period} — {} to go.",
+                        cat.name,
+                        format_money(spent_cents, cur),
+                        format_money(target, cur),
+                        format_money(remaining, cur),
+                    )
+                }
+            } else if remaining < 0 {
+                format!(
+                    "{}: {} spent {period} of a {} monthly budget — over by {}.",
+                    cat.name,
+                    format_money(spent_cents, cur),
+                    format_money(target, cur),
+                    format_money(-remaining, cur),
+                )
+            } else {
+                format!(
+                    "{}: {} spent {period} of a {} monthly budget — {} left.",
+                    cat.name,
+                    format_money(spent_cents, cur),
+                    format_money(target, cur),
+                    format_money(remaining, cur),
+                )
+            };
+            let block = json!({
+                "category_display": cat.name,
+                "kind": kind,
+                "period_display": period,
+                "spent_display": format_money(spent_cents, cur),
+                "target_display": format_money(target, cur),
+                "remaining_display": format_money(remaining, cur),
+                "over_budget": cat.kind != CategoryKind::Investing && remaining < 0,
+                "goal_met": cat.kind == CategoryKind::Investing && spent_cents >= target,
+            });
+            (block, headline)
+        }
+        _ => {
+            let headline = format!(
+                "{}: {} spent {period}. No budget is set on this category.",
+                cat.name,
+                format_money(spent_cents, cur),
+            );
+            let block = json!({
+                "category_display": cat.name,
+                "kind": kind,
+                "period_display": period,
+                "spent_display": format_money(spent_cents, cur),
+                "target_display": Value::Null,
+                "remaining_display": Value::Null,
+                "over_budget": false,
+                "goal_met": false,
+            });
+            (block, headline)
+        }
+    }
+}
+
+/// When the user has reached (or beaten) the sum of their investing
+/// targets for the period, return a short compliment to append to the
+/// headline. `None` when no investing target is set or it isn't met yet.
+/// Only categories with a positive target *and* contributions this period
+/// appear in `category_totals`, so this never fabricates a goal.
+fn investing_goal_note(
+    category_totals: &[crate::insights::CategoryTotal],
+    cur: &str,
+) -> Option<String> {
+    let mut contributed = 0i64;
+    let mut goal = 0i64;
+    for c in category_totals {
+        if c.kind == CategoryKind::Investing {
+            if let Some(t) = c.monthly_target_cents.filter(|t| *t > 0) {
+                contributed += c.total_cents;
+                goal += t;
+            }
+        }
+    }
+    if goal > 0 && contributed >= goal {
+        Some(format!(
+            "🎯 Savings goal met — {} of {} invested. Well done.",
+            format_money(contributed, cur),
+            format_money(goal, cur),
+        ))
+    } else {
+        None
+    }
 }
 
 fn exec_list_categories(conn: &Connection, input: &Value) -> Result<Value> {
@@ -944,5 +1103,113 @@ mod tests {
             wrap_user_data_opt(Some("hi")).as_deref(),
             Some("<user_data>hi</user_data>"),
         );
+    }
+
+    fn cat(name: &str, kind: CategoryKind, target: Option<i64>) -> Category {
+        Category {
+            id: 1,
+            name: name.into(),
+            kind,
+            monthly_target_cents: target,
+            is_recurring: false,
+            recurrence_day_of_month: None,
+            is_active: true,
+            is_seed: false,
+        }
+    }
+
+    #[test]
+    fn category_focus_states_the_period_and_under_budget() {
+        let c = cat("Dining Out", CategoryKind::Variable, Some(12000));
+        let (block, headline) = build_category_focus(&c, 7500, "this month", "USD");
+        assert_eq!(
+            headline,
+            "Dining Out: $75.00 spent this month of a $120.00 monthly budget — $45.00 left."
+        );
+        assert_eq!(block["period_display"], "this month");
+        assert_eq!(block["remaining_display"], "$45.00");
+        assert_eq!(block["over_budget"], false);
+        assert_eq!(block["goal_met"], false);
+    }
+
+    #[test]
+    fn category_focus_variable_over_budget() {
+        let c = cat("Coffee", CategoryKind::Variable, Some(8000));
+        let (block, headline) = build_category_focus(&c, 9500, "this month", "USD");
+        assert_eq!(
+            headline,
+            "Coffee: $95.00 spent this month of a $80.00 monthly budget — over by $15.00."
+        );
+        assert_eq!(block["over_budget"], true);
+    }
+
+    #[test]
+    fn category_focus_week_window_keeps_budget_monthly() {
+        let c = cat("Transportation / Gas", CategoryKind::Variable, Some(12500));
+        let (_b, headline) = build_category_focus(&c, 8800, "this week", "USD");
+        assert_eq!(
+            headline,
+            "Transportation / Gas: $88.00 spent this week of a $125.00 monthly budget — $37.00 left."
+        );
+    }
+
+    #[test]
+    fn category_focus_investing_goal_met_and_unmet() {
+        let c = cat("Savings", CategoryKind::Investing, Some(40000));
+        let (block, headline) = build_category_focus(&c, 40000, "this month", "USD");
+        assert!(headline.contains("goal met"), "got: {headline}");
+        assert_eq!(block["goal_met"], true);
+        assert_eq!(block["over_budget"], false);
+
+        let (_b, h2) = build_category_focus(&c, 25000, "this month", "USD");
+        assert_eq!(
+            h2,
+            "Savings: $250.00 of your $400.00 monthly goal this month — $150.00 to go."
+        );
+    }
+
+    #[test]
+    fn category_focus_no_budget_set() {
+        let c = cat("Misc", CategoryKind::Variable, None);
+        let (block, headline) = build_category_focus(&c, 3000, "this month", "USD");
+        assert_eq!(
+            headline,
+            "Misc: $30.00 spent this month. No budget is set on this category."
+        );
+        assert!(block["target_display"].is_null());
+    }
+
+    #[test]
+    fn investing_note_only_when_goal_met() {
+        use crate::insights::CategoryTotal;
+        let met = vec![CategoryTotal {
+            category_id: 1,
+            name: "Savings".into(),
+            kind: CategoryKind::Investing,
+            total_cents: 45000,
+            monthly_target_cents: Some(40000),
+        }];
+        assert!(investing_goal_note(&met, "USD")
+            .unwrap()
+            .contains("Savings goal met"));
+
+        let unmet = vec![CategoryTotal {
+            category_id: 1,
+            name: "Savings".into(),
+            kind: CategoryKind::Investing,
+            total_cents: 10000,
+            monthly_target_cents: Some(40000),
+        }];
+        assert!(investing_goal_note(&unmet, "USD").is_none());
+
+        // No investing target at all → no note.
+        let none = vec![CategoryTotal {
+            category_id: 2,
+            name: "Coffee".into(),
+            kind: CategoryKind::Variable,
+            total_cents: 9000,
+            monthly_target_cents: Some(8000),
+        }];
+        assert!(investing_goal_note(&none, "USD").is_none());
     }
 }

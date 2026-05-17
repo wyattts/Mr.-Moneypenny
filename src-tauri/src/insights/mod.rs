@@ -354,13 +354,24 @@ fn category_kind_lookup(conn: &Connection) -> Result<std::collections::HashMap<i
     Ok(map)
 }
 
-/// Sum of `monthly_target_cents` across active variable / fixed categories.
-/// Returns `(variable_target_total, fixed_target_total)`.
+/// Sum of `monthly_target_cents` across variable / fixed categories that
+/// have a target set. Returns `(variable_target_total, fixed_target_total)`.
+///
+/// Deliberately NOT filtered by `is_active`. `query_category_totals` (which
+/// feeds `variable_spent`) has no `is_active` filter, so spend in a
+/// deactivated-but-budgeted category is paced. If the budget query filtered
+/// `is_active` and the spend query did not, that category's spend would
+/// count against the user while its allowance silently vanished — the
+/// "bot can't see my budget" bug. The two queries must cover the same set:
+/// any category with a target contributes it, mirroring that any category
+/// with spend contributes that. (`set_monthly_target` never touches
+/// `is_active`, and migration 0003 deactivated non-whitelisted seeds, so
+/// inactive-but-budgeted is reachable through normal use.)
 fn query_active_targets(conn: &Connection) -> Result<(i64, i64)> {
     let mut stmt = conn.prepare_cached(
         "SELECT kind, COALESCE(SUM(monthly_target_cents), 0)
          FROM categories
-         WHERE is_active = 1 AND monthly_target_cents IS NOT NULL
+         WHERE monthly_target_cents IS NOT NULL
          GROUP BY kind",
     )?;
     let mut variable = 0i64;
@@ -572,4 +583,33 @@ fn previous_month_first(now: OffsetDateTime) -> OffsetDateTime {
 fn days_in_month(d: Date) -> u8 {
     // time crate gives this directly via `d.month().length(d.year())`.
     d.month().length(d.year())
+}
+
+#[cfg(test)]
+mod target_set_tests {
+    use super::*;
+    use crate::db;
+
+    // Regression: an inactive-but-budgeted category's target must still be
+    // summed, because its spend is still paced (query_category_totals has
+    // no is_active filter). The two sets must agree. See query_active_targets.
+    #[test]
+    fn inactive_budgeted_category_target_is_still_counted() {
+        let conn = db::open_in_memory().unwrap();
+        db::migrate(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO categories (name, kind, monthly_target_cents, is_active, is_seed)
+             VALUES ('TestGroceries', 'variable', 50000, 1, 0),
+                    ('TestEntertainment', 'variable', 20000, 0, 0)",
+            [],
+        )
+        .unwrap();
+
+        let (variable, _fixed) = query_active_targets(&conn).unwrap();
+        assert_eq!(
+            variable, 70000,
+            "inactive-but-budgeted variable category ($200) must be summed \
+             alongside the active one ($500); got {variable}"
+        );
+    }
 }

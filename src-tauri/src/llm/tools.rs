@@ -157,9 +157,18 @@ fn default_query_limit() -> u32 {
     50
 }
 
+fn default_period() -> String {
+    "this_month".to_string()
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct SummarizePeriodInput {
-    /// One of: this_week | this_month | this_quarter | this_year | ytd | custom
+    /// One of: this_week | this_month | this_quarter | this_year | ytd | custom.
+    /// Defaults to `this_month` when the model omits it or sends an empty
+    /// string — a casual "how am I doing" almost always means this month,
+    /// and the budget only loads for monthly ranges, so this is the safe
+    /// default rather than erroring or pacing the wrong window.
+    #[serde(default = "default_period")]
     pub period: String,
     /// Required when `period == "custom"`.
     #[serde(default)]
@@ -167,6 +176,13 @@ pub struct SummarizePeriodInput {
     /// Required when `period == "custom"`.
     #[serde(default)]
     pub to: Option<Date>,
+    /// Optional. When the user asks about ONE specific category
+    /// ("how's my dining out budget", "am I overspending on coffee"),
+    /// set this to that category's name. The result then carries a
+    /// `category_focus` block and a headline scoped to just that
+    /// category — answer only about it, with no other figures.
+    #[serde(default)]
+    pub category: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -393,16 +409,20 @@ fn summarize_period_spec() -> ToolSpec {
     ToolSpec {
         name: ToolName::SummarizePeriod.as_str().into(),
         description: "Get a structured budget summary. The dashboard and you \
-                      use the same math, so call this whenever the user asks \
-                      \"how am I doing\". The result includes a ready-to-speak \
-                      `headline` string and `*_display` money strings already \
-                      formatted in the user's currency — open your reply with \
-                      `headline` and quote `*_display` verbatim; never compute \
-                      figures from the `*_cents` integers yourself. Pace \
-                      VARIABLE spending against the variable budget — fixed \
-                      expenses (rent, insurance, etc.) are inevitable and must \
-                      NOT make the user look \"over\". Only count discretionary \
-                      overspend."
+                      use the same math, so call this for ANY \"how am I doing / \
+                      how's my budget / am I on track / what do my expenses look \
+                      like / how's the month\" question — and also when the user \
+                      asks about ONE category's budget (set `category`). The \
+                      result includes a ready-to-speak `headline` string and \
+                      `*_display` money strings already formatted in the user's \
+                      currency — open your reply with `headline` and quote \
+                      `*_display` verbatim; never compute figures from the \
+                      `*_cents` integers yourself. Pace VARIABLE spending against \
+                      the variable budget — fixed expenses (rent, insurance, \
+                      etc.) are inevitable and must NOT make the user look \
+                      \"over\". Only count discretionary overspend. When a \
+                      `category_focus` block is present, answer ONLY about that \
+                      category — no other totals."
             .into(),
         input_schema: json!({
             "type": "object",
@@ -410,12 +430,14 @@ fn summarize_period_spec() -> ToolSpec {
                 "period": {
                     "type": "string",
                     "enum": ["this_week", "this_month", "this_quarter", "this_year", "ytd", "custom"],
-                    "description": "Reporting window. `this_month` is the default for casual queries."
+                    "default": "this_month",
+                    "description": "Reporting window. Defaults to `this_month`; use that for any casual \"how am I doing / how am I tracking / am I over budget\" question. Only pick another window if the user explicitly names one."
                 },
                 "from": { "type": "string", "description": "ISO date YYYY-MM-DD, required when period='custom'." },
-                "to": { "type": "string", "description": "ISO date YYYY-MM-DD, required when period='custom'." }
+                "to": { "type": "string", "description": "ISO date YYYY-MM-DD, required when period='custom'." },
+                "category": { "type": "string", "description": "Optional. A single category name to scope the summary to (e.g. \"Dining Out\"). Set this when the user asks about one category's budget specifically." }
             },
-            "required": ["period"]
+            "required": []
         }),
     }
 }

@@ -4,6 +4,28 @@ All notable changes to Mr. Moneypenny are documented here. The format roughly fo
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-05-17
+
+**Telegram bot budget answers.** "How am I doing this month" could come back as a raw transaction dump that asked the user for a budget the app already had, and category questions ("how's my gas budget") sometimes invented the wrong timeframe. Two underlying bugs were fixed and the bot's status/category handling was made consistent.
+
+### Fixed
+
+- **Bot now reliably sees the variable budget on status questions.** `summarize_period`'s `period` was a required enum with no default; when the model omitted it (or sent an empty string) the call errored or fell to a non-monthly window, and the budget — which loads only for monthly ranges — silently went to zero, so the bot asked the user for a figure it already had. `period` now defaults to `this_month` at the schema, the typed input (`#[serde(default)]`), and the dispatcher (empty string → `ThisMonth`), and the system prompt hard-routes every "how am I doing / how's my budget / am I on track" phrasing to `summarize_period`, never `query_expenses`.
+- **Inactive-but-budgeted categories no longer vanish from the budget.** `query_active_targets` filtered `is_active = 1` while the spend query (`query_category_totals`) did not, so a deactivated category with a monthly target had its spend paced against a budget that excluded its allowance — making the user look worse than reality (reachable normally: `set_monthly_target` never touches `is_active`, and migration 0003 deactivates non-whitelisted seeds). The target query now covers the same category set as the spend query.
+
+### Added
+
+- **Category-scoped summaries.** `summarize_period` accepts an optional `category`; the result carries a server-built `category_focus` block and a headline scoped to just that category ("Dining Out: $75.00 spent this month of a $120.00 monthly budget — $45.00 left."), with the spend window and monthly-budget framing baked in so the model can't misreport the timeframe. Investing categories are phrased as goal progress rather than overspend.
+- **Savings-goal compliment.** When period contributions meet or exceed the sum of investing targets, the headline gains a short "🎯 Savings goal met" note.
+
+### Changed
+
+- **More aggressive intent inference.** New operating principle: infer the likely intent and answer rather than asking a clarifying question, except on literal word salad or a genuinely ambiguous spend amount. All money remains server-formatted — the bot never does its own arithmetic.
+
+### Notes
+
+- 12 new regression tests (period-default routing, the inactive-budgeted asymmetry pinned at $700 active + $200 inactive, category-focus under/over/investing/no-budget, the monthly-window timeframe fix). Full headless suite green (281 tests), clippy `-D warnings` clean, fmt clean.
+
 ## [0.4.1] - 2026-05-17
 
 **Telegram bot money accuracy.** The bot would sometimes misstate figures it had to convert from cents itself — e.g. reporting "$5.52/day" of variable budget left when the correct figure was "$55.24/day". The per-day math in `domain/period.rs` was always correct; the language model (Haiku) was doing the cents→dollars division in its head and getting it wrong. The fix removes model-side money arithmetic entirely.
