@@ -13,19 +13,8 @@ Thanks for your interest in contributing. Mr. Moneypenny is FOSS under the AGPL-
 1. Open an issue first for anything non-trivial. For bugs, include steps to reproduce; for features, describe the user-visible behavior.
 2. Fork the repo and create a topic branch off `main`: `git checkout -b feat/short-description` or `fix/short-description`.
 3. Make your changes in small, reviewable commits.
-4. Sign off your commits — see DCO below.
-5. Open a pull request against `main`. Fill out the PR template.
-6. CI must pass: lint, type-check, unit tests, and (for Rust) `cargo audit`.
-
-## Developer Certificate of Origin (DCO)
-
-This project uses the [Developer Certificate of Origin](https://developercertificate.org/) to track contribution authorship. Every commit must include a sign-off line:
-
-```
-Signed-off-by: Your Name <your.email@example.com>
-```
-
-Add it automatically with `git commit -s`. By signing off, you certify the contribution is yours to give under the project's license.
+4. Open a pull request against `main`. Fill out the PR template.
+5. CI must pass: lint, type-check, `cargo fmt`, `cargo clippy` and tests (both feature paths), and dependency audit.
 
 ## Branch and commit style
 
@@ -35,8 +24,8 @@ Add it automatically with `git commit -s`. By signing off, you certify the contr
 
 ## Code style
 
-- **Rust:** `cargo fmt` and `cargo clippy --all-targets -- -D warnings` must pass. Add `#![forbid(unsafe_code)]` to new crates unless explicitly justified.
-- **TypeScript:** ESLint + Prettier configurations live in the repo. `tsc --strict` must pass.
+- **Rust:** `cargo fmt` and clippy must pass with **both** feature paths — `cargo clippy --all-features --all-targets -- -D warnings` and `cargo clippy --no-default-features --all-targets -- -D warnings`. The headless (`--no-default-features`) path is what tests and downstream consumers compile, and it drifts silently otherwise. `#![forbid(unsafe_code)]` is in force crate-wide; keep it that way.
+- **TypeScript:** ESLint + Prettier configurations live in the repo. `npm run typecheck` (strict `tsc --noEmit`) must pass.
 - **SQL:** parameterized queries only — never string concatenation. The LLM must never see or generate SQL.
 - Prefer small, focused functions over large ones. No premature abstraction.
 
