@@ -55,6 +55,11 @@ pub struct DashboardSnapshot {
 pub struct KpiCard {
     pub variable_remaining_cents: i64,
     pub daily_variable_allowance_cents: i64,
+    /// Spend across active fixed + variable categories. Investing spend is
+    /// excluded so this stays the spend-side mirror of `total_budget_cents`
+    /// (which also excludes investing); `total_remaining_cents` is their
+    /// difference and so can never dip below `variable_remaining_cents`
+    /// unless fixed spending itself exceeds the fixed budget.
     pub total_spent_cents: i64,
     pub days_remaining: u8,
     pub on_pace: bool,
@@ -155,7 +160,14 @@ pub fn dashboard(
         .filter(|c| c.kind == CategoryKind::Variable)
         .map(|c| c.total_cents)
         .sum();
-    let total_spent_cents: i64 = category_totals.iter().map(|c| c.total_cents).sum();
+    // Mirror total_budget_cents, which is fixed + variable targets only.
+    // Investing is a savings goal, not a spending allowance, and is excluded
+    // from the budget — so its spend must not be subtracted from
+    // total_remaining either. Otherwise a savings contribution drags
+    // total_remaining below variable_remaining once fixed + savings outflow
+    // tops the fixed budget. (category_totals still carries investing for the
+    // per-category breakdown and the savings-goal note.)
+    let total_spent_cents: i64 = fixed_total + variable_total;
 
     // Period pacing math is only meaningful when the selected range is
     // the *current* calendar month — variable_remaining and the daily
@@ -663,6 +675,64 @@ mod target_set_tests {
         assert!(
             totals.iter().all(|c| c.category_id != 102),
             "deactivated category must not appear in the spend breakdown"
+        );
+    }
+}
+
+#[cfg(test)]
+mod total_remaining_tests {
+    use super::*;
+    use crate::db;
+
+    use time::macros::datetime;
+
+    // Regression: a savings (investing) contribution must not be subtracted
+    // from total_remaining. total_budget is fixed + variable only, so
+    // total_spent must be too — otherwise total_remaining dips below
+    // variable_remaining purely because the user saved money.
+    #[test]
+    fn investing_spend_does_not_pull_total_remaining_below_variable() {
+        let conn = db::open_in_memory().unwrap();
+        db::migrate(&conn).unwrap();
+        // Fixed budget $10 (spent $8, under budget), variable budget $5
+        // (spent $1), savings goal with a $4 contribution.
+        conn.execute(
+            "INSERT INTO categories (id, name, kind, monthly_target_cents, is_active, is_seed)
+             VALUES (201, 'TestRent', 'fixed', 1000, 1, 0),
+                    (202, 'TestDining', 'variable', 500, 1, 0),
+                    (203, 'TestSavings', 'investing', 400, 1, 0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO expenses (amount_cents, category_id, occurred_at, source)
+             VALUES (800, 201, '2026-04-10T12:00:00Z', 'manual'),
+                    (100, 202, '2026-04-11T12:00:00Z', 'manual'),
+                    (400, 203, '2026-04-12T12:00:00Z', 'manual')",
+            [],
+        )
+        .unwrap();
+
+        let now = datetime!(2026-04-15 12:00:00 UTC);
+        let snap = dashboard(&conn, DateRange::ThisMonth, now).unwrap();
+        let kpi = &snap.kpi;
+
+        // total_budget = 1000 + 500 = 1500 (investing excluded).
+        assert_eq!(kpi.total_budget_cents, 1500);
+        // total_spent = 800 + 100 = 900 — the $400 savings is NOT counted.
+        assert_eq!(
+            kpi.total_spent_cents, 900,
+            "investing spend must be excluded from total_spent; got {}",
+            kpi.total_spent_cents
+        );
+        // total_remaining = 1500 - 900 = 600, well above variable_remaining.
+        assert_eq!(kpi.total_remaining_cents, 600);
+        assert_eq!(kpi.variable_remaining_cents, 400); // 500 - 100
+        assert!(
+            kpi.total_remaining_cents >= kpi.variable_remaining_cents,
+            "total_remaining ({}) must not be below variable_remaining ({})",
+            kpi.total_remaining_cents,
+            kpi.variable_remaining_cents,
         );
     }
 }

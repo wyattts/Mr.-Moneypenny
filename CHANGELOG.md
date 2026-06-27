@@ -4,6 +4,14 @@ All notable changes to Mr. Moneypenny are documented here. The format roughly fo
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-06-27
+
+**Total remaining no longer counts savings against your budget.** "Total remaining" could read *lower* than "Variable remaining," which is impossible when the total includes fixed headroom too. The cause: `total_remaining = total_budget − total_spent`, but the two sides covered different sets — `total_budget` is fixed + variable targets (investing is a savings goal, excluded), while `total_spent` summed *every* category including investing. So a savings contribution was subtracted from a budget that never included it, dragging total remaining down (below variable remaining once fixed + savings outflow topped the fixed budget).
+
+### Fixed
+
+- **`total_spent_cents` is now fixed + variable spend only**, mirroring `total_budget_cents`. Total budget, total spent, total remaining, and "% of budget spent" now all describe the same fixed+variable plan, so total remaining can only fall below variable remaining when fixed spending genuinely overruns the fixed budget — a real signal, not a savings artifact. Investing spend still shows in the per-category breakdown and the savings-goal note (and the bot's status reply, which celebrates savings separately, stays coherent). Regression test added.
+
 ## [0.5.2] - 2026-06-27
 
 **Insights total budget no longer counts deactivated categories.** The dashboard's "Total budget" (and everything derived from it — total remaining, the daily variable allowance, and the on-pace math) summed the saved `monthly_target_cents` of *every* category with a target, including ones you'd deactivated. A user with $3,200 of active fixed + variable targets but a few dormant deactivated categories saw an inflated $3,558.
