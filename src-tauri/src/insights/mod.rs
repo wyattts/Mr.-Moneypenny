@@ -264,11 +264,16 @@ fn query_category_totals(
     end: OffsetDateTime,
 ) -> Result<Vec<CategoryTotal>> {
     let sql = format!(
+        // is_active = 1 keeps this spend set equal to the budget set in
+        // query_active_targets: a deactivated category contributes neither
+        // budget nor paced spend, so it can't inflate the total budget and
+        // can't orphan its spend (the "bot can't see my budget" bug).
         "SELECT c.id, c.name, c.kind, c.monthly_target_cents,
                 COALESCE(SUM({SIGNED_AMOUNT_SQL}), 0) AS total
          FROM categories c
          LEFT JOIN expenses e ON e.category_id = c.id
              AND e.occurred_at >= ?1 AND e.occurred_at < ?2
+         WHERE c.is_active = 1
          GROUP BY c.id, c.name, c.kind, c.monthly_target_cents
          HAVING total > 0
          ORDER BY total DESC"
@@ -354,24 +359,23 @@ fn category_kind_lookup(conn: &Connection) -> Result<std::collections::HashMap<i
     Ok(map)
 }
 
-/// Sum of `monthly_target_cents` across variable / fixed categories that
-/// have a target set. Returns `(variable_target_total, fixed_target_total)`.
+/// Sum of `monthly_target_cents` across **active** variable / fixed
+/// categories that have a target set. Returns
+/// `(variable_target_total, fixed_target_total)`.
 ///
-/// Deliberately NOT filtered by `is_active`. `query_category_totals` (which
-/// feeds `variable_spent`) has no `is_active` filter, so spend in a
-/// deactivated-but-budgeted category is paced. If the budget query filtered
-/// `is_active` and the spend query did not, that category's spend would
-/// count against the user while its allowance silently vanished — the
-/// "bot can't see my budget" bug. The two queries must cover the same set:
-/// any category with a target contributes it, mirroring that any category
-/// with spend contributes that. (`set_monthly_target` never touches
-/// `is_active`, and migration 0003 deactivated non-whitelisted seeds, so
-/// inactive-but-budgeted is reachable through normal use.)
+/// Filtered by `is_active = 1`, in lockstep with `query_category_totals`
+/// (which feeds `variable_spent`) and `query_over_budget` — all three scope
+/// the dashboard to the active categories. Keeping the budget and spend
+/// queries on the *same* set is what makes it coherent. A deactivated category
+/// contributes no target, so it can't inflate the budget (the "Insights total
+/// budget too high" bug); and it contributes no paced spend, so its spend can't
+/// count against the user while its allowance silently vanishes (the "bot can't
+/// see my budget" bug). Reactivating a category restores both together.
 fn query_active_targets(conn: &Connection) -> Result<(i64, i64)> {
     let mut stmt = conn.prepare_cached(
         "SELECT kind, COALESCE(SUM(monthly_target_cents), 0)
          FROM categories
-         WHERE monthly_target_cents IS NOT NULL
+         WHERE monthly_target_cents IS NOT NULL AND is_active = 1
          GROUP BY kind",
     )?;
     let mut variable = 0i64;
@@ -590,26 +594,75 @@ mod target_set_tests {
     use super::*;
     use crate::db;
 
-    // Regression: an inactive-but-budgeted category's target must still be
-    // summed, because its spend is still paced (query_category_totals has
-    // no is_active filter). The two sets must agree. See query_active_targets.
+    use time::macros::datetime;
+
+    // April 2026, the window the spend-side test queries.
+    const START: OffsetDateTime = datetime!(2026-04-01 00:00:00 UTC);
+    const END: OffsetDateTime = datetime!(2026-05-01 00:00:00 UTC);
+
+    fn seed_active_and_inactive(conn: &Connection) {
+        // $500 active variable category, $200 inactive variable category,
+        // both with a saved target.
+        conn.execute(
+            "INSERT INTO categories (id, name, kind, monthly_target_cents, is_active, is_seed)
+             VALUES (101, 'TestGroceries', 'variable', 50000, 1, 0),
+                    (102, 'TestEntertainment', 'variable', 20000, 0, 0)",
+            [],
+        )
+        .unwrap();
+    }
+
+    // The "Insights total budget too high" bug: a deactivated category's target
+    // must NOT be summed into the budget, even if it has spend this period.
     #[test]
-    fn inactive_budgeted_category_target_is_still_counted() {
+    fn inactive_category_target_is_excluded_from_budget() {
         let conn = db::open_in_memory().unwrap();
         db::migrate(&conn).unwrap();
+        seed_active_and_inactive(&conn);
+        // Spend in the deactivated category this period — still must not pull
+        // its $200 target into the budget.
         conn.execute(
-            "INSERT INTO categories (name, kind, monthly_target_cents, is_active, is_seed)
-             VALUES ('TestGroceries', 'variable', 50000, 1, 0),
-                    ('TestEntertainment', 'variable', 20000, 0, 0)",
+            "INSERT INTO expenses (amount_cents, category_id, occurred_at, source)
+             VALUES (3000, 102, '2026-04-15T12:00:00Z', 'manual')",
             [],
         )
         .unwrap();
 
         let (variable, _fixed) = query_active_targets(&conn).unwrap();
         assert_eq!(
-            variable, 70000,
-            "inactive-but-budgeted variable category ($200) must be summed \
-             alongside the active one ($500); got {variable}"
+            variable, 50000,
+            "deactivated category ($200 target) must be excluded; only the \
+             active $500 should count, got {variable}"
+        );
+    }
+
+    // The symmetric half that keeps the "bot can't see my budget" bug dead:
+    // because the budget query drops inactive categories, the *spend* query
+    // must drop them too — otherwise that spend would be paced with no matching
+    // allowance. query_category_totals filters is_active for exactly this.
+    #[test]
+    fn inactive_category_spend_is_excluded_from_pacing() {
+        let conn = db::open_in_memory().unwrap();
+        db::migrate(&conn).unwrap();
+        seed_active_and_inactive(&conn);
+        conn.execute(
+            "INSERT INTO expenses (amount_cents, category_id, occurred_at, source)
+             VALUES (4000, 101, '2026-04-10T12:00:00Z', 'manual'),
+                    (3000, 102, '2026-04-15T12:00:00Z', 'manual')",
+            [],
+        )
+        .unwrap();
+
+        let totals = query_category_totals(&conn, START, END).unwrap();
+        let spent: i64 = totals.iter().map(|c| c.total_cents).sum();
+        assert_eq!(
+            spent, 4000,
+            "only the active category's $40 should be paced; the inactive \
+             category's $30 must be excluded, got {spent}"
+        );
+        assert!(
+            totals.iter().all(|c| c.category_id != 102),
+            "deactivated category must not appear in the spend breakdown"
         );
     }
 }

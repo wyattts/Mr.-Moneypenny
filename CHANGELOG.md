@@ -4,6 +4,14 @@ All notable changes to Mr. Moneypenny are documented here. The format roughly fo
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-06-27
+
+**Insights total budget no longer counts deactivated categories.** The dashboard's "Total budget" (and everything derived from it — total remaining, the daily variable allowance, and the on-pace math) summed the saved `monthly_target_cents` of *every* category with a target, including ones you'd deactivated. A user with $3,200 of active fixed + variable targets but a few dormant deactivated categories saw an inflated $3,558.
+
+### Fixed
+
+- **`query_active_targets` (the budget side) now filters `is_active = 1`**, so a deactivated category's leftover target can't inflate the budget. To keep the older "bot can't see my budget" bug dead, the fix is symmetric: **`query_category_totals` (the spend side) now filters `is_active = 1` too**, matching the already active-scoped `query_over_budget`. Both the budget and spend halves of the dashboard now describe the *same* set — your active categories — so a deactivated category contributes neither an allowance nor paced spend, and reactivating one restores both together. Regression tests lock in both halves.
+
 ## [0.5.1] - 2026-05-17
 
 ### Changed
