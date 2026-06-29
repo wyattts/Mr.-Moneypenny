@@ -18,7 +18,7 @@
     "format": "prettier --write ."
   },
   "dependencies": {
-    "@tauri-apps/api": "~2.10.0",
+    "@tauri-apps/api": "~2.11.1",
     "@tauri-apps/plugin-dialog": "^2.7.1",
     "pdf-lib": "^1.17.1",
     "react": "^18.3.1",
@@ -28,7 +28,7 @@
     "zustand": "^5.0.1"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2.1.0",
+    "@tauri-apps/cli": "^2.11.4",
     "@types/node": "^22.9.0",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
